@@ -1,0 +1,41 @@
+# Build artifacts
+/build/
+/CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+*.o
+*.a
+*.so
+*.dylib
+*.exe
+*.dll
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# CMake
+CMakeLists.txt.user
+*.cmake
+
+# Test outputs
+/Testing/
+test_*.log
+
+# Dependency install
+/install/
+
+# Runtime
+*.log
+config/local.yaml
+
+# Compiler
+compile_commands.json
+
+#Claude
+.claude/

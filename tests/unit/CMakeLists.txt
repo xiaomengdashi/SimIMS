@@ -1,0 +1,36 @@
+include(GoogleTest)
+
+# Include directories for test mocks
+set(MOCK_DIR ${CMAKE_SOURCE_DIR}/tests/mocks)
+
+# SIP message test
+add_executable(test_sip_message test_sip_message.cpp)
+target_link_libraries(test_sip_message PRIVATE ims_sip GTest::gtest_main)
+gtest_discover_tests(test_sip_message)
+
+# DNS resolver test
+add_executable(test_dns_resolver test_dns_resolver.cpp)
+target_link_libraries(test_dns_resolver PRIVATE ims_dns GTest::gtest_main)
+gtest_discover_tests(test_dns_resolver)
+
+# Bencode test
+add_executable(test_bencode test_bencode.cpp)
+target_link_libraries(test_bencode PRIVATE ims_media GTest::gtest_main)
+gtest_discover_tests(test_bencode)
+
+# Config test
+add_executable(test_config test_config.cpp)
+target_link_libraries(test_config PRIVATE ims_common GTest::gtest_main)
+gtest_discover_tests(test_config)
+
+# Diameter Cx test (uses mocks)
+add_executable(test_diameter_cx test_diameter_cx.cpp)
+target_link_libraries(test_diameter_cx PRIVATE ims_diameter ims_common GTest::gtest_main GTest::gmock)
+target_include_directories(test_diameter_cx PRIVATE ${CMAKE_SOURCE_DIR}/tests ${CMAKE_SOURCE_DIR}/include)
+gtest_discover_tests(test_diameter_cx)
+
+# Registration store test (uses mocks)
+add_executable(test_registrar test_registrar.cpp)
+target_link_libraries(test_registrar PRIVATE ims_common GTest::gtest_main GTest::gmock)
+target_include_directories(test_registrar PRIVATE ${CMAKE_SOURCE_DIR}/tests ${CMAKE_SOURCE_DIR}/include)
+gtest_discover_tests(test_registrar)

@@ -1,0 +1,53 @@
+#pragma once
+
+#include "ims/sip/message.hpp"
+#include "ims/sip/transaction.hpp"
+#include "ims/registration/store.hpp"
+#include "ims/diameter/ihss_client.hpp"
+
+#include <memory>
+#include <mutex>
+#include <string>
+#include <unordered_map>
+
+namespace ims::scscf {
+
+class Registrar {
+public:
+    Registrar(std::shared_ptr<ims::registration::IRegistrationStore> store,
+              std::shared_ptr<ims::diameter::IHssClient> hss,
+              const std::string& domain = "ims.local");
+
+    /// Handle incoming REGISTER request
+    void handleRegister(ims::sip::SipMessage& request,
+                        std::shared_ptr<ims::sip::ServerTransaction> txn);
+
+private:
+    void sendChallenge(ims::sip::SipMessage& request,
+                       std::shared_ptr<ims::sip::ServerTransaction> txn);
+
+    void verifyAndRegister(ims::sip::SipMessage& request,
+                           std::shared_ptr<ims::sip::ServerTransaction> txn);
+
+    void handleDeregister(ims::sip::SipMessage& request,
+                          std::shared_ptr<ims::sip::ServerTransaction> txn);
+
+    auto extractImpi(const ims::sip::SipMessage& msg) const -> std::string;
+    auto extractImpu(const ims::sip::SipMessage& msg) const -> std::string;
+    bool isDeregister(const ims::sip::SipMessage& msg) const;
+    bool hasAuthorization(const ims::sip::SipMessage& msg) const;
+
+    std::shared_ptr<ims::registration::IRegistrationStore> store_;
+    std::shared_ptr<ims::diameter::IHssClient> hss_;
+    std::string domain_;
+
+    struct PendingAuth {
+        ims::diameter::AuthVector vector;
+        std::string impi;
+        std::string impu;
+    };
+    std::unordered_map<std::string, PendingAuth> pending_auth_;
+    std::mutex auth_mutex_;
+};
+
+} // namespace ims::scscf

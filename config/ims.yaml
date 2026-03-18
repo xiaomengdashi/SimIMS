@@ -1,0 +1,44 @@
+# IMS (IP Multimedia Subsystem) Configuration
+# This is a template configuration file. Adjust values for your deployment.
+
+global:
+  log_level: info          # trace, debug, info, warn, error, critical
+  node_name: ims-node-01
+
+pcscf:
+  listen_addr: 0.0.0.0
+  listen_port: 5060
+  rtpengine_addr: 127.0.0.1:22222
+  pcf_addr: 127.0.0.1:7777
+  dns_server: 127.0.0.1:53
+
+icscf:
+  listen_addr: 0.0.0.0
+  listen_port: 5061
+  hss_addr: 127.0.0.1:3868
+  dns_server: 127.0.0.1:53
+
+scscf:
+  listen_addr: 0.0.0.0
+  listen_port: 5062
+  hss_addr: 127.0.0.1:3868
+  domain: ims.example.com
+
+hss_adapter:
+  type: diameter            # diameter or http2
+  diameter:
+    origin_host: scscf.ims.example.com
+    origin_realm: ims.example.com
+    peer_host: hss.ims.example.com
+    peer_port: 3868
+  nudm_url: http://127.0.0.1:8080/nudm-uecm/v1
+
+media:
+  rtpengine_host: 127.0.0.1
+  rtpengine_port: 22222
+
+dns:
+  servers:
+    - 127.0.0.1
+    - 8.8.8.8
+  timeout: 3000            # milliseconds
