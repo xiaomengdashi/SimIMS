@@ -26,15 +26,15 @@
 
 | 技术 | 用途 |
 |------|------|
-| C++20 | 核心语言（concepts, jthread, expected） |
-| libosip2 | SIP 消息解析与构造 |
+| C++23 | 核心语言（concepts, jthread, std::expected） |
+| libosip2 5.x | SIP 消息解析与构造 |
 | Boost.Asio | 异步网络 I/O |
 | freeDiameter | Diameter Cx/Rx 协议（规划中） |
 | c-ares | 异步 DNS 解析 |
 | rtpengine | RTP 媒体代理（外部进程） |
 | spdlog | 结构化日志 |
 | yaml-cpp | YAML 配置 |
-| Google Test | 单元测试与 Mock |
+| Google Test + Google Mock | 单元测试与 Mock |
 | CMake 3.22+ | 构建系统 |
 
 ## 快速开始
@@ -47,12 +47,13 @@ sudo apt install -y \
     build-essential cmake pkg-config \
     libboost-system-dev \
     libosip2-dev \
-    libcares-dev \
+    libc-ares-dev \
     libspdlog-dev \
     libyaml-cpp-dev \
-    libgtest-dev
+    libgtest-dev \
+    libgmock-dev
 
-# 安装 rtpengine（媒体代理）
+# 安装 rtpengine（媒体代理，可选）
 sudo apt install -y rtpengine
 ```
 

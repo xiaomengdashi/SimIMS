@@ -1,4 +1,5 @@
 #include "ims/sip/transport.hpp"
+#include "ims/sip/message.hpp"
 #include "ims/common/logger.hpp"
 #include <boost/asio/ip/udp.hpp>
 
@@ -16,16 +17,16 @@ UdpTransport::~UdpTransport() {
 auto UdpTransport::send(const SipMessage& msg, const Endpoint& dest) -> VoidResult {
     auto data = msg.toString();
     if (!data) {
-        return std::unexpected(ErrorInfo{
-            ErrorCode::kSipTransportError, "Failed to serialize message", data.error().message});
+        return std::unexpected(ErrorInfo(
+            ErrorCode::kSipTransportError, "Failed to serialize message", data.error().message));
     }
 
     boost::system::error_code ec;
     boost::asio::ip::udp::endpoint ep(
         boost::asio::ip::make_address(dest.address, ec), dest.port);
     if (ec) {
-        return std::unexpected(ErrorInfo{
-            ErrorCode::kSipTransportError, "Invalid destination address", ec.message()});
+        return std::unexpected(ErrorInfo(
+            ErrorCode::kSipTransportError, "Invalid destination address", ec.message()));
     }
 
     socket_.send_to(boost::asio::buffer(*data), ep, 0, ec);

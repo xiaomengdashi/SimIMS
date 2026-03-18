@@ -3,6 +3,8 @@
 
 #include <ares.h>
 #include <arpa/nameser.h>
+#include <netdb.h>
+#include <arpa/inet.h>
 
 #include <algorithm>
 #include <cstring>
@@ -113,7 +115,7 @@ struct DnsResolver::Impl {
         for (int i = 0; host->h_addr_list[i]; ++i) {
             char ip[INET6_ADDRSTRLEN];
             inet_ntop(host->h_addrtype, host->h_addr_list[i], ip, sizeof(ip));
-            result->addresses.push_back({
+            result->addresses.emplace_back(AddressRecord{
                 .hostname = host->h_name ? host->h_name : "",
                 .address = ip,
                 .ttl = 300,  // Default TTL
@@ -138,7 +140,7 @@ struct DnsResolver::Impl {
         for (int i = 0; host->h_addr_list[i]; ++i) {
             char ip[INET6_ADDRSTRLEN];
             inet_ntop(AF_INET6, host->h_addr_list[i], ip, sizeof(ip));
-            result->addresses.push_back({
+            result->addresses.emplace_back(AddressRecord{
                 .hostname = host->h_name ? host->h_name : "",
                 .address = ip,
                 .ttl = 300,

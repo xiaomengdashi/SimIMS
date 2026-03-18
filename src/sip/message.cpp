@@ -1,12 +1,24 @@
 #include "ims/sip/message.hpp"
 #include "ims/common/logger.hpp"
 #include <osipparser2/osip_port.h>
+#include <osipparser2/osip_parser.h>
+#include <osipparser2/osip_headers.h>
 #include <random>
 #include <sstream>
 #include <iomanip>
 #include <cstring>
 
 namespace ims::sip {
+
+// Global parser initialization - must be called before any osip parsing
+namespace {
+    struct ParserInit {
+        ParserInit() {
+            parser_init();
+        }
+    };
+    static ParserInit g_parser_init;
+}
 
 namespace {
 
@@ -124,57 +136,46 @@ bool SipMessage::isResponse() const {
 }
 
 auto SipMessage::method() const -> std::string {
-    if (!isRequest() || !msg_->sip_method) return {};
-    return msg_->sip_method;
+    if (!isRequest()) return {};
+    char* method = osip_message_get_method(msg_.get());
+    if (!method) return {};
+    return method;  // Returns internal pointer, do NOT free
 }
 
 auto SipMessage::statusCode() const -> int {
     if (!isResponse()) return 0;
-    return msg_->status_code;
+    return osip_message_get_status_code(msg_.get());
 }
 
 auto SipMessage::reasonPhrase() const -> std::string {
-    if (!isResponse() || !msg_->reason_phrase) return {};
-    return msg_->reason_phrase;
+    if (!isResponse()) return {};
+    char* reason = osip_message_get_reason_phrase(msg_.get());
+    if (!reason) return {};
+    return reason;  // Returns internal pointer, do NOT free
 }
 
 auto SipMessage::requestUri() const -> std::string {
-    return uri_to_string(msg_->req_uri);
+    osip_uri_t* uri = osip_message_get_uri(msg_.get());
+    return uri_to_string(uri);
 }
 
 void SipMessage::setRequestUri(const std::string& uri) {
-    if (msg_->req_uri) {
-        osip_uri_free(msg_->req_uri);
-        msg_->req_uri = nullptr;
-    }
     osip_uri_t* parsed = nullptr;
     osip_uri_init(&parsed);
     osip_uri_parse(parsed, uri.c_str());
-    msg_->req_uri = parsed;
+    osip_message_set_uri(msg_.get(), parsed);
 }
 
 void SipMessage::setStatus(int code, const std::string& reason) {
-    msg_->status_code = code;
-    if (msg_->reason_phrase) {
-        osip_free(msg_->reason_phrase);
-    }
-    msg_->reason_phrase = osip_strdup(reason.c_str());
-    // Clear request-specific fields
-    if (msg_->sip_method) {
-        osip_free(msg_->sip_method);
-        msg_->sip_method = nullptr;
-    }
-    if (msg_->req_uri) {
-        osip_uri_free(msg_->req_uri);
-        msg_->req_uri = nullptr;
-    }
-    msg_->sip_version = osip_strdup("SIP/2.0");
+    osip_message_set_status_code(msg_.get(), code);
+    osip_message_set_reason_phrase(msg_.get(), osip_strdup(reason.c_str()));
 }
 
 auto SipMessage::getHeader(const std::string& name) const -> std::optional<std::string> {
     osip_header_t* header = nullptr;
     int pos = 0;
-    if (osip_message_header_get_byname(msg_.get(), name.c_str(), pos, &header) == 0 && header) {
+    // osip_message_header_get_byname returns position (>=0) if found, -1 if not
+    if (osip_message_header_get_byname(msg_.get(), name.c_str(), pos, &header) >= 0 && header) {
         if (header->hvalue) return std::string(header->hvalue);
         return std::string{};
     }
@@ -185,7 +186,8 @@ auto SipMessage::getHeaders(const std::string& name) const -> std::vector<std::s
     std::vector<std::string> result;
     osip_header_t* header = nullptr;
     int pos = 0;
-    while (osip_message_header_get_byname(msg_.get(), name.c_str(), pos, &header) == 0 && header) {
+    // osip_message_header_get_byname returns position (>=0) if found, -1 if not
+    while (osip_message_header_get_byname(msg_.get(), name.c_str(), pos, &header) >= 0 && header) {
         if (header->hvalue) {
             result.emplace_back(header->hvalue);
         }
@@ -201,7 +203,8 @@ void SipMessage::addHeader(const std::string& name, const std::string& value) {
 void SipMessage::removeHeader(const std::string& name) {
     osip_header_t* header = nullptr;
     int pos = 0;
-    while (osip_message_header_get_byname(msg_.get(), name.c_str(), pos, &header) == 0 && header) {
+    // osip_message_header_get_byname returns position (>=0) if found, -1 if not
+    while (osip_message_header_get_byname(msg_.get(), name.c_str(), pos, &header) >= 0 && header) {
         osip_list_remove(&msg_->headers, pos);
         osip_header_free(header);
         header = nullptr;
@@ -210,10 +213,13 @@ void SipMessage::removeHeader(const std::string& name) {
 }
 
 auto SipMessage::callId() const -> std::string {
-    if (msg_->call_id && msg_->call_id->number) {
-        return msg_->call_id->number;
+    osip_call_id_t* call_id = osip_message_get_call_id(msg_.get());
+    if (!call_id || !call_id->number) return {};
+    // Return full Call-ID: number@host if host exists
+    if (call_id->host && call_id->host[0] != '\0') {
+        return std::string(call_id->number) + "@" + call_id->host;
     }
-    return {};
+    return call_id->number;
 }
 
 void SipMessage::setCallId(const std::string& value) {
@@ -221,62 +227,61 @@ void SipMessage::setCallId(const std::string& value) {
 }
 
 auto SipMessage::fromHeader() const -> std::string {
-    return from_to_string(msg_->from);
+    osip_from_t* from = osip_message_get_from(msg_.get());
+    return from_to_string(from);
 }
 
 auto SipMessage::toHeader() const -> std::string {
-    return from_to_string(msg_->to);
+    osip_to_t* to = osip_message_get_to(msg_.get());
+    return from_to_string(to);
 }
 
 auto SipMessage::fromTag() const -> std::string {
-    if (msg_->from) {
+    osip_from_t* from = osip_message_get_from(msg_.get());
+    if (from) {
         osip_generic_param_t* tag = nullptr;
-        osip_from_get_tag(msg_->from, &tag);
+        osip_from_get_tag(from, &tag);
         if (tag && tag->gvalue) return tag->gvalue;
     }
     return {};
 }
 
 auto SipMessage::toTag() const -> std::string {
-    if (msg_->to) {
+    osip_to_t* to = osip_message_get_to(msg_.get());
+    if (to) {
         osip_generic_param_t* tag = nullptr;
-        osip_to_get_tag(msg_->to, &tag);
+        osip_to_get_tag(to, &tag);
         if (tag && tag->gvalue) return tag->gvalue;
     }
     return {};
 }
 
 void SipMessage::setToTag(const std::string& tag) {
-    if (msg_->to) {
-        osip_to_set_tag(msg_->to, osip_strdup(tag.c_str()));
+    osip_to_t* to = osip_message_get_to(msg_.get());
+    if (to) {
+        osip_to_set_tag(to, osip_strdup(tag.c_str()));
     }
 }
 
 auto SipMessage::cseq() const -> uint32_t {
-    if (msg_->cseq && msg_->cseq->number) {
-        return static_cast<uint32_t>(std::stoul(msg_->cseq->number));
+    osip_cseq_t* cseq = osip_message_get_cseq(msg_.get());
+    if (cseq && cseq->number) {
+        return static_cast<uint32_t>(std::stoul(cseq->number));
     }
     return 0;
 }
 
 auto SipMessage::cseqMethod() const -> std::string {
-    if (msg_->cseq && msg_->cseq->method) {
-        return msg_->cseq->method;
+    osip_cseq_t* cseq = osip_message_get_cseq(msg_.get());
+    if (cseq && cseq->method) {
+        return cseq->method;
     }
     return {};
 }
 
 void SipMessage::setCSeq(uint32_t seq, const std::string& method) {
-    auto seq_str = std::to_string(seq);
-    if (msg_->cseq) {
-        osip_cseq_free(msg_->cseq);
-        msg_->cseq = nullptr;
-    }
-    osip_cseq_t* cseq = nullptr;
-    osip_cseq_init(&cseq);
-    osip_cseq_set_number(cseq, osip_strdup(seq_str.c_str()));
-    osip_cseq_set_method(cseq, osip_strdup(method.c_str()));
-    msg_->cseq = cseq;
+    auto cseq_value = std::to_string(seq) + " " + method;
+    osip_message_set_cseq(msg_.get(), cseq_value.c_str());
 }
 
 auto SipMessage::topVia() const -> std::string {
@@ -288,7 +293,15 @@ auto SipMessage::topVia() const -> std::string {
 }
 
 void SipMessage::addVia(const std::string& via_str) {
-    osip_message_set_via(msg_.get(), via_str.c_str());
+    // Parse the Via header
+    osip_via_t* via = nullptr;
+    if (osip_via_init(&via) != 0) return;
+    if (osip_via_parse(via, via_str.c_str()) != 0) {
+        osip_via_free(via);
+        return;
+    }
+    // Insert at position 0 (top of list) per RFC 3261
+    osip_list_add(&msg_->vias, via, 0);
 }
 
 void SipMessage::removeTopVia() {
@@ -399,19 +412,21 @@ void SipMessage::setBody(const std::string& body_str, const std::string& content
 }
 
 auto SipMessage::maxForwards() const -> int {
-    if (msg_->max_forwards && msg_->max_forwards->value) {
-        return std::atoi(msg_->max_forwards->value);
+    // In osip2, Max-Forwards is stored as a generic header with lowercase name
+    // osip_message_header_get_byname returns the position (>=0) if found, -1 if not
+    osip_header_t* mf = nullptr;
+    int pos = 0;
+    int result = osip_message_header_get_byname(msg_.get(), "max-forwards", pos, &mf);
+    if (result >= 0 && mf && mf->hvalue) {
+        return std::stoi(mf->hvalue);
     }
     return -1;
 }
 
 void SipMessage::setMaxForwards(int value) {
+    removeHeader("max-forwards");
     auto val_str = std::to_string(value);
-    if (msg_->max_forwards) {
-        osip_max_forwards_free(msg_->max_forwards);
-        msg_->max_forwards = nullptr;
-    }
-    osip_message_set_max_forwards(msg_.get(), val_str.c_str());
+    addHeader("Max-Forwards", val_str);
 }
 
 void SipMessage::decrementMaxForwards() {
