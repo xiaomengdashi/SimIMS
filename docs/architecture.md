@@ -207,31 +207,64 @@ class UdpTransport {
 
 ### 4.1 IMS 注册流程
 
+以下流程描述基于真实运营网 IMS 注册（3GPP 标准流程），不依赖本项目实现细节。
+
+#### 4.1.1 详细步骤
+
+1. UE 建立 IMS 承载，并发现 P-CSCF（常见通过 PCO/DHCP/静态配置）。
+2. UE 向 P-CSCF 发送首次 `REGISTER`（不带有效鉴权响应），声明 `Contact` 与能力标签（如 `+sip.instance`、`+g.3gpp.icsi-ref`）。
+3. P-CSCF 前转到归属网络；I-CSCF 通过 Cx `UAR/UAA` 向 HSS 查询用户归属并选择/确认 S-CSCF。
+4. I-CSCF 将 `REGISTER` 转发给选定 S-CSCF。
+5. S-CSCF 触发 AKA 鉴权准备：通过 Cx `MAR/MAA` 向 HSS 获取鉴权向量（RAND/AUTN/XRES/CK/IK）。
+6. S-CSCF 返回 `401 Unauthorized`，携带 `WWW-Authenticate`（AKA challenge）；响应经 I-CSCF/P-CSCF 回到 UE。
+7. UE 使用 USIM/ISIM 计算鉴权响应，发送第二次 `REGISTER`，在 `Authorization` 中携带响应结果。
+8. S-CSCF 校验鉴权成功后，通过 `SAR/SAA` 完成注册状态更新并获取用户签约数据（如 IFC、关联身份）。
+9. S-CSCF 建立注册绑定（IMPU/IMPI/Contact/Path/过期时间等），返回 `200 OK`。
+10. `200 OK` 通常包含 `Service-Route`、`P-Associated-URI`、`Expires` 等头字段，最终回到 UE，UE 进入已注册状态。
+11. 注册后 UE 周期性发送 re-`REGISTER` 保活；去注册时发送 `REGISTER` + `Expires: 0`。
+
+#### 4.1.2 Mermaid 时序图
+
+```mermaid
+sequenceDiagram
+    participant UE
+    participant P as P-CSCF
+    participant I as I-CSCF
+    participant S as S-CSCF
+    participant H as HSS/UDM
+
+    Note over UE,P: IMS 承载建立与 P-CSCF 发现
+    UE->>P: REGISTER (首次, 无有效鉴权响应)
+    P->>I: REGISTER
+    I->>H: UAR (Cx)
+    H-->>I: UAA (分配/确认 S-CSCF)
+    I->>S: REGISTER
+
+    S->>H: MAR (Cx, 请求 AKA 向量)
+    H-->>S: MAA (RAND/AUTN/XRES/CK/IK)
+    S-->>I: 401 Unauthorized + WWW-Authenticate
+    I-->>P: 401 Unauthorized
+    P-->>UE: 401 Unauthorized
+
+    UE->>P: REGISTER + Authorization (AKA 响应)
+    P->>I: REGISTER + Authorization
+    I->>S: REGISTER + Authorization
+    S->>H: SAR (注册状态更新)
+    H-->>S: SAA (用户签约数据)
+    S-->>I: 200 OK (Service-Route, P-Associated-URI, Expires)
+    I-->>P: 200 OK
+    P-->>UE: 200 OK
+
+    Note over UE,S: 注册完成，后续 re-REGISTER 保活
 ```
-UE              P-CSCF          I-CSCF          S-CSCF          HSS
-│                │                │                │               │
-│── REGISTER ──►│                │                │               │
-│                │── REGISTER ──►│                │               │
-│                │  (+Path)      │── UAR ────────────────────────►│
-│                │               │◄── UAA(S-CSCF=X) ─────────────│
-│                │               │── REGISTER ──►│                │
-│                │               │               │── MAR ────────►│
-│                │               │               │◄── MAA(AV) ────│
-│                │               │◄── 401 ───────│                │
-│                │◄── 401 ───────│  (challenge)  │                │
-│◄── 401 ────────│                │                │               │
-│  (WWW-Auth)   │                │                │               │
-│                │                │                │               │
-│── REGISTER ──►│                │                │               │
-│  (Auth resp)  │── REGISTER ──►│── REGISTER ──►│                │
-│                │               │               │  verify RES    │
-│                │               │               │── SAR ────────►│
-│                │               │               │◄── SAA(profile)│
-│                │               │◄── 200 OK ────│                │
-│                │◄── 200 OK ────│               │                │
-│◄── 200 OK ─────│                │                │               │
-│  (Svc-Route)  │                │                │               │
-```
+
+#### 4.1.3 关键字段与作用
+
+- `WWW-Authenticate`：网络向 UE 下发 AKA 挑战。
+- `Authorization`：UE 回传鉴权响应结果。
+- `Service-Route`：指示 UE 后续业务请求应经过的服务路由。
+- `P-Associated-URI`：网络确认并下发用户可用公共身份集合。
+- `Path`：记录接入路径，便于后续请求回到正确接入点。
 
 ### 4.2 基本语音呼叫流程
 
