@@ -102,7 +102,8 @@ ims/
 ├── config/ims.yaml         # 配置模板
 ├── docs/                   # 文档
 │   ├── requirements.md     # 需求分析
-│   └── architecture.md     # 架构设计
+│   ├── architecture.md     # 架构设计
+│   └── dns.md              # DNS 使用说明（局域网）
 ├── include/ims/            # 公共头文件
 │   ├── common/             # 基础设施（types, config, logger, io_context）
 │   ├── sip/                # SIP 协议栈（message, transport, transaction, dialog, stack）
@@ -159,8 +160,10 @@ media:
 dns:
   servers:
     - 127.0.0.1
-  timeout: 3000
+  timeout_ms: 3000
 ```
+
+DNS 局域网部署与记录示例见：`docs/dns.md`。
 
 ## 网元端口
 

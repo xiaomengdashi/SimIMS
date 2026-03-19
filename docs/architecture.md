@@ -268,46 +268,97 @@ sequenceDiagram
 
 ### 4.2 基本语音呼叫流程
 
+以下流程描述基于真实运营网 IMS 语音呼叫（VoLTE/VoNR）常见实践，不依赖本项目实现细节。
+
+#### 4.2.1 MO 呼叫详细步骤（主叫发起）
+
+1. 主叫 UE-A 向本地 P-CSCF-A 发送 `INVITE`（含 SDP offer）。
+2. P-CSCF-A 可进行 SDP 锚定/改写，并将请求送入归属侧（通常经 I-CSCF 再到主叫侧 S-CSCF）。
+3. S-CSCF 根据被叫号码执行路由决策（含 ENUM/本地路由/互联策略），定位被叫归属网络入口。
+4. 被叫侧 I-CSCF 通过 `LIR/LIA` 查询 HSS，定位被叫当前 serving S-CSCF。
+5. 被叫侧 S-CSCF 根据注册绑定（含 `Contact`/`Path`）将 `INVITE` 下发到被叫 P-CSCF-B，再到 UE-B。
+6. UE-B 回临时响应（`180 Ringing` 或 `183 Session Progress`，可带早期媒体 SDP）。
+7. 若使用可靠临时响应，主叫侧发 `PRACK`，对端回 `200 PRACK`。
+8. UE-B 接听后返回 `200 OK`（含最终 SDP answer），经被叫侧到主叫侧返回 UE-A。
+9. UE-A 发送 `ACK`，对话建立完成。
+10. 媒体面在锚点间建立双向 RTP/RTCP；策略控制面可通过 Rx/N5 触发 QoS 保障。
+11. 任一方挂断发 `BYE`，对端回 `200 OK`，网络释放媒体与策略资源。
+
+#### 4.2.2 Mermaid 时序图（MO 到释放）
+
+```mermaid
+sequenceDiagram
+    participant A as UE-A
+    participant PA as P-CSCF-A
+    participant IA as I-CSCF-A
+    participant SA as S-CSCF-A
+    participant IB as I-CSCF-B
+    participant SB as S-CSCF-B
+    participant PB as P-CSCF-B
+    participant B as UE-B
+    participant H as HSS/UDM
+    participant P as PCF
+
+    A->>PA: INVITE + SDP offer
+    PA->>IA: INVITE
+    IA->>SA: INVITE
+    SA->>IB: INVITE (被叫域路由)
+    IB->>H: LIR (查询被叫 serving S-CSCF)
+    H-->>IB: LIA
+    IB->>SB: INVITE
+    SB->>PB: INVITE
+    PB->>B: INVITE
+
+    B-->>PB: 183 Session Progress (可带 SDP)
+    PB-->>SB: 183
+    SB-->>IB: 183
+    IB-->>SA: 183
+    SA-->>IA: 183
+    IA-->>PA: 183
+    PA-->>A: 183
+
+    A->>PA: PRACK (可选, 100rel)
+    PA->>IA: PRACK
+    IA->>SA: PRACK
+    SA->>IB: PRACK
+    IB->>SB: PRACK
+    SB->>PB: PRACK
+    PB->>B: PRACK
+    B-->>A: 200 PRACK (经 IMS 链路返回)
+
+    B-->>PB: 200 OK + SDP answer
+    PB-->>SB: 200 OK
+    SB-->>IB: 200 OK
+    IB-->>SA: 200 OK
+    SA-->>IA: 200 OK
+    IA-->>PA: 200 OK
+    PA-->>A: 200 OK
+    A->>PA: ACK
+    PA->>IA: ACK
+    IA->>SA: ACK
+    SA->>IB: ACK
+    IB->>SB: ACK
+    SB->>PB: ACK
+    PB->>B: ACK
+
+    Note over A,B: RTP/RTCP 双向媒体传输
+    PA->>P: 策略/QoS 交互 (AAR/STR, 视部署)
+
+    A->>PA: BYE
+    PA->>IA: BYE
+    IA->>SA: BYE
+    SA->>IB: BYE
+    IB->>SB: BYE
+    SB->>PB: BYE
+    PB->>B: BYE
+    B-->>A: 200 OK (经 IMS 链路返回)
 ```
-UE-A         P-CSCF-A      S-CSCF      P-CSCF-B       UE-B
-│              │              │              │              │
-│── INVITE ──►│              │              │              │
-│  (SDP-A)    │─ rtpengine  │              │              │
-│              │  offer      │              │              │
-│              │── INVITE ──►│              │              │
-│              │  (SDP-A')   │── INVITE ──►│              │
-│              │              │  (SDP-A')   │── INVITE ──►│
-│              │              │              │  (SDP-A')   │
-│              │              │              │              │
-│              │              │              │◄── 183 ─────│
-│              │              │◄── 183 ─────│  (SDP-B)    │
-│              │◄── 183 ─────│              │              │
-│              │─ rtpengine  │              │              │
-│              │  answer     │              │              │
-│              │─ Rx AAR ──► PCF           │              │
-│              │  (QoS 5QI=1)│              │              │
-│◄── 183 ─────│              │              │              │
-│  (SDP-B')   │              │              │              │
-│              │              │              │              │
-│── PRACK ───►│── PRACK ───►│── PRACK ───►│── PRACK ───►│
-│◄── 200 ─────│◄── 200 ─────│◄── 200 ─────│◄── 200 ─────│
-│              │              │              │              │
-│              │              │              │◄── 200 OK ──│
-│              │              │◄── 200 OK ──│  (answer)   │
-│              │◄── 200 OK ──│              │              │
-│◄── 200 OK ──│              │              │              │
-│              │              │              │              │
-│── ACK ──────│── ACK ──────│── ACK ──────│── ACK ──────│
-│              │              │              │              │
-│◄════════════ RTP (via rtpengine) ════════════════════►│
-│              │              │              │              │
-│── BYE ──────│── BYE ──────│── BYE ──────│── BYE ──────│
-│              │─ rtpengine  │              │              │
-│              │  delete     │              │              │
-│              │─ Rx STR ──► PCF           │              │
-│              │◄── 200 ─────│◄── 200 ─────│◄── 200 ─────│
-│◄── 200 ─────│              │              │              │
-```
+
+#### 4.2.3 MT 呼叫说明（被叫视角）
+
+- 对被叫 UE-B 来说，MT 呼叫是从被叫侧 P-CSCF 收到下行 `INVITE` 开始。
+- 在 IMS 核心里，关键前置步骤是被叫侧 `LIR/LIA` 定位 serving S-CSCF，以及按注册绑定将请求送达当前接入点。
+- 后续会话建立与释放（`183/PRACK/200/ACK/BYE`）与 MO 流程在信令结构上基本对称。
 
 ---
 
