@@ -142,6 +142,10 @@ auto SipMessage::method() const -> std::string {
     return method;  // Returns internal pointer, do NOT free
 }
 
+void SipMessage::setMethod(const std::string& method) {
+    osip_message_set_method(msg_.get(), osip_strdup(method.c_str()));
+}
+
 auto SipMessage::statusCode() const -> int {
     if (!isResponse()) return 0;
     return osip_message_get_status_code(msg_.get());
@@ -231,9 +235,37 @@ auto SipMessage::fromHeader() const -> std::string {
     return from_to_string(from);
 }
 
+void SipMessage::setFromHeader(const std::string& from) {
+    osip_from_t* parsed = nullptr;
+    if (osip_from_init(&parsed) != 0) return;
+    if (osip_from_parse(parsed, from.c_str()) != 0) {
+        osip_from_free(parsed);
+        return;
+    }
+
+    if (msg_->from) {
+        osip_from_free(msg_->from);
+    }
+    msg_->from = parsed;
+}
+
 auto SipMessage::toHeader() const -> std::string {
     osip_to_t* to = osip_message_get_to(msg_.get());
     return from_to_string(to);
+}
+
+void SipMessage::setToHeader(const std::string& to) {
+    osip_to_t* parsed = nullptr;
+    if (osip_to_init(&parsed) != 0) return;
+    if (osip_to_parse(parsed, to.c_str()) != 0) {
+        osip_to_free(parsed);
+        return;
+    }
+
+    if (msg_->to) {
+        osip_to_free(msg_->to);
+    }
+    msg_->to = parsed;
 }
 
 auto SipMessage::fromTag() const -> std::string {
@@ -447,7 +479,7 @@ auto createResponse(const SipMessage& request, int status_code,
     resp.setStatus(status_code, reason);
 
     // Copy Via headers
-    for (int i = 0; i < request.viaCount(); ++i) {
+    for (int i = request.viaCount() - 1; i >= 0; --i) {
         osip_via_t* via = nullptr;
         if (osip_message_get_via(request.raw(), i, &via) == 0 && via) {
             char* buf = nullptr;
@@ -472,6 +504,11 @@ auto createResponse(const SipMessage& request, int status_code,
         resp.raw()->to = to_clone;
     }
 
+    // RFC 3261 8.2.6.2: all non-100 responses need a To-tag
+    if (status_code > 100 && resp.toTag().empty()) {
+        resp.setToTag(generateTag());
+    }
+
     // Copy Call-ID
     if (request.raw()->call_id) {
         osip_call_id_t* cid_clone = nullptr;
@@ -486,6 +523,17 @@ auto createResponse(const SipMessage& request, int status_code,
         resp.raw()->cseq = cseq_clone;
     }
 
+    return result;
+}
+
+auto createRequest(const std::string& method, const std::string& request_uri) -> Result<SipMessage> {
+    auto result = SipMessage::create();
+    if (!result) return std::unexpected(result.error());
+
+    auto& req = *result;
+    osip_message_set_version(req.raw(), osip_strdup("SIP/2.0"));
+    req.setMethod(method);
+    req.setRequestUri(request_uri);
     return result;
 }
 

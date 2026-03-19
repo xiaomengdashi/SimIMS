@@ -1,6 +1,9 @@
 #include "ims/sip/transaction.hpp"
 #include "ims/common/logger.hpp"
 
+#include <algorithm>
+#include <cctype>
+
 namespace ims::sip {
 
 using namespace std::chrono_literals;
@@ -30,6 +33,10 @@ auto ServerTransaction::request() const -> const SipMessage& {
     return request_;
 }
 
+auto ServerTransaction::source() const -> const Endpoint& {
+    return source_;
+}
+
 auto ServerTransaction::state() const -> TransactionState {
     return state_;
 }
@@ -41,6 +48,11 @@ auto ServerTransaction::branch() const -> const std::string& {
 auto ServerTransaction::sendResponse(SipMessage response) -> VoidResult {
     int code = response.statusCode();
 
+    auto response_copy = response.clone();
+    if (response_copy) {
+        last_response_ = std::move(*response_copy);
+    }
+
     auto result = transport_->send(response, source_);
     if (!result) {
         IMS_LOG_ERROR("Failed to send response: {}", result.error().message);
@@ -50,22 +62,50 @@ auto ServerTransaction::sendResponse(SipMessage response) -> VoidResult {
     if (code >= 100 && code < 200) {
         state_ = TransactionState::kProceeding;
     } else if (code >= 200) {
-        state_ = TransactionState::kCompleted;
-        startTimers();
+        bool is_invite = (request_.method() == "INVITE");
+        if (is_invite && code >= 200 && code < 300) {
+            // 2xx INVITE final responses are handled outside INVITE server transaction.
+            state_ = TransactionState::kTerminated;
+            if (on_terminated_) on_terminated_();
+        } else {
+            state_ = TransactionState::kCompleted;
+            startTimers(code);
+        }
     }
 
     IMS_LOG_DEBUG("Server txn sent {} response, state={}", code, static_cast<int>(state_));
     return {};
 }
 
+auto ServerTransaction::retransmitLastResponse() -> VoidResult {
+    if (!last_response_) {
+        return std::unexpected(ErrorInfo{
+            ErrorCode::kSipTransactionFailed, "No response available for retransmission"});
+    }
+
+    IMS_LOG_DEBUG("Retransmitting last response for branch={}", branch_);
+    return transport_->send(*last_response_, source_);
+}
+
+void ServerTransaction::acknowledgeAck() {
+    if (request_.method() != "INVITE") return;
+    if (state_ != TransactionState::kCompleted) return;
+
+    IMS_LOG_DEBUG("ACK matched INVITE server txn, branch={}", branch_);
+    timer_h_.cancel();
+    state_ = TransactionState::kConfirmed;
+    state_ = TransactionState::kTerminated;
+    if (on_terminated_) on_terminated_();
+}
+
 void ServerTransaction::onTerminated(std::function<void()> cb) {
     on_terminated_ = std::move(cb);
 }
 
-void ServerTransaction::startTimers() {
+void ServerTransaction::startTimers(int final_response_code) {
     bool is_invite = (request_.method() == "INVITE");
 
-    if (is_invite) {
+    if (is_invite && final_response_code >= 300) {
         // Timer H: wait for ACK
         timer_h_.expires_after(kTimerH);
         timer_h_.async_wait([this](boost::system::error_code ec) {
@@ -125,12 +165,17 @@ void ClientTransaction::start() {
     state_ = TransactionState::kTrying;
     retransmit_count_ = 0;
 
-    // Start Timer A (retransmission) for UDP
-    timer_a_.expires_after(kTimerT1);
-    timer_a_.async_wait([this](boost::system::error_code ec) {
-        if (ec) return;
-        retransmit();
-    });
+    auto transport = dest_.transport;
+    std::transform(transport.begin(), transport.end(), transport.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    if (transport == "udp" || transport.empty()) {
+        // Start Timer A (retransmission) for UDP.
+        timer_a_.expires_after(kTimerT1);
+        timer_a_.async_wait([this](boost::system::error_code ec) {
+            if (ec) return;
+            retransmit();
+        });
+    }
 
     // Start Timer B (transaction timeout)
     timer_b_.expires_after(kTimerB);
@@ -224,7 +269,15 @@ auto TransactionLayer::sendRequest(SipMessage request, const Endpoint& dest,
 
     auto txn = std::make_shared<ClientTransaction>(
         std::move(request), transport_, dest, io_);
-    txn->onResponse(std::move(on_response));
+    txn->onResponse([this, key, cb = std::move(on_response)](const SipMessage& response) {
+        if (cb) {
+            cb(response);
+        }
+        if (response.statusCode() >= 200) {
+            std::lock_guard lock(mutex_);
+            client_txns_.erase(key);
+        }
+    });
     txn->onTimeout([this, key]() {
         std::lock_guard lock(mutex_);
         client_txns_.erase(key);
@@ -249,24 +302,46 @@ void TransactionLayer::processMessage(SipMessage msg, Endpoint source) {
             IMS_LOG_WARN("No matching client transaction for response {}", msg.statusCode());
         }
     } else if (msg.isRequest()) {
+        if (msg.method() == "ACK") {
+            auto ack_invite_key = msg.viaBranch() + ":INVITE";
+            std::shared_ptr<ServerTransaction> invite_txn;
+            {
+                std::lock_guard lock(mutex_);
+                auto it = server_txns_.find(ack_invite_key);
+                if (it != server_txns_.end()) {
+                    invite_txn = it->second;
+                }
+            }
+            if (invite_txn) {
+                invite_txn->acknowledgeAck();
+                return;
+            }
+        }
+
         auto key = getTransactionKey(msg);
 
         // Check for retransmission of existing server transaction
+        std::shared_ptr<ServerTransaction> existing_txn;
         {
             std::lock_guard lock(mutex_);
             auto it = server_txns_.find(key);
             if (it != server_txns_.end()) {
-                IMS_LOG_DEBUG("Request retransmission for existing server txn, branch={}",
-                    it->second->branch());
-                return;
+                existing_txn = it->second;
             }
+        }
+        if (existing_txn) {
+            IMS_LOG_DEBUG("Request retransmission for existing server txn, branch={}",
+                existing_txn->branch());
+            auto retransmit_result = existing_txn->retransmitLastResponse();
+            if (!retransmit_result) {
+                IMS_LOG_DEBUG("No cached response to retransmit for key={}", key);
+            }
+            return;
         }
 
         // Create new server transaction
         auto txn = std::make_shared<ServerTransaction>(
             std::move(msg), transport_, std::move(source), io_);
-
-        auto branch = txn->branch();
 
         txn->onTerminated([this, key]() {
             std::lock_guard lock(mutex_);

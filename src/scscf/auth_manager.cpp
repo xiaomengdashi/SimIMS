@@ -2,7 +2,10 @@
 #include "ims/common/logger.hpp"
 
 #include <algorithm>
+#include <boost/uuid/detail/md5.hpp>
+#include <cctype>
 #include <format>
+#include <iomanip>
 #include <sstream>
 
 namespace ims::scscf {
@@ -24,6 +27,45 @@ auto trim(const std::string& s) -> std::string {
     auto end = s.find_last_not_of(" \t");
     if (start == std::string::npos) return {};
     return s.substr(start, end - start + 1);
+}
+
+auto toLower(std::string value) -> std::string {
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    return value;
+}
+
+auto bytesToHex(const std::vector<uint8_t>& data) -> std::string {
+    std::ostringstream oss;
+    oss << std::hex << std::setfill('0');
+    for (auto byte : data) {
+        oss << std::setw(2) << static_cast<unsigned int>(byte);
+    }
+    return oss.str();
+}
+
+auto md5Hex(const std::string& input) -> std::string {
+    boost::uuids::detail::md5 hash;
+    boost::uuids::detail::md5::digest_type digest{};
+
+    hash.process_bytes(input.data(), input.size());
+    hash.get_digest(digest);
+
+    // boost::uuids::detail::md5 stores words in host uint32 representation.
+    // Emit low byte first for each word to get standard MD5 hex output.
+    std::ostringstream oss;
+    oss << std::hex << std::setfill('0');
+    for (auto word : digest) {
+        auto b0 = static_cast<uint8_t>(word & 0xFF);
+        auto b1 = static_cast<uint8_t>((word >> 8) & 0xFF);
+        auto b2 = static_cast<uint8_t>((word >> 16) & 0xFF);
+        auto b3 = static_cast<uint8_t>((word >> 24) & 0xFF);
+        oss << std::setw(2) << static_cast<unsigned int>(b0)
+            << std::setw(2) << static_cast<unsigned int>(b1)
+            << std::setw(2) << static_cast<unsigned int>(b2)
+            << std::setw(2) << static_cast<unsigned int>(b3);
+    }
+    return oss.str();
 }
 
 } // anonymous namespace
@@ -93,7 +135,8 @@ auto AuthManager::buildChallenge(const ims::diameter::AuthVector& av,
 }
 
 auto AuthManager::verifyResponse(const std::string& auth_header,
-                                  const ims::diameter::AuthVector& av) -> bool {
+                                  const ims::diameter::AuthVector& av,
+                                  const std::string& method) -> bool {
     auto params_result = parseAuthorization(auth_header);
     if (!params_result) {
         IMS_LOG_WARN("Failed to parse Authorization header: {}", params_result.error().message);
@@ -102,21 +145,43 @@ auto AuthManager::verifyResponse(const std::string& auth_header,
 
     const auto& params = *params_result;
 
-    // In IMS AKA, the client response contains XRES (or a hash of it).
-    // For simplified verification: decode client response and compare with XRES.
-    auto client_response = base64Decode(params.response);
-
-    // Compare client response with expected XRES
-    // In a full implementation, we'd compute the Digest hash using HA1 derived from AKA.
-    // For now, compare decoded response bytes with XRES directly.
-    if (client_response.size() != av.xres.size()) {
-        IMS_LOG_DEBUG("Response size mismatch: got {} expected {}", 
-            client_response.size(), av.xres.size());
+    if (params.response.empty() || params.nonce.empty() || params.uri.empty()) {
+        IMS_LOG_WARN("Authorization header missing required digest fields");
         return false;
     }
 
-    bool match = std::equal(client_response.begin(), client_response.end(), av.xres.begin());
-    IMS_LOG_DEBUG("AKA response verification: {}", match ? "success" : "failure");
+    // Nonce must match the challenge generated from RAND||AUTN.
+    std::vector<uint8_t> nonce_data;
+    nonce_data.reserve(av.rand.size() + av.autn.size());
+    nonce_data.insert(nonce_data.end(), av.rand.begin(), av.rand.end());
+    nonce_data.insert(nonce_data.end(), av.autn.begin(), av.autn.end());
+    auto expected_nonce = base64Encode(nonce_data);
+    if (params.nonce != expected_nonce) {
+        IMS_LOG_WARN("Authorization nonce mismatch");
+        return false;
+    }
+
+    // AKAv1-MD5 uses RES as digest password.
+    auto xres_hex = bytesToHex(av.xres);
+    auto ha1 = md5Hex(std::format("{}:{}:{}", params.username, params.realm, xres_hex));
+    auto ha2 = md5Hex(std::format("{}:{}", method, params.uri));
+
+    std::string expected_response;
+    if (!params.qop.empty()) {
+        if (params.nc.empty() || params.cnonce.empty()) {
+            IMS_LOG_WARN("Authorization qop present but nc/cnonce missing");
+            return false;
+        }
+
+        expected_response = md5Hex(std::format("{}:{}:{}:{}:{}:{}",
+                                               ha1, params.nonce, params.nc,
+                                               params.cnonce, params.qop, ha2));
+    } else {
+        expected_response = md5Hex(std::format("{}:{}:{}", ha1, params.nonce, ha2));
+    }
+
+    bool match = (toLower(params.response) == toLower(expected_response));
+    IMS_LOG_DEBUG("AKA Digest verification: {}", match ? "success" : "failure");
     return match;
 }
 
@@ -144,7 +209,7 @@ auto AuthManager::parseAuthorization(const std::string& header) -> Result<AuthPa
         auto eq = token.find('=');
         if (eq == std::string::npos) continue;
 
-        auto key = trim(token.substr(0, eq));
+        auto key = toLower(trim(token.substr(0, eq)));
         auto value = trimQuotes(trim(token.substr(eq + 1)));
 
         if (key == "username") params.username = value;
@@ -153,6 +218,9 @@ auto AuthManager::parseAuthorization(const std::string& header) -> Result<AuthPa
         else if (key == "response") params.response = value;
         else if (key == "uri") params.uri = value;
         else if (key == "algorithm") params.algorithm = value;
+        else if (key == "qop") params.qop = value;
+        else if (key == "nc") params.nc = value;
+        else if (key == "cnonce") params.cnonce = value;
     }
 
     if (params.username.empty()) {

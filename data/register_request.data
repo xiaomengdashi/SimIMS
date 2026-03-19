@@ -1,0 +1,94 @@
+Session Initiation Protocol (REGISTER)
+    Request-Line: REGISTER sip:ims.mnc011.mcc460.3gppnetwork.org SIP/2.0
+        Method: REGISTER
+        Request-URI: sip:ims.mnc011.mcc460.3gppnetwork.org
+            Request-URI Host Part: ims.mnc011.mcc460.3gppnetwork.org
+        [Resent Packet: False]
+    Message Header
+        From: <sip:460112024122023@ims.mnc011.mcc460.3gppnetwork.org>;tag=849091858
+            SIP from address: sip:460112024122023@ims.mnc011.mcc460.3gppnetwork.org
+                SIP from address User Part: 460112024122023
+                SIP from address Host Part: ims.mnc011.mcc460.3gppnetwork.org
+            SIP from tag: 849091858
+        To: <sip:460112024122023@ims.mnc011.mcc460.3gppnetwork.org>
+            SIP to address: sip:460112024122023@ims.mnc011.mcc460.3gppnetwork.org
+                SIP to address User Part: 460112024122023
+                SIP to address Host Part: ims.mnc011.mcc460.3gppnetwork.org
+        CSeq: 849091855 REGISTER
+            Sequence Number: 849091855
+            Method: REGISTER
+        Call-ID: 849091855_1207149580@190:186:75:89c4:5c9b:30ff:fee4:e60f
+        [Generated Call-ID: 849091855_1207149580@190:186:75:89c4:5c9b:30ff:fee4:e60f]
+        Max-Forwards: 70
+        Contact: <sip:[190:186:75:89c4:5c9b:30ff:fee4:e60f]:5060>;+g.3gpp.accesstype="cellular2";audio;+g.3gpp.smsip;video;+g.3gpp.icsi-ref="urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel";+sip.instance="<urn:gsma:imei:86700005-005046-0>"
+            Contact URI: sip:[190:186:75:89c4:5c9b:30ff:fee4:e60f]:5060
+                Contact URI Host Part: [190:186:75:89c4:5c9b:30ff:fee4:e60f]
+                Contact URI Host Port: 5060
+            Contact parameter: +g.3gpp.accesstype="cellular2"
+            Contact parameter: audio
+            Contact parameter: +g.3gpp.smsip
+            Contact parameter: video
+            Contact parameter: +g.3gpp.icsi-ref="urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel"
+            Contact parameter: +sip.instance="<urn:gsma:imei:86700005-005046-0>"\r\n
+        Via: SIP/2.0/TCP [190:186:75:89c4:5c9b:30ff:fee4:e60f]:5060;branch=z9hG4bK2193228166
+            Transport: TCP
+            Sent-by Address: 190:186:75:89c4:5c9b:30ff:fee4:e60f
+            Sent-by port: 5060
+            Branch: z9hG4bK2193228166
+        Expires: 600000
+        Require: sec-agree
+        Proxy-Require: sec-agree
+        Supported: path,sec-agree
+        Allow: INVITE,BYE,CANCEL,ACK,NOTIFY,UPDATE,PRACK,INFO,MESSAGE,OPTIONS
+        Authorization: Digest uri="sip:ims.mnc011.mcc460.3gppnetwork.org",username="460112024122023@ims.mnc011.mcc460.3gppnetwork.org",response="",realm="ims.mnc011.mcc460.3gppnetwork.org",nonce=""
+            Authentication Scheme: Digest
+            Authentication URI: "sip:ims.mnc011.mcc460.3gppnetwork.org"
+            Username: "460112024122023@ims.mnc011.mcc460.3gppnetwork.org"
+            Digest Authentication Response: ""
+            Realm: "ims.mnc011.mcc460.3gppnetwork.org"
+            Nonce Value: ""
+        User-Agent: nokia_nokia A2022P_RKQ1.210503.001
+        Security-Client […]: ipsec-3gpp; alg=hmac-md5-96; ealg=des-ede3-cbc; spi-c=73991669; spi-s=3963789885; port-c=42184; port-s=43002,ipsec-3gpp; alg=hmac-md5-96; ealg=aes-cbc; spi-c=73991669; spi-s=3963789885; port-c=42184; port-s=43002,ips
+            [Security-mechanism]: ipsec-3gpp
+            alg: hmac-md5-96
+            ealg: des-ede3-cbc
+            spi-c: 73991669 (0x046905f5)
+            spi-s: 3963789885 (0xec42a23d)
+            port-c: 42184
+            port-s: 43002
+            [Security-mechanism]: ipsec-3gpp
+            alg: hmac-md5-96
+            ealg: aes-cbc
+            spi-c: 73991669 (0x046905f5)
+            spi-s: 3963789885 (0xec42a23d)
+            port-c: 42184
+            port-s: 43002
+            [Security-mechanism]: ipsec-3gpp
+            alg: hmac-md5-96
+            ealg: null
+            spi-c: 73991669 (0x046905f5)
+            spi-s: 3963789885 (0xec42a23d)
+            port-c: 42184
+            port-s: 43002
+            [Security-mechanism]: ipsec-3gpp
+            alg: hmac-sha-1-96
+            ealg: des-ede3-cbc
+            spi-c: 73991669 (0x046905f5)
+            spi-s: 3963789885 (0xec42a23d)
+            port-c: 42184
+            port-s: 43002
+            [Security-mechanism]: ipsec-3gpp
+            alg: hmac-sha-1-96
+            ealg: aes-cbc
+            spi-c: 73991669 (0x046905f5)
+            spi-s: 3963789885 (0xec42a23d)
+            port-c: 42184
+            port-s: 43002
+            [Security-mechanism]: ipsec-3gpp
+            alg: hmac-sha-1-96
+            ealg: null
+            spi-c: 73991669 (0x046905f5)
+            spi-s: 3963789885 (0xec42a23d)
+            port-c: 42184
+            port-s: 43002
+        Content-Length: 0

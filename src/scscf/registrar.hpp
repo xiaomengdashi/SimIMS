@@ -7,8 +7,10 @@
 
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace ims::scscf {
 
@@ -28,9 +30,16 @@ private:
 
     void verifyAndRegister(ims::sip::SipMessage& request,
                            std::shared_ptr<ims::sip::ServerTransaction> txn);
+    bool tryHandleReregister(ims::sip::SipMessage& request,
+                             std::shared_ptr<ims::sip::ServerTransaction> txn);
 
     void handleDeregister(ims::sip::SipMessage& request,
                           std::shared_ptr<ims::sip::ServerTransaction> txn);
+    void sendRegisterOk(ims::sip::SipMessage& request,
+                        std::shared_ptr<ims::sip::ServerTransaction> txn,
+                        uint32_t expires,
+                        const std::optional<std::string>& contact,
+                        const std::vector<std::string>& associated_impus);
 
     auto extractImpi(const ims::sip::SipMessage& msg) const -> std::string;
     auto extractImpu(const ims::sip::SipMessage& msg) const -> std::string;

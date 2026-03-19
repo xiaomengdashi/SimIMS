@@ -24,6 +24,12 @@ private:
                     ims::sip::SipMessage& request);
     void onInvite(std::shared_ptr<ims::sip::ServerTransaction> txn,
                   ims::sip::SipMessage& request);
+    void onSubscribe(std::shared_ptr<ims::sip::ServerTransaction> txn,
+                     ims::sip::SipMessage& request);
+    void forwardStateful(std::shared_ptr<ims::sip::ServerTransaction> txn,
+                         ims::sip::SipMessage& request,
+                         const ims::sip::Endpoint& dest,
+                         bool add_record_route = false);
 
     ims::IcscfConfig config_;
     std::unique_ptr<ims::sip::SipStack> sip_stack_;

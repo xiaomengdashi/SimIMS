@@ -5,7 +5,7 @@ namespace ims::sip {
 
 SipStack::SipStack(boost::asio::io_context& io, const std::string& bind_addr, Port port)
     : io_(io)
-    , transport_(std::make_shared<UdpTransport>(io, bind_addr, port)) {
+    , transport_(std::make_shared<DualTransport>(io, bind_addr, port)) {
     txn_layer_ = std::make_unique<TransactionLayer>(io, transport_);
 }
 

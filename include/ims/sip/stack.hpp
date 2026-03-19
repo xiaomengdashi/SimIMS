@@ -41,7 +41,7 @@ private:
     void handleRequest(std::shared_ptr<ServerTransaction> txn);
 
     boost::asio::io_context& io_;
-    std::shared_ptr<UdpTransport> transport_;
+    std::shared_ptr<ITransport> transport_;
     std::unique_ptr<TransactionLayer> txn_layer_;
     DialogManager dialog_mgr_;
     std::unordered_map<std::string, RequestHandler> method_handlers_;

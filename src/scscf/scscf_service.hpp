@@ -30,6 +30,10 @@ private:
                ims::sip::SipMessage& request);
     void onCancel(std::shared_ptr<ims::sip::ServerTransaction> txn,
                   ims::sip::SipMessage& request);
+    void onSubscribe(std::shared_ptr<ims::sip::ServerTransaction> txn,
+                     ims::sip::SipMessage& request);
+    void sendInitialNotify(const ims::sip::SipMessage& subscribe,
+                           const std::string& to_tag);
 
     ims::ScscfConfig config_;
     std::unique_ptr<ims::sip::SipStack> sip_stack_;

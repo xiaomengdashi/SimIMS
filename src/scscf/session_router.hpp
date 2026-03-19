@@ -37,6 +37,7 @@ private:
         std::string callee_impu;
         ims::sip::Endpoint caller_endpoint;
         ims::sip::Endpoint callee_endpoint;
+        std::string callee_invite_branch;
     };
 
     auto lookupCallee(const std::string& request_uri)

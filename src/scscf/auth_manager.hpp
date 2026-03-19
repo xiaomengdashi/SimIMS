@@ -16,7 +16,8 @@ public:
 
     /// Verify client response against expected xres
     static auto verifyResponse(const std::string& auth_header,
-                               const ims::diameter::AuthVector& av) -> bool;
+                               const ims::diameter::AuthVector& av,
+                               const std::string& method) -> bool;
 
     /// Parsed Authorization header fields
     struct AuthParams {
@@ -26,6 +27,9 @@ public:
         std::string response;
         std::string uri;
         std::string algorithm;
+        std::string qop;
+        std::string nc;
+        std::string cnonce;
     };
 
     /// Parse Authorization header to extract fields

@@ -31,6 +31,7 @@ public:
     bool isResponse() const;
 
     auto method() const -> std::string;
+    void setMethod(const std::string& method);
     auto requestUri() const -> std::string;
     void setRequestUri(const std::string& uri);
 
@@ -47,7 +48,9 @@ public:
     void setCallId(const std::string& value);
 
     auto fromHeader() const -> std::string;
+    void setFromHeader(const std::string& from);
     auto toHeader() const -> std::string;
+    void setToHeader(const std::string& to);
     auto fromTag() const -> std::string;
     auto toTag() const -> std::string;
     void setToTag(const std::string& tag);
@@ -85,6 +88,7 @@ private:
 
 auto createResponse(const SipMessage& request, int status_code,
                     const std::string& reason) -> Result<SipMessage>;
+auto createRequest(const std::string& method, const std::string& request_uri) -> Result<SipMessage>;
 auto generateBranch() -> std::string;
 auto generateTag() -> std::string;
 auto generateCallId(const std::string& host) -> std::string;

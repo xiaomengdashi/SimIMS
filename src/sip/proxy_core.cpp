@@ -1,6 +1,9 @@
 #include "ims/sip/proxy_core.hpp"
 #include "ims/common/logger.hpp"
 #include <osipparser2/osip_parser.h>
+
+#include <algorithm>
+#include <cctype>
 #include <format>
 
 namespace ims::sip {
@@ -9,10 +12,14 @@ ProxyCore::ProxyCore(const std::string& local_address, Port local_port)
     : local_address_(local_address)
     , local_port_(local_port) {}
 
-auto ProxyCore::forwardRequest(SipMessage& msg, const Endpoint& dest,
-                               std::shared_ptr<ITransport> transport) -> VoidResult {
+auto ProxyCore::prepareRequestForForward(SipMessage& msg,
+                                         std::string_view transport) -> VoidResult {
     // Decrement Max-Forwards
     int mf = msg.maxForwards();
+    if (mf < 0) {
+        msg.setMaxForwards(70);
+        mf = 70;
+    }
     if (mf == 0) {
         return std::unexpected(ErrorInfo{
             ErrorCode::kSipTransactionFailed, "Max-Forwards is zero, cannot forward"});
@@ -20,10 +27,27 @@ auto ProxyCore::forwardRequest(SipMessage& msg, const Endpoint& dest,
     msg.decrementMaxForwards();
 
     // Add our Via header
+    std::string transport_token(transport);
+    if (transport_token.empty()) {
+        transport_token = "udp";
+    }
+    std::transform(transport_token.begin(), transport_token.end(), transport_token.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::toupper(ch)); });
+
     auto branch = generateBranch();
-    auto via = std::format("SIP/2.0/UDP {}:{};branch={};rport",
-        local_address_, local_port_, branch);
+    auto via = std::format("SIP/2.0/{} {}:{};branch={};rport",
+        transport_token, local_address_, local_port_, branch);
     msg.addVia(via);
+
+    return {};
+}
+
+auto ProxyCore::forwardRequest(SipMessage& msg, const Endpoint& dest,
+                               std::shared_ptr<ITransport> transport) -> VoidResult {
+    auto prep = prepareRequestForForward(msg, dest.transport);
+    if (!prep) {
+        return prep;
+    }
 
     // Send via transport
     return transport->send(msg, dest);
@@ -73,10 +97,20 @@ auto ProxyCore::forwardResponse(SipMessage& msg,
         port = static_cast<Port>(std::atoi(top_via->port));
     }
 
+    std::string transport_name = "udp";
+    if (top_via->protocol) {
+        auto protocol = std::string(top_via->protocol);
+        std::transform(protocol.begin(), protocol.end(), protocol.begin(),
+                       [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+        if (protocol == "tcp") {
+            transport_name = "tcp";
+        }
+    }
+
     Endpoint dest{
         .address = host,
         .port = port,
-        .transport = "udp"
+        .transport = transport_name
     };
 
     IMS_LOG_DEBUG("Forwarding response {} to {}:{}", msg.statusCode(), dest.address, dest.port);

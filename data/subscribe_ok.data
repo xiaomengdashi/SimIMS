@@ -1,0 +1,37 @@
+Session Initiation Protocol (200)
+    Status-Line: SIP/2.0 200 OK
+        Status-Code: 200
+        [Resent Packet: False]
+        [Request Frame: 22886]
+        [Response Time (ms): 6]
+    Message Header
+        Via: SIP/2.0/UDP [190:186:75:89c4:5c9b:30ff:fee4:e60f]:5060;branch=z9hG4bK279305682
+            Transport: UDP
+            Sent-by Address: 190:186:75:89c4:5c9b:30ff:fee4:e60f
+            Sent-by port: 5060
+            Branch: z9hG4bK279305682
+        To: <sip:+8613824122023@ims.nokia.com.cn>;tag=nokiasipIC18sicY_MCl0a_jM_dyp410*1-1-16648*ifhc.1
+            SIP to address: sip:+8613824122023@ims.nokia.com.cn
+                SIP to address User Part: +8613824122023
+                E.164 number (MSISDN): 8613824122023
+                SIP to address Host Part: ims.nokia.com.cn
+            SIP to tag: nokiasipIC18sicY_MCl0a_jM_dyp410*1-1-16648*ifhc.1
+        From: <sip:+8613824122023@ims.nokia.com.cn>;tag=849091955
+            SIP from address: sip:+8613824122023@ims.nokia.com.cn
+                SIP from address User Part: +8613824122023
+                E.164 number (MSISDN): 8613824122023
+                SIP from address Host Part: ims.nokia.com.cn
+            SIP from tag: 849091955
+        Call-ID: 849091953_1207230380@190:186:75:89c4:5c9b:30ff:fee4:e60f
+        [Generated Call-ID: 849091953_1207230380@190:186:75:89c4:5c9b:30ff:fee4:e60f]
+        CSeq: 849091953 SUBSCRIBE
+            Sequence Number: 849091953
+            Method: SUBSCRIBE
+        Expires: 600000
+        Contact: <sip:[2055:5::3e:77]:5060;nokia-did=1-1-16648-11572-21-908-0>
+            Contact URI: sip:[2055:5::3e:77]:5060;nokia-did=1-1-16648-11572-21-908-0
+                Contact URI Host Part: [2055:5::3e:77]
+                Contact URI Host Port: 5060
+                Contact URI parameter: nokia-did=1-1-16648-11572-21-908-0
+        Record-Route: <sip:DIAG_3_0_03dbf098_0@[2055:5::3e:77]:5060;lr>
+        Content-Length: 0

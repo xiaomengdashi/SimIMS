@@ -1,9 +1,95 @@
 #include "session_router.hpp"
 #include "ims/common/logger.hpp"
 
+#include <algorithm>
+#include <cctype>
 #include <format>
+#include <optional>
 
 namespace ims::scscf {
+
+namespace {
+
+auto endpointEquals(const ims::sip::Endpoint& lhs, const ims::sip::Endpoint& rhs) -> bool {
+    return lhs.address == rhs.address && lhs.port == rhs.port;
+}
+
+auto parseEndpointFromSipUri(const std::string& sip_uri) -> std::optional<ims::sip::Endpoint> {
+    std::string uri = sip_uri;
+    auto normalized = uri;
+    std::transform(normalized.begin(), normalized.end(), normalized.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+
+    std::string transport = "udp";
+    auto transport_pos = normalized.find(";transport=");
+    if (transport_pos != std::string::npos) {
+        auto value_start = transport_pos + std::string(";transport=").size();
+        auto value_end = normalized.find(';', value_start);
+        transport = normalized.substr(value_start, value_end - value_start);
+    }
+
+    if (!uri.empty() && uri.front() == '<') {
+        uri.erase(0, 1);
+    }
+    if (!uri.empty() && uri.back() == '>') {
+        uri.pop_back();
+    }
+    auto sip_pos = uri.find("sip:");
+    if (sip_pos != std::string::npos) {
+        uri = uri.substr(sip_pos + 4);
+    }
+
+    auto at_pos = uri.rfind('@');
+    if (at_pos != std::string::npos) {
+        uri = uri.substr(at_pos + 1);
+    }
+
+    auto param_pos = uri.find(';');
+    if (param_pos != std::string::npos) {
+        uri = uri.substr(0, param_pos);
+    }
+    auto angle_pos = uri.find('>');
+    if (angle_pos != std::string::npos) {
+        uri = uri.substr(0, angle_pos);
+    }
+
+    std::string host;
+    ims::Port port = 5060;
+
+    if (!uri.empty() && uri.front() == '[') {
+        auto close = uri.find(']');
+        if (close == std::string::npos) return std::nullopt;
+        host = uri.substr(1, close - 1);
+        if (close + 1 < uri.size() && uri[close + 1] == ':') {
+            try {
+                port = static_cast<ims::Port>(std::stoi(uri.substr(close + 2)));
+            } catch (...) {
+                return std::nullopt;
+            }
+        }
+    } else {
+        auto colon = uri.find(':');
+        if (colon != std::string::npos) {
+            host = uri.substr(0, colon);
+            try {
+                port = static_cast<ims::Port>(std::stoi(uri.substr(colon + 1)));
+            } catch (...) {
+                return std::nullopt;
+            }
+        } else {
+            host = uri;
+        }
+    }
+
+    if (host.empty()) return std::nullopt;
+    return ims::sip::Endpoint{
+        .address = host,
+        .port = port,
+        .transport = transport
+    };
+}
+
+} // namespace
 
 SessionRouter::SessionRouter(std::shared_ptr<ims::registration::IRegistrationStore> store,
                              ims::sip::SipStack& sip_stack)
@@ -56,6 +142,7 @@ void SessionRouter::handleInvite(const ims::sip::SipMessage& request,
 
     // Set Request-URI to the callee's contact
     fwd_request->setRequestUri(contacts[0]->contact_uri);
+    proxy_.processRouteHeaders(*fwd_request);
 
     // Add Record-Route so subsequent requests pass through us
     proxy_.addRecordRoute(*fwd_request);
@@ -63,14 +150,34 @@ void SessionRouter::handleInvite(const ims::sip::SipMessage& request,
     // Determine destination from contact's Path or contact URI
     ims::sip::Endpoint dest;
     if (!contacts[0]->path.empty()) {
-        // Path header contains P-CSCF address - route through it
-        dest.address = contacts[0]->path;
-        dest.port = 5060;
+        // Path header contains P-CSCF route URI.
+        auto parsed = parseEndpointFromSipUri(contacts[0]->path);
+        if (parsed) {
+            dest = *parsed;
+        }
     } else {
-        // Extract host:port from contact URI
+        auto parsed = parseEndpointFromSipUri(contacts[0]->contact_uri);
+        if (parsed) {
+            dest = *parsed;
+        }
+    }
+
+    if (dest.address.empty()) {
+        IMS_LOG_WARN("Failed to derive destination from Path/Contact, fallback to localhost");
         dest.address = "127.0.0.1";
         dest.port = 5060;
+        dest.transport = "udp";
     }
+
+    auto prep = proxy_.prepareRequestForForward(*fwd_request, dest.transport);
+    if (!prep) {
+        IMS_LOG_ERROR("Failed to prepare INVITE for forwarding: {}", prep.error().message);
+        auto resp = ims::sip::createResponse(request, 500, "Server Internal Error");
+        if (resp) txn->sendResponse(std::move(*resp));
+        return;
+    }
+
+    auto invite_branch = fwd_request->viaBranch();
 
     // Track session
     {
@@ -78,16 +185,11 @@ void SessionRouter::handleInvite(const ims::sip::SipMessage& request,
         sessions_[call_id] = SessionInfo{
             .caller_impu = from,
             .callee_impu = binding->impu,
-            .caller_endpoint = {},
+            .caller_endpoint = txn->source(),
             .callee_endpoint = dest,
+            .callee_invite_branch = invite_branch,
         };
     }
-
-    // Forward INVITE via client transaction
-    auto via = std::format("SIP/2.0/UDP {}:{};branch={}",
-        sip_stack_.localAddress(), sip_stack_.localPort(), ims::sip::generateBranch());
-    fwd_request->addVia(via);
-    fwd_request->decrementMaxForwards();
 
     sip_stack_.sendRequest(std::move(*fwd_request), dest,
         [txn, call_id](const ims::sip::SipMessage& response) {
@@ -121,7 +223,7 @@ void SessionRouter::handleBye(const ims::sip::SipMessage& request,
         sessions_.erase(it);
     }
 
-    // Forward BYE to the other side
+    // Forward BYE to the opposite dialog leg
     auto fwd_bye = request.clone();
     if (!fwd_bye) {
         auto resp = ims::sip::createResponse(request, 500, "Server Internal Error");
@@ -129,12 +231,20 @@ void SessionRouter::handleBye(const ims::sip::SipMessage& request,
         return;
     }
 
-    auto via = std::format("SIP/2.0/UDP {}:{};branch={}",
-        sip_stack_.localAddress(), sip_stack_.localPort(), ims::sip::generateBranch());
-    fwd_bye->addVia(via);
-    fwd_bye->decrementMaxForwards();
+    proxy_.processRouteHeaders(*fwd_bye);
+    auto dest = session.callee_endpoint;
+    if (endpointEquals(txn->source(), session.callee_endpoint)) {
+        dest = session.caller_endpoint;
+    }
 
-    sip_stack_.sendRequest(std::move(*fwd_bye), session.callee_endpoint,
+    auto prep = proxy_.prepareRequestForForward(*fwd_bye, dest.transport);
+    if (!prep) {
+        auto resp = ims::sip::createResponse(request, 500, "Server Internal Error");
+        if (resp) txn->sendResponse(std::move(*resp));
+        return;
+    }
+
+    sip_stack_.sendRequest(std::move(*fwd_bye), dest,
         [txn, call_id](const ims::sip::SipMessage& response) {
             IMS_LOG_DEBUG("Got response {} for BYE Call-ID={}", response.statusCode(), call_id);
             auto resp_clone = response.clone();
@@ -176,10 +286,23 @@ void SessionRouter::handleCancel(const ims::sip::SipMessage& request,
         return;
     }
 
-    auto via = std::format("SIP/2.0/UDP {}:{};branch={}",
-        sip_stack_.localAddress(), sip_stack_.localPort(), ims::sip::generateBranch());
+    proxy_.processRouteHeaders(*fwd_cancel);
+    while (fwd_cancel->viaCount() > 0) {
+        fwd_cancel->removeTopVia();
+    }
+
+    if (fwd_cancel->maxForwards() < 0) {
+        fwd_cancel->setMaxForwards(70);
+    } else {
+        fwd_cancel->decrementMaxForwards();
+    }
+
+    auto branch = session.callee_invite_branch.empty()
+        ? ims::sip::generateBranch()
+        : session.callee_invite_branch;
+    auto via = std::format("SIP/2.0/UDP {}:{};branch={};rport",
+                           sip_stack_.localAddress(), sip_stack_.localPort(), branch);
     fwd_cancel->addVia(via);
-    fwd_cancel->decrementMaxForwards();
 
     sip_stack_.sendRequest(std::move(*fwd_cancel), session.callee_endpoint,
         [call_id](const ims::sip::SipMessage& response) {

@@ -1,0 +1,43 @@
+Session Initiation Protocol (SUBSCRIBE)
+    Request-Line: SUBSCRIBE sip:+8613824122023@ims.nokia.com.cn SIP/2.0
+        Method: SUBSCRIBE
+        Request-URI: sip:+8613824122023@ims.nokia.com.cn
+            Request-URI User Part: +8613824122023
+            E.164 number (MSISDN): 8613824122023
+            Request-URI Host Part: ims.nokia.com.cn
+        [Resent Packet: False]
+    Message Header
+        From: <sip:+8613824122023@ims.nokia.com.cn>;tag=849091955
+            SIP from address: sip:+8613824122023@ims.nokia.com.cn
+                SIP from address User Part: +8613824122023
+                E.164 number (MSISDN): 8613824122023
+                SIP from address Host Part: ims.nokia.com.cn
+            SIP from tag: 849091955
+        To: <sip:+8613824122023@ims.nokia.com.cn>
+            SIP to address: sip:+8613824122023@ims.nokia.com.cn
+                SIP to address User Part: +8613824122023
+                E.164 number (MSISDN): 8613824122023
+                SIP to address Host Part: ims.nokia.com.cn
+        CSeq: 849091953 SUBSCRIBE
+            Sequence Number: 849091953
+            Method: SUBSCRIBE
+        Call-ID: 849091953_1207230380@190:186:75:89c4:5c9b:30ff:fee4:e60f
+        [Generated Call-ID: 849091953_1207230380@190:186:75:89c4:5c9b:30ff:fee4:e60f]
+        Via: SIP/2.0/UDP [190:186:75:89c4:5c9b:30ff:fee4:e60f]:5060;branch=z9hG4bK279305682
+            Transport: UDP
+            Sent-by Address: 190:186:75:89c4:5c9b:30ff:fee4:e60f
+            Sent-by port: 5060
+            Branch: z9hG4bK279305682
+        Max-Forwards: 70
+        Route: <sip:[2055:5::3e:77]:5060;lr>
+        P-Access-Network-Info: 3GPP-NR-TDD;utran-cell-id-3gpp=4601107D000002A16001
+        Event: reg
+        Content-Length: 0
+        Contact: <sip:[190:186:75:89c4:5c9b:30ff:fee4:e60f]:5060>
+            Contact URI: sip:[190:186:75:89c4:5c9b:30ff:fee4:e60f]:5060
+                Contact URI Host Part: [190:186:75:89c4:5c9b:30ff:fee4:e60f]
+                Contact URI Host Port: 5060
+        P-Preferred-Identity: <sip:+8613824122023@ims.nokia.com.cn>
+            SIP PPI Address: sip:+8613824122023@ims.nokia.com.cn
+        Expires: 600000
+        User-Agent: nokia_nokia A2022P_RKQ1.210503.001

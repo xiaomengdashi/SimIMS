@@ -82,6 +82,22 @@ TEST_F(SipMessageTest, CreateResponse) {
     EXPECT_EQ(resp.fromTag(), "1928301774");
     EXPECT_EQ(resp.cseq(), 1u);
     EXPECT_EQ(resp.cseqMethod(), "REGISTER");
+    EXPECT_FALSE(resp.toTag().empty());
+}
+
+TEST_F(SipMessageTest, CreateResponsePreservesViaOrder) {
+    auto req_result = SipMessage::parse(kRegisterMsg);
+    ASSERT_TRUE(req_result.has_value());
+
+    auto& req = *req_result;
+    req.addVia("SIP/2.0/UDP proxy1.example.com:5060;branch=z9hG4bK-proxy-1");
+
+    auto resp_result = createResponse(req, 200, "OK");
+    ASSERT_TRUE(resp_result.has_value());
+
+    auto& resp = *resp_result;
+    auto top_via = resp.topVia();
+    EXPECT_NE(top_via.find("proxy1.example.com"), std::string::npos);
 }
 
 TEST_F(SipMessageTest, SerializeRoundTrip) {

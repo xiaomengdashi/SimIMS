@@ -42,6 +42,13 @@ private:
                   ims::sip::SipMessage& request);
     void onPrack(std::shared_ptr<ims::sip::ServerTransaction> txn,
                  ims::sip::SipMessage& request);
+    void onSubscribe(std::shared_ptr<ims::sip::ServerTransaction> txn,
+                     ims::sip::SipMessage& request);
+    void forwardStatefulToIcscf(std::shared_ptr<ims::sip::ServerTransaction> txn,
+                                ims::sip::SipMessage& request,
+                                bool add_record_route = false);
+    void forwardStatelessToIcscf(ims::sip::SipMessage& request,
+                                 bool add_record_route = false);
 
     ims::PcscfConfig config_;
     std::unique_ptr<ims::sip::SipStack> sip_stack_;

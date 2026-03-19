@@ -31,6 +31,7 @@ auto PcscfService::start() -> VoidResult {
     sip_stack_->onRequest("ACK", [this](auto txn, auto& req) { onAck(txn, req); });
     sip_stack_->onRequest("CANCEL", [this](auto txn, auto& req) { onCancel(txn, req); });
     sip_stack_->onRequest("PRACK", [this](auto txn, auto& req) { onPrack(txn, req); });
+    sip_stack_->onRequest("SUBSCRIBE", [this](auto txn, auto& req) { onSubscribe(txn, req); });
 
     return sip_stack_->start();
 }
@@ -48,20 +49,7 @@ void PcscfService::onRegister(std::shared_ptr<ims::sip::ServerTransaction> txn,
     // Add Path header so subsequent requests route through P-CSCF
     auto path = std::format("<sip:{}:{};lr>", config_.listen_addr, config_.listen_port);
     request.addHeader("Path", path);
-
-    // Forward to I-CSCF
-    ims::sip::Endpoint dest{
-        .address = icscf_addr_,
-        .port = icscf_port_,
-        .transport = "udp"
-    };
-
-    auto result = proxy_.forwardRequest(request, dest, sip_stack_->transport());
-    if (!result) {
-        IMS_LOG_ERROR("Failed to forward REGISTER: {}", result.error().message);
-        auto resp = ims::sip::createResponse(request, 500, "Internal Server Error");
-        if (resp) txn->sendResponse(std::move(*resp));
-    }
+    forwardStatefulToIcscf(std::move(txn), request);
 }
 
 void PcscfService::onInvite(std::shared_ptr<ims::sip::ServerTransaction> txn,
@@ -95,23 +83,7 @@ void PcscfService::onInvite(std::shared_ptr<ims::sip::ServerTransaction> txn,
         }
     }
 
-    // Add Record-Route
-    proxy_.addRecordRoute(request);
-
-    // Forward to I-CSCF/S-CSCF
-    ims::sip::Endpoint dest{
-        .address = icscf_addr_,
-        .port = icscf_port_,
-        .transport = "udp"
-    };
-
-    auto result = proxy_.forwardRequest(request, dest, sip_stack_->transport());
-    if (!result) {
-        IMS_LOG_ERROR("Failed to forward INVITE: {}", result.error().message);
-        auto resp = ims::sip::createResponse(request, 500, "Internal Server Error");
-        if (resp) txn->sendResponse(std::move(*resp));
-        media_sessions_.removeSession(call_id);
-    }
+    forwardStatefulToIcscf(std::move(txn), request, true);
 }
 
 void PcscfService::onBye(std::shared_ptr<ims::sip::ServerTransaction> txn,
@@ -137,17 +109,16 @@ void PcscfService::onBye(std::shared_ptr<ims::sip::ServerTransaction> txn,
 
     media_sessions_.removeSession(call_id);
 
-    // Forward BYE
-    // In a real implementation, would use dialog route set
-    auto resp = ims::sip::createResponse(request, 200, "OK");
-    if (resp) txn->sendResponse(std::move(*resp));
+    // Forward BYE along signaling path
+    forwardStatefulToIcscf(std::move(txn), request);
 }
 
 void PcscfService::onAck(std::shared_ptr<ims::sip::ServerTransaction> /*txn*/,
                           ims::sip::SipMessage& request)
 {
     IMS_LOG_DEBUG("P-CSCF received ACK for call={}", request.callId());
-    // Forward ACK - stateless
+    // ACK has no response; forward statelessly.
+    forwardStatelessToIcscf(request);
 }
 
 void PcscfService::onCancel(std::shared_ptr<ims::sip::ServerTransaction> txn,
@@ -163,17 +134,92 @@ void PcscfService::onCancel(std::shared_ptr<ims::sip::ServerTransaction> txn,
     }
     media_sessions_.removeSession(call_id);
 
-    auto resp = ims::sip::createResponse(request, 200, "OK");
-    if (resp) txn->sendResponse(std::move(*resp));
+    forwardStatefulToIcscf(std::move(txn), request);
 }
 
 void PcscfService::onPrack(std::shared_ptr<ims::sip::ServerTransaction> txn,
                             ims::sip::SipMessage& request)
 {
     IMS_LOG_DEBUG("P-CSCF received PRACK for call={}", request.callId());
-    // Forward PRACK through the dialog route
-    auto resp = ims::sip::createResponse(request, 200, "OK");
-    if (resp) txn->sendResponse(std::move(*resp));
+    forwardStatefulToIcscf(std::move(txn), request);
+}
+
+void PcscfService::onSubscribe(std::shared_ptr<ims::sip::ServerTransaction> txn,
+                                ims::sip::SipMessage& request)
+{
+    IMS_LOG_DEBUG("P-CSCF received SUBSCRIBE for {}", request.requestUri());
+    forwardStatefulToIcscf(std::move(txn), request, true);
+}
+
+void PcscfService::forwardStatefulToIcscf(std::shared_ptr<ims::sip::ServerTransaction> txn,
+                                          ims::sip::SipMessage& request,
+                                          bool add_record_route)
+{
+    if (proxy_.isLoopDetected(request)) {
+        auto resp = ims::sip::createResponse(request, 482, "Loop Detected");
+        if (resp) txn->sendResponse(std::move(*resp));
+        return;
+    }
+
+    proxy_.processRouteHeaders(request);
+    if (add_record_route) {
+        proxy_.addRecordRoute(request);
+    }
+
+    ims::sip::Endpoint dest{
+        .address = icscf_addr_,
+        .port = icscf_port_,
+        .transport = "udp"
+    };
+
+    auto prep = proxy_.prepareRequestForForward(request, dest.transport);
+    if (!prep) {
+        int code = (request.maxForwards() == 0) ? 483 : 500;
+        const char* reason = (code == 483) ? "Too Many Hops" : "Internal Server Error";
+        IMS_LOG_ERROR("Failed to prepare request forwarding: {}", prep.error().message);
+        auto resp = ims::sip::createResponse(request, code, reason);
+        if (resp) txn->sendResponse(std::move(*resp));
+        return;
+    }
+
+    auto send_result = sip_stack_->sendRequest(std::move(request), dest,
+        [txn](const ims::sip::SipMessage& response) {
+            auto upstream = response.clone();
+            if (!upstream) return;
+            upstream->removeTopVia();
+            txn->sendResponse(std::move(*upstream));
+        });
+
+    if (!send_result) {
+        IMS_LOG_ERROR("Failed to send request to I-CSCF: {}", send_result.error().message);
+        auto resp = ims::sip::createResponse(txn->request(), 500, "Internal Server Error");
+        if (resp) txn->sendResponse(std::move(*resp));
+    }
+}
+
+void PcscfService::forwardStatelessToIcscf(ims::sip::SipMessage& request,
+                                           bool add_record_route)
+{
+    if (proxy_.isLoopDetected(request)) {
+        IMS_LOG_WARN("Dropping request due to loop detection");
+        return;
+    }
+
+    proxy_.processRouteHeaders(request);
+    if (add_record_route) {
+        proxy_.addRecordRoute(request);
+    }
+
+    ims::sip::Endpoint dest{
+        .address = icscf_addr_,
+        .port = icscf_port_,
+        .transport = "udp"
+    };
+
+    auto result = proxy_.forwardRequest(request, dest, sip_stack_->transport());
+    if (!result) {
+        IMS_LOG_ERROR("Failed to forward stateless request: {}", result.error().message);
+    }
 }
 
 } // namespace ims::pcscf

@@ -9,6 +9,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
 
@@ -28,13 +29,16 @@ public:
                       Endpoint source, boost::asio::io_context& io);
 
     auto request() const -> const SipMessage&;
+    auto source() const -> const Endpoint&;
     auto state() const -> TransactionState;
     auto branch() const -> const std::string&;
     auto sendResponse(SipMessage response) -> VoidResult;
+    auto retransmitLastResponse() -> VoidResult;
+    void acknowledgeAck();
     void onTerminated(std::function<void()> cb);
 
 private:
-    void startTimers();
+    void startTimers(int final_response_code);
 
     SipMessage request_;
     std::shared_ptr<ITransport> transport_;
@@ -42,6 +46,7 @@ private:
     boost::asio::io_context& io_;
     TransactionState state_ = TransactionState::kTrying;
     std::string branch_;
+    std::optional<SipMessage> last_response_;
     std::function<void()> on_terminated_;
     boost::asio::steady_timer timer_j_;
     boost::asio::steady_timer timer_h_;
