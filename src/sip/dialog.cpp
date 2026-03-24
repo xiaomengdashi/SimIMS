@@ -1,5 +1,5 @@
-#include "ims/sip/dialog.hpp"
-#include "ims/common/logger.hpp"
+#include "sip/dialog.hpp"
+#include "common/logger.hpp"
 #include <osipparser2/osip_parser.h>
 
 namespace ims::sip {

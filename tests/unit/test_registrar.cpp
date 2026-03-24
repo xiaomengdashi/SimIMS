@@ -1,4 +1,4 @@
-#include "ims/registration/store.hpp"
+#include "sip/store.hpp"
 #include "../mocks/mock_hss_client.hpp"
 #include "../mocks/mock_registration_store.hpp"
 #include <gtest/gtest.h>

@@ -4,8 +4,6 @@ add_library(ims_diameter
 )
 
 target_include_directories(ims_diameter PUBLIC
-    ${PROJECT_SOURCE_DIR}/include
-PRIVATE
     ${PROJECT_SOURCE_DIR}/src
 )
 

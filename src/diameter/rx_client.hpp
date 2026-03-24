@@ -1,7 +1,7 @@
 #pragma once
 
-#include "ims/diameter/ipcf_client.hpp"
-#include "ims/common/config.hpp"
+#include "diameter/ipcf_client.hpp"
+#include "common/config.hpp"
 
 namespace ims::diameter {
 

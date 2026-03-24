@@ -1,5 +1,5 @@
-#include "ims/dns/resolver.hpp"
-#include "ims/common/logger.hpp"
+#include "dns/resolver.hpp"
+#include "common/logger.hpp"
 
 #include <ares.h>
 #include <arpa/nameser.h>

@@ -1,13 +1,13 @@
-#include "../pcscf/pcscf_service.hpp"
-#include "../icscf/icscf_service.hpp"
-#include "../scscf/scscf_service.hpp"
-#include "ims/common/config.hpp"
-#include "ims/common/logger.hpp"
-#include "ims/common/io_context.hpp"
+#include "../p-cscf/pcscf_service.hpp"
+#include "../i-cscf/icscf_service.hpp"
+#include "../s-cscf/scscf_service.hpp"
+#include "common/config.hpp"
+#include "common/logger.hpp"
+#include "common/io_context.hpp"
 #include "../diameter/cx_client.hpp"
 #include "../diameter/rx_client.hpp"
-#include "../media/rtpengine_client_impl.hpp"
-#include "../registration/memory_store.hpp"
+#include "../rtp/rtpengine_client_impl.hpp"
+#include "../sip/memory_store.hpp"
 
 #include <csignal>
 #include <iostream>

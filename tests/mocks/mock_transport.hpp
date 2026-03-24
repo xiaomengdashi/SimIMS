@@ -1,6 +1,6 @@
 #pragma once
 
-#include "ims/sip/transport.hpp"
+#include "sip/transport.hpp"
 #include <gmock/gmock.h>
 
 namespace ims::test {

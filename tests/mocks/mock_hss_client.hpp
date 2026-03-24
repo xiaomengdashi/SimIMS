@@ -1,6 +1,6 @@
 #pragma once
 
-#include "ims/diameter/ihss_client.hpp"
+#include "diameter/ihss_client.hpp"
 #include <gmock/gmock.h>
 
 namespace ims::test {

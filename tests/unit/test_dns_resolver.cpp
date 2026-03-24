@@ -1,4 +1,4 @@
-#include "ims/dns/resolver.hpp"
+#include "dns/resolver.hpp"
 #include <gtest/gtest.h>
 
 using namespace ims::dns;

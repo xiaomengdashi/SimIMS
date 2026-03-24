@@ -1,5 +1,5 @@
-#include "ims/sip/proxy_core.hpp"
-#include "ims/common/logger.hpp"
+#include "proxy_core.hpp"
+#include "common/logger.hpp"
 #include <osipparser2/osip_parser.h>
 
 #include <algorithm>

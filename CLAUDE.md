@@ -2,12 +2,12 @@
 
 ## Project Overview
 
-VoNR-Only IMS system implementing P-CSCF, I-CSCF, S-CSCF in modern C++20.
+VoNR-Only IMS system implementing P-CSCF, I-CSCF, S-CSCF in modern C++23.
 This is a telecom/SIP signaling system, not a web application.
 
 ## Build System
 
-- **CMake 3.22+**, C++20 standard
+- **CMake 3.22+**, C++23 standard
 - Build: `cmake -B build && cmake --build build`
 - Test: `cd build && ctest --output-on-failure`
 - Dependencies: libosip2, boost (system), spdlog, yaml-cpp, c-ares, gtest
@@ -15,7 +15,7 @@ This is a telecom/SIP signaling system, not a web application.
 ## Code Conventions
 
 ### Language & Style
-- **C++20**: Use `std::expected`, `std::jthread`, `std::format`, concepts, designated initializers
+- **C++23**: Use `std::expected`, `std::jthread`, `std::format`, concepts, designated initializers
 - **Error handling**: Always use `Result<T>` (`std::expected<T, ErrorInfo>`), never throw exceptions in library code
 - **RAII**: All C library resources (osip_message_t, ares_channel, etc.) must be wrapped in RAII types
 - **Naming**: `snake_case` for variables/functions, `PascalCase` for types/classes, `kPascalCase` for enum values

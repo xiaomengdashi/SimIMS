@@ -6,6 +6,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# Output executables to bin directory
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/bin)
+
 # Find packages
 find_package(Boost REQUIRED COMPONENTS system)
 find_package(spdlog REQUIRED)
@@ -22,11 +25,10 @@ add_subdirectory(src/common)
 add_subdirectory(src/sip)
 add_subdirectory(src/dns)
 add_subdirectory(src/diameter)
-add_subdirectory(src/media)
-add_subdirectory(src/registration)
-add_subdirectory(src/pcscf)
-add_subdirectory(src/icscf)
-add_subdirectory(src/scscf)
+add_subdirectory(src/rtp)
+add_subdirectory(src/p-cscf)
+add_subdirectory(src/i-cscf)
+add_subdirectory(src/s-cscf)
 add_subdirectory(src/allinone)
 
 # Testing

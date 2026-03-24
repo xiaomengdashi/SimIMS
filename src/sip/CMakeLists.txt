@@ -5,14 +5,14 @@ add_library(ims_sip
     transport.cpp
     dialog.cpp
     proxy_core.cpp
+    memory_store.cpp
 )
 
 target_include_directories(ims_sip PUBLIC
-    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/src
 )
 
 target_link_libraries(ims_sip PUBLIC
     ims_common
     PkgConfig::LIBOSIP2
-    Boost::system
 )

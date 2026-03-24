@@ -1,6 +1,6 @@
 #pragma once
 
-#include "ims/diameter/ipcf_client.hpp"
+#include "diameter/ipcf_client.hpp"
 #include <gmock/gmock.h>
 
 namespace ims::test {

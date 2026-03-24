@@ -1,5 +1,5 @@
-#include "ims/sip/stack.hpp"
-#include "ims/common/logger.hpp"
+#include "stack.hpp"
+#include "common/logger.hpp"
 
 namespace ims::sip {
 

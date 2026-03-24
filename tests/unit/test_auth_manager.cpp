@@ -1,4 +1,4 @@
-#include "scscf/auth_manager.hpp"
+#include "s-cscf/auth_manager.hpp"
 
 #include <gtest/gtest.h>
 

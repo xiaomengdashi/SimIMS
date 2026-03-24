@@ -1,9 +1,10 @@
 # Build artifacts
-/build/
-/CMakeFiles/
+build/
+CMakeFiles/
 CMakeCache.txt
 cmake_install.cmake
 Makefile
+bin/
 *.o
 *.a
 *.so

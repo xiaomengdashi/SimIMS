@@ -1,5 +1,5 @@
-#include "ims/diameter/ihss_client.hpp"
-#include "ims/diameter/types.hpp"
+#include "diameter/ihss_client.hpp"
+#include "diameter/types.hpp"
 #include "../mocks/mock_hss_client.hpp"
 #include <gtest/gtest.h>
 #include <gmock/gmock.h>

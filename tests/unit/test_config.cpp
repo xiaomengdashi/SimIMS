@@ -1,4 +1,4 @@
-#include "ims/common/config.hpp"
+#include "common/config.hpp"
 #include <gtest/gtest.h>
 #include <fstream>
 #include <filesystem>

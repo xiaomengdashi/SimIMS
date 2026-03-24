@@ -1,4 +1,4 @@
-#include "ims/sip/message.hpp"
+#include "sip/message.hpp"
 #include <gtest/gtest.h>
 
 using namespace ims::sip;

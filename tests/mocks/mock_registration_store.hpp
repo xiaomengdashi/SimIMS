@@ -1,6 +1,6 @@
 #pragma once
 
-#include "ims/registration/store.hpp"
+#include "sip/store.hpp"
 #include <gmock/gmock.h>
 
 namespace ims::test {
