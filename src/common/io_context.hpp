@@ -3,6 +3,8 @@
 #include <boost/asio/executor_work_guard.hpp>
 #include <thread>
 #include <vector>
+#include <mutex>
+#include <condition_variable>
 #include <cstdint>
 
 namespace ims {
@@ -25,6 +27,9 @@ private:
     using WorkGuard = boost::asio::executor_work_guard<boost::asio::io_context::executor_type>;
     std::optional<WorkGuard> work_guard_;
     std::vector<std::jthread> workers_;
+    std::mutex mutex_;
+    std::condition_variable cv_;
+    bool running_ = false;
 };
 
 } // namespace ims

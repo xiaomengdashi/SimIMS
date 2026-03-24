@@ -15,13 +15,18 @@ pcscf:
 icscf:
   listen_addr: 0.0.0.0
   listen_port: 5061
-  hss_addr: 127.0.0.1:3868
-  dns_server: 127.0.0.1:53
+  hss:
+    host: 127.0.0.1
+    port: 3868
+    realm: ims.example.com
 
 scscf:
   listen_addr: 0.0.0.0
   listen_port: 5062
-  hss_addr: 127.0.0.1:3868
+  hss:
+    host: 127.0.0.1
+    port: 3868
+    realm: ims.example.com
   domain: ims.example.com
 
 hss_adapter:
