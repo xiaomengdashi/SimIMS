@@ -436,6 +436,7 @@ void eXosip_dnsutils_release(struct osip_naptr *naptr_record);
 - 快速开发 SIP 应用
 - 不需要深入理解 SIP 协议细节
 - 需要内置传输层支持
+- 在本项目中承担局部 UA-like 主动出站流程，例如 initial NOTIFY
 
 ---
 
@@ -461,12 +462,12 @@ void eXosip_dnsutils_release(struct osip_naptr *naptr_record);
 
 ## 6. 本项目说明
 
-> **重要**: SimIMS 项目是一个 **SIP 代理系统**，而非 SIP 用户代理（UA）。因此：
+> **重要**: SimIMS 项目是一个 **SIP 代理系统**，但现在采用 **osip2 + eXosip2 双栈职责隔离**：
 >
-> - 使用 **libosip2** 进行 SIP 消息解析
-> - **不使用 libeXosip2**（它是为 UA 模式设计的）
-> - 自行实现传输层和事务处理
-> - 通过 `SipMessage` 类封装 osip 操作
+> - **libosip2** 负责 proxy plane：SIP 消息解析、`SipMessage` 封装、主监听、事务层、代理转发、Registrar 服务端逻辑
+> - **libeXosip2** 负责 UA-like outbound plane：局部主动出站流程，首批用于 S-CSCF `SUBSCRIBE` 后的 initial `NOTIFY`
+> - 主业务端口仍由项目自研传输层和事务层持有，不交给 eXosip2 接管
+> - osip2 与 eXosip2 之间不直接共享同一个 `osip_message_t*` 所有权，而是在适配层重新构造消息
 
 ---
 

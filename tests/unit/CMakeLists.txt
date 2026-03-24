@@ -8,6 +8,11 @@ add_executable(test_sip_message test_sip_message.cpp)
 target_link_libraries(test_sip_message PRIVATE ims_sip GTest::gtest_main)
 gtest_discover_tests(test_sip_message)
 
+# eXosip adapter test
+add_executable(test_exosip_adapter test_exosip_adapter.cpp)
+target_link_libraries(test_exosip_adapter PRIVATE ims_sip GTest::gtest_main)
+gtest_discover_tests(test_exosip_adapter)
+
 # DNS resolver test
 add_executable(test_dns_resolver test_dns_resolver.cpp)
 target_link_libraries(test_dns_resolver PRIVATE ims_dns GTest::gtest_main)
@@ -43,3 +48,15 @@ add_executable(test_auth_manager
 target_link_libraries(test_auth_manager PRIVATE ims_common GTest::gtest_main)
 target_include_directories(test_auth_manager PRIVATE ${CMAKE_SOURCE_DIR}/src)
 gtest_discover_tests(test_auth_manager)
+
+# S-CSCF service test
+add_executable(test_scscf_service
+    test_scscf_service.cpp
+    ${CMAKE_SOURCE_DIR}/src/s-cscf/scscf_service.cpp
+    ${CMAKE_SOURCE_DIR}/src/s-cscf/registrar.cpp
+    ${CMAKE_SOURCE_DIR}/src/s-cscf/auth_manager.cpp
+    ${CMAKE_SOURCE_DIR}/src/s-cscf/session_router.cpp
+)
+target_link_libraries(test_scscf_service PRIVATE ims_sip ims_dns ims_diameter ims_common GTest::gtest_main GTest::gmock)
+target_include_directories(test_scscf_service PRIVATE ${CMAKE_SOURCE_DIR}/tests ${CMAKE_SOURCE_DIR}/src)
+gtest_discover_tests(test_scscf_service)

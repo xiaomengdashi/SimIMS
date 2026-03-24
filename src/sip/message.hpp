@@ -81,6 +81,7 @@ public:
     void decrementMaxForwards();
 
     auto raw() const -> osip_message_t* { return msg_.get(); }
+    auto release() -> osip_message_t* { return msg_.release(); }
 
 private:
     OsipMessagePtr msg_;

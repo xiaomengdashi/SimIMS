@@ -51,15 +51,13 @@ auto md5Hex(const std::string& input) -> std::string {
     hash.process_bytes(input.data(), input.size());
     hash.get_digest(digest);
 
-    // boost::uuids::detail::md5 stores words in host uint32 representation.
-    // Emit low byte first for each word to get standard MD5 hex output.
     std::ostringstream oss;
     oss << std::hex << std::setfill('0');
     for (auto word : digest) {
-        auto b0 = static_cast<uint8_t>(word & 0xFF);
-        auto b1 = static_cast<uint8_t>((word >> 8) & 0xFF);
-        auto b2 = static_cast<uint8_t>((word >> 16) & 0xFF);
-        auto b3 = static_cast<uint8_t>((word >> 24) & 0xFF);
+        auto b0 = static_cast<uint8_t>((word >> 24) & 0xFF);
+        auto b1 = static_cast<uint8_t>((word >> 16) & 0xFF);
+        auto b2 = static_cast<uint8_t>((word >> 8) & 0xFF);
+        auto b3 = static_cast<uint8_t>(word & 0xFF);
         oss << std::setw(2) << static_cast<unsigned int>(b0)
             << std::setw(2) << static_cast<unsigned int>(b1)
             << std::setw(2) << static_cast<unsigned int>(b2)

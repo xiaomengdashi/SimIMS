@@ -32,6 +32,16 @@ auto random_hex(int length) -> std::string {
     return oss.str();
 }
 
+auto trim(std::string value) -> std::string {
+    auto is_space = [](unsigned char ch) { return std::isspace(ch) != 0; };
+    value.erase(value.begin(), std::find_if(value.begin(), value.end(),
+                                            [&](unsigned char ch) { return !is_space(ch); }));
+    value.erase(std::find_if(value.rbegin(), value.rend(),
+                             [&](unsigned char ch) { return !is_space(ch); }).base(),
+                value.end());
+    return value;
+}
+
 auto uri_to_string(osip_uri_t* uri) -> std::string {
     if (!uri) return {};
     char* buf = nullptr;
@@ -74,6 +84,53 @@ auto contact_to_string(osip_contact_t* contact) -> std::string {
         return result;
     }
     return {};
+}
+
+auto record_route_to_string(osip_record_route_t* record_route) -> std::string {
+    if (!record_route) return {};
+    char* buf = nullptr;
+    if (osip_record_route_to_str(record_route, &buf) == 0 && buf) {
+        std::string result(buf);
+        osip_free(buf);
+        return result;
+    }
+    return {};
+}
+
+auto split_header_values(const std::string& value) -> std::vector<std::string> {
+    std::vector<std::string> parts;
+    std::string current;
+    bool in_quotes = false;
+    int angle_depth = 0;
+
+    for (char ch : value) {
+        if (ch == '"') {
+            in_quotes = !in_quotes;
+            current.push_back(ch);
+            continue;
+        }
+        if (!in_quotes) {
+            if (ch == '<') {
+                ++angle_depth;
+            } else if (ch == '>' && angle_depth > 0) {
+                --angle_depth;
+            } else if (ch == ',' && angle_depth == 0) {
+                auto part = trim(current);
+                if (!part.empty()) {
+                    parts.push_back(std::move(part));
+                }
+                current.clear();
+                continue;
+            }
+        }
+        current.push_back(ch);
+    }
+
+    auto part = trim(current);
+    if (!part.empty()) {
+        parts.push_back(std::move(part));
+    }
+    return parts;
 }
 
 } // anonymous namespace
@@ -188,6 +245,19 @@ auto SipMessage::getHeader(const std::string& name) const -> std::optional<std::
 
 auto SipMessage::getHeaders(const std::string& name) const -> std::vector<std::string> {
     std::vector<std::string> result;
+
+    if (name == "Record-Route" || name == "record-route") {
+        osip_record_route_t* record_route = nullptr;
+        int pos = 0;
+        while (osip_message_get_record_route(msg_.get(), pos, &record_route) == 0 && record_route) {
+            auto value = record_route_to_string(record_route);
+            auto parts = split_header_values(value);
+            result.insert(result.end(), parts.begin(), parts.end());
+            ++pos;
+        }
+        return result;
+    }
+
     osip_header_t* header = nullptr;
     int pos = 0;
     // osip_message_header_get_byname returns position (>=0) if found, -1 if not

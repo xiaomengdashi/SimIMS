@@ -2,10 +2,7 @@
 #include "common/logger.hpp"
 
 #include <format>
-#include <optional>
 #include <vector>
-#include <algorithm>
-#include <cctype>
 
 namespace ims::scscf {
 
@@ -25,93 +22,23 @@ auto extractUriFromNameAddr(const std::string& value) -> std::string {
     return value;
 }
 
-auto parseEndpointFromSipUri(const std::string& sip_uri) -> std::optional<ims::sip::Endpoint> {
-    std::string uri = sip_uri;
-    auto normalized = uri;
-    std::transform(normalized.begin(), normalized.end(), normalized.begin(),
-                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-
-    std::string transport = "udp";
-    auto transport_pos = normalized.find(";transport=");
-    if (transport_pos != std::string::npos) {
-        auto value_start = transport_pos + std::string(";transport=").size();
-        auto value_end = normalized.find(';', value_start);
-        transport = normalized.substr(value_start, value_end - value_start);
-    }
-
-    if (!uri.empty() && uri.front() == '<') {
-        uri.erase(0, 1);
-    }
-    if (!uri.empty() && uri.back() == '>') {
-        uri.pop_back();
-    }
-    auto sip_pos = uri.find("sip:");
-    if (sip_pos != std::string::npos) {
-        uri = uri.substr(sip_pos + 4);
-    }
-
-    auto at_pos = uri.rfind('@');
-    if (at_pos != std::string::npos) {
-        uri = uri.substr(at_pos + 1);
-    }
-
-    auto param_pos = uri.find(';');
-    if (param_pos != std::string::npos) {
-        uri = uri.substr(0, param_pos);
-    }
-    auto angle_pos = uri.find('>');
-    if (angle_pos != std::string::npos) {
-        uri = uri.substr(0, angle_pos);
-    }
-
-    std::string host;
-    ims::Port port = 5060;
-
-    if (!uri.empty() && uri.front() == '[') {
-        auto close = uri.find(']');
-        if (close == std::string::npos) return std::nullopt;
-        host = uri.substr(1, close - 1);
-        if (close + 1 < uri.size() && uri[close + 1] == ':') {
-            try {
-                port = static_cast<ims::Port>(std::stoi(uri.substr(close + 2)));
-            } catch (...) {
-                return std::nullopt;
-            }
-        }
-    } else {
-        auto colon = uri.find(':');
-        if (colon != std::string::npos) {
-            host = uri.substr(0, colon);
-            try {
-                port = static_cast<ims::Port>(std::stoi(uri.substr(colon + 1)));
-            } catch (...) {
-                return std::nullopt;
-            }
-        } else {
-            host = uri;
-        }
-    }
-
-    if (host.empty()) return std::nullopt;
-    return ims::sip::Endpoint{
-        .address = host,
-        .port = port,
-        .transport = transport
-    };
-}
-
 } // namespace
 
 ScscfService::ScscfService(const ims::ScscfConfig& config,
                            boost::asio::io_context& io,
                            std::shared_ptr<ims::diameter::IHssClient> hss,
-                           std::shared_ptr<ims::registration::IRegistrationStore> store)
+                           std::shared_ptr<ims::registration::IRegistrationStore> store,
+                           std::unique_ptr<ims::sip::IRegEventNotifier> reg_event_notifier)
     : config_(config)
     , sip_stack_(std::make_unique<ims::sip::SipStack>(
           io, config.listen_addr, config.listen_port))
+    , reg_event_notifier_(std::move(reg_event_notifier))
     , hss_(std::move(hss))
     , store_(std::move(store))
 {
+    if (!reg_event_notifier_) {
+        reg_event_notifier_ = std::make_unique<ims::sip::ExosipRegEventNotifier>(config.exosip);
+    }
     registrar_ = std::make_unique<Registrar>(store_, hss_, config.domain);
     session_router_ = std::make_unique<SessionRouter>(store_, *sip_stack_);
 }
@@ -119,6 +46,13 @@ ScscfService::ScscfService(const ims::ScscfConfig& config,
 auto ScscfService::start() -> VoidResult {
     IMS_LOG_INFO("Starting S-CSCF on {}:{} domain={}",
                  config_.listen_addr, config_.listen_port, config_.domain);
+
+    if (reg_event_notifier_) {
+        auto notifier_start = reg_event_notifier_->start();
+        if (!notifier_start) {
+            return std::unexpected(notifier_start.error());
+        }
+    }
 
     sip_stack_->onRequest("REGISTER", [this](auto txn, auto& req) {
         onRegister(txn, req);
@@ -141,6 +75,9 @@ auto ScscfService::start() -> VoidResult {
 
 void ScscfService::stop() {
     IMS_LOG_INFO("Stopping S-CSCF");
+    if (reg_event_notifier_) {
+        reg_event_notifier_->shutdown();
+    }
     sip_stack_->stop();
 }
 
@@ -226,23 +163,6 @@ void ScscfService::sendInitialNotify(const ims::sip::SipMessage& subscribe,
     auto record_routes = subscribe.getHeaders("Record-Route");
     std::vector<std::string> route_set(record_routes.rbegin(), record_routes.rend());
 
-    auto destination_uri = target_uri;
-    if (!route_set.empty()) {
-        destination_uri = extractUriFromNameAddr(route_set.front());
-    }
-
-    auto endpoint = parseEndpointFromSipUri(destination_uri);
-    if (!endpoint) {
-        IMS_LOG_WARN("Failed to parse NOTIFY destination URI: {}", destination_uri);
-        return;
-    }
-
-    auto notify = ims::sip::createRequest("NOTIFY", target_uri);
-    if (!notify) {
-        IMS_LOG_ERROR("Failed to create NOTIFY request");
-        return;
-    }
-
     auto from = subscribe.toHeader();
     if (from.find(";tag=") == std::string::npos && !to_tag.empty()) {
         from += ";tag=" + to_tag;
@@ -261,28 +181,30 @@ void ScscfService::sendInitialNotify(const ims::sip::SipMessage& subscribe,
         "</reginfo>\r\n",
         reg_aor);
 
-    notify->setFromHeader(from);
-    notify->setToHeader(subscribe.fromHeader());
-    notify->setCallId(subscribe.callId());
-    notify->setCSeq(subscribe.cseq() + 1, "NOTIFY");
-    notify->addHeader("Max-Forwards", "70");
-    notify->addVia(std::format("SIP/2.0/UDP {}:{};branch={};rport",
-                               config_.listen_addr, config_.listen_port,
-                               ims::sip::generateBranch()));
-    notify->addHeader("Event", event);
-    notify->addHeader("Subscription-State", std::format("active;expires={}", expires));
-    for (const auto& route : route_set) {
-        notify->addHeader("Route", route);
-    }
-    notify->setContact(std::format("<sip:{}:{}>", config_.listen_addr, config_.listen_port));
-    notify->setBody(body, "application/reginfo+xml");
+    ims::sip::InitialRegNotifyContext notify_context{
+        .request_uri = target_uri,
+        .from_header = from,
+        .to_header = subscribe.fromHeader(),
+        .call_id = subscribe.callId(),
+        .cseq = subscribe.cseq() + 1,
+        .event = event,
+        .subscription_state = std::format("active;expires={}", expires),
+        .route_set = route_set,
+        .contact = std::format("<sip:{}:{}>", config_.domain, config_.exosip.listen_port),
+        .body = body,
+        .content_type = "application/reginfo+xml"
+    };
 
-    auto send_result = sip_stack_->sendRequest(std::move(*notify), *endpoint,
-        [](const ims::sip::SipMessage& response) {
-            IMS_LOG_DEBUG("Initial NOTIFY got {} response", response.statusCode());
-        });
+    if (!reg_event_notifier_) {
+        IMS_LOG_WARN("No reg-event notifier configured, skip initial NOTIFY");
+        return;
+    }
+
+    auto send_result = reg_event_notifier_->sendInitialNotify(notify_context);
     if (!send_result) {
-        IMS_LOG_ERROR("Failed to send initial NOTIFY: {}", send_result.error().message);
+        IMS_LOG_ERROR("Failed to send initial NOTIFY via eXosip2: {} ({})",
+                      send_result.error().message,
+                      send_result.error().detail);
     }
 }
 

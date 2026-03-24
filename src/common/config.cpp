@@ -67,6 +67,14 @@ Result<ImsConfig> load_config(const std::string& path) {
             if (auto v = hss["port"])   config.scscf.hss.port = v.as<uint16_t>();
             if (auto v = hss["realm"])  config.scscf.hss.realm = v.as<std::string>();
         }
+        if (auto exosip = scscf["exosip"]) {
+            if (auto v = exosip["enabled"])        config.scscf.exosip.enabled = v.as<bool>();
+            if (auto v = exosip["listen_addr"])    config.scscf.exosip.listen_addr = v.as<std::string>();
+            if (auto v = exosip["listen_port"])    config.scscf.exosip.listen_port = v.as<uint16_t>();
+            if (auto v = exosip["transport"])      config.scscf.exosip.transport = v.as<std::string>();
+            if (auto v = exosip["user_agent"])     config.scscf.exosip.user_agent = v.as<std::string>();
+            if (auto v = exosip["event_poll_ms"])  config.scscf.exosip.event_poll_ms = v.as<uint32_t>();
+        }
     }
 
     // HSS adapter section

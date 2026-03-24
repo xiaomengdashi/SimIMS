@@ -1,4 +1,4 @@
-#include "sip/dialog.hpp"
+#include "dialog.hpp"
 #include "common/logger.hpp"
 #include <osipparser2/osip_parser.h>
 

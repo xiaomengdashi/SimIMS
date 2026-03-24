@@ -3,7 +3,9 @@
 #include "registrar.hpp"
 #include "session_router.hpp"
 #include "sip/stack.hpp"
+#include "sip/reg_event_notifier.hpp"
 #include "common/config.hpp"
+#include "common/types.hpp"
 #include "diameter/ihss_client.hpp"
 #include "sip/store.hpp"
 
@@ -11,17 +13,22 @@
 
 namespace ims::scscf {
 
+class ScscfServiceTestPeer;
+
 class ScscfService {
 public:
     ScscfService(const ims::ScscfConfig& config,
                  boost::asio::io_context& io,
                  std::shared_ptr<ims::diameter::IHssClient> hss,
-                 std::shared_ptr<ims::registration::IRegistrationStore> store);
+                 std::shared_ptr<ims::registration::IRegistrationStore> store,
+                 std::unique_ptr<ims::sip::IRegEventNotifier> reg_event_notifier = nullptr);
 
     auto start() -> VoidResult;
     void stop();
 
 private:
+    friend class ScscfServiceTestPeer;
+
     void onRegister(std::shared_ptr<ims::sip::ServerTransaction> txn,
                     ims::sip::SipMessage& request);
     void onInvite(std::shared_ptr<ims::sip::ServerTransaction> txn,
@@ -35,8 +42,11 @@ private:
     void sendInitialNotify(const ims::sip::SipMessage& subscribe,
                            const std::string& to_tag);
 
+private:
+
     ims::ScscfConfig config_;
     std::unique_ptr<ims::sip::SipStack> sip_stack_;
+    std::unique_ptr<ims::sip::IRegEventNotifier> reg_event_notifier_;
     std::unique_ptr<Registrar> registrar_;
     std::unique_ptr<SessionRouter> session_router_;
     std::shared_ptr<ims::diameter::IHssClient> hss_;

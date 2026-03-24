@@ -10,7 +10,7 @@ This is a telecom/SIP signaling system, not a web application.
 - **CMake 3.22+**, C++23 standard
 - Build: `cmake -B build && cmake --build build`
 - Test: `cd build && ctest --output-on-failure`
-- Dependencies: libosip2, boost (system), spdlog, yaml-cpp, c-ares, gtest
+- Dependencies: libosip2, libeXosip2, boost (system), spdlog, yaml-cpp, c-ares, gtest
 
 ## Code Conventions
 
@@ -64,7 +64,10 @@ IRegistrationStore: store, lookup, remove, purgeExpired, isRegistered
 
 ## Important Notes
 
-- This is a **SIP proxy** system, NOT a SIP UA (user agent). Don't use libeXosip2 (it's UA-mode only).
+- This is a **SIP proxy** system, not a pure SIP UA. Use **libosip2** for the proxy plane (main listener, SipMessage, transactions, proxy forwarding, registrar server logic).
+- Use **libeXosip2** for isolated UA-like outbound flows when needed, starting with S-CSCF reg-event initial NOTIFY and similar主动请求能力。
+- Do not let libeXosip2 take over the main P-/I-/S-CSCF listening sockets or the primary TransactionLayer ownership of proxied dialogs.
+- Do not share ownership of the same `osip_message_t*` across the osip2 and eXosip2 boundaries; rebuild messages at the adapter boundary instead.
 - The system handles SIP messages statelessly where possible, using transactions only where required by RFC 3261.
 - Diameter stubs (`StubHssClient`, `StubPcfClient`) exist for development; replace with freeDiameter for production.
 - rtpengine is an external process; we control it via bencode-over-UDP (NG protocol).

@@ -18,7 +18,32 @@ find_package(GTest REQUIRED)
 # pkg-config based dependencies
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBOSIP2 REQUIRED IMPORTED_TARGET libosip2)
+pkg_check_modules(LIBEXOSIP2 QUIET IMPORTED_TARGET libeXosip2)
 pkg_check_modules(LIBCARES REQUIRED IMPORTED_TARGET libcares)
+
+if (TARGET PkgConfig::LIBEXOSIP2)
+    set(IMS_EXOSIP_TARGET PkgConfig::LIBEXOSIP2)
+else()
+    find_path(LIBEXOSIP2_INCLUDE_DIR
+        NAMES eXosip2/eXosip.h
+        HINTS /usr/local/include /usr/include
+    )
+    find_library(LIBEXOSIP2_LIBRARY
+        NAMES eXosip2 libeXosip2
+        HINTS /usr/local/lib /usr/lib /usr/lib/x86_64-linux-gnu
+    )
+
+    if (NOT LIBEXOSIP2_INCLUDE_DIR OR NOT LIBEXOSIP2_LIBRARY)
+        message(FATAL_ERROR "libeXosip2 not found via pkg-config or manual lookup")
+    endif()
+
+    add_library(ims_exosip2 UNKNOWN IMPORTED)
+    set_target_properties(ims_exosip2 PROPERTIES
+        IMPORTED_LOCATION "${LIBEXOSIP2_LIBRARY}"
+        INTERFACE_INCLUDE_DIRECTORIES "${LIBEXOSIP2_INCLUDE_DIR}"
+    )
+    set(IMS_EXOSIP_TARGET ims_exosip2)
+endif()
 
 # Add subdirectories
 add_subdirectory(src/common)
