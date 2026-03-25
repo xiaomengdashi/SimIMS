@@ -35,7 +35,7 @@ TEST(AuthManagerTest, VerifyAkaDigestResponseSuccess) {
         "response=\"425f6e5096624975af0e7695ba7712a8\", "
         "algorithm=AKAv1-MD5, qop=auth, nc=00000001, cnonce=\"deadbeef\"";
 
-    EXPECT_TRUE(AuthManager::verifyResponse(header, av, "REGISTER"));
+    EXPECT_TRUE(AuthManager::verifyResponse(header, av, "REGISTER", "Digest-AKAv1-MD5"));
 }
 
 TEST(AuthManagerTest, VerifyAkaDigestResponseRejectsNonceMismatch) {
@@ -55,5 +55,24 @@ TEST(AuthManagerTest, VerifyAkaDigestResponseRejectsNonceMismatch) {
         "response=\"425f6e5096624975af0e7695ba7712a8\", "
         "algorithm=AKAv1-MD5, qop=auth, nc=00000001, cnonce=\"deadbeef\"";
 
-    EXPECT_FALSE(AuthManager::verifyResponse(header, av, "REGISTER"));
+    EXPECT_FALSE(AuthManager::verifyResponse(header, av, "REGISTER", "Digest-AKAv1-MD5"));
+}
+
+TEST(AuthManagerTest, BuildMd5ChallengeAndVerifyResponseSuccess) {
+    ims::diameter::AuthVector av{
+        .rand = {0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37,
+                 0x38, 0x39, 0x61, 0x62, 0x63, 0x64, 0x65, 0x66},
+        .xres = {'t', 'e', 's', 't', 'p', 'a', 's', 's'},
+    };
+
+    auto challenge = AuthManager::buildChallenge(av, "ims.example.com", "Digest-MD5");
+    EXPECT_NE(challenge.find("algorithm=MD5"), std::string::npos);
+
+    auto header =
+        "Digest username=\"testuser\", realm=\"ims.example.com\", "
+        "nonce=\"MDEyMzQ1Njc4OWFiY2RlZg==\", uri=\"sip:ims.example.com\", "
+        "response=\"30650641eb4e50281847de3313c07dc8\", "
+        "algorithm=MD5, qop=auth, nc=00000001, cnonce=\"deadbeef\"";
+
+    EXPECT_TRUE(AuthManager::verifyResponse(header, av, "REGISTER", "Digest-MD5"));
 }

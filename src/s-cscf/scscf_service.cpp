@@ -1,5 +1,6 @@
 #include "scscf_service.hpp"
 #include "common/logger.hpp"
+#include "sip/uri_utils.hpp"
 
 #include <format>
 #include <vector>
@@ -8,18 +9,14 @@ namespace ims::scscf {
 
 namespace {
 
-auto extractUriFromNameAddr(const std::string& value) -> std::string {
-    auto start = value.find('<');
-    auto end = value.find('>');
-    if (start != std::string::npos && end != std::string::npos && end > start) {
-        return value.substr(start + 1, end - start - 1);
+auto normalizeImpu(std::string uri) -> std::string {
+    if (uri.empty()) {
+        return uri;
     }
-
-    auto semi = value.find(';');
-    if (semi != std::string::npos) {
-        return value.substr(0, semi);
+    if (uri.find("sip:") == std::string::npos) {
+        uri = "sip:" + uri;
     }
-    return value;
+    return uri;
 }
 
 } // namespace
@@ -84,7 +81,8 @@ void ScscfService::stop() {
 void ScscfService::onRegister(std::shared_ptr<ims::sip::ServerTransaction> txn,
                                ims::sip::SipMessage& request)
 {
-    IMS_LOG_DEBUG("S-CSCF received REGISTER");
+    IMS_LOG_DEBUG("S-CSCF received REGISTER via_count={} top_via={}",
+                  request.viaCount(), request.topVia());
     registrar_->handleRegister(request, txn);
 }
 
@@ -122,10 +120,7 @@ void ScscfService::onSubscribe(std::shared_ptr<ims::sip::ServerTransaction> txn,
         return;
     }
 
-    auto impu = request.requestUri();
-    if (impu.find("sip:") == std::string::npos) {
-        impu = "sip:" + impu;
-    }
+    auto impu = normalizeImpu(request.requestUri());
 
     auto lookup = store_->lookup(impu);
     if (!lookup) {
@@ -159,7 +154,7 @@ void ScscfService::sendInitialNotify(const ims::sip::SipMessage& subscribe,
         return;
     }
 
-    auto target_uri = extractUriFromNameAddr(*contact);
+    auto target_uri = ims::sip::extract_uri_from_name_addr(*contact);
     auto record_routes = subscribe.getHeaders("Record-Route");
     std::vector<std::string> route_set(record_routes.rbegin(), record_routes.rend());
 
@@ -171,7 +166,7 @@ void ScscfService::sendInitialNotify(const ims::sip::SipMessage& subscribe,
     auto event = subscribe.getHeader("Event").value_or("reg");
     auto expires = subscribe.getHeader("Expires").value_or("3600");
 
-    auto reg_aor = extractUriFromNameAddr(subscribe.toHeader());
+    auto reg_aor = ims::sip::extract_uri_from_name_addr(subscribe.toHeader());
     auto body = std::format(
         "<?xml version=\"1.0\"?>\r\n"
         "<reginfo xmlns=\"urn:ietf:params:xml:ns:reginfo\" version=\"0\" state=\"full\">\r\n"

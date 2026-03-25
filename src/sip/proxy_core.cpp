@@ -1,4 +1,5 @@
 #include "proxy_core.hpp"
+#include "stack.hpp"
 #include "common/logger.hpp"
 #include <osipparser2/osip_parser.h>
 
@@ -115,6 +116,110 @@ auto ProxyCore::forwardResponse(SipMessage& msg,
 
     IMS_LOG_DEBUG("Forwarding response {} to {}:{}", msg.statusCode(), dest.address, dest.port);
     return transport->send(msg, dest);
+}
+
+auto ProxyCore::forwardResponseUpstream(const SipMessage& response,
+                                        const std::shared_ptr<ServerTransaction>& txn) -> VoidResult {
+    IMS_LOG_DEBUG("Forwarding response upstream status={} original_via_count={} top_via={}",
+                  response.statusCode(), response.viaCount(), response.topVia());
+    auto upstream = response.clone();
+    if (!upstream) {
+        return std::unexpected(upstream.error());
+    }
+    upstream->removeTopVia();
+    IMS_LOG_DEBUG("Forwarding response upstream after removeTopVia via_count={} top_via={}",
+                  upstream->viaCount(), upstream->topVia());
+    return txn->sendResponse(std::move(*upstream));
+}
+
+auto ProxyCore::forwardStateful(SipMessage& request,
+                                const Endpoint& dest,
+                                const std::shared_ptr<ServerTransaction>& upstream_txn,
+                                SipStack& sip_stack,
+                                const ForwardOptions& options) -> VoidResult {
+    if (options.detect_loop && isLoopDetected(request)) {
+        auto resp = createResponse(request, 482, "Loop Detected");
+        if (resp) {
+            upstream_txn->sendResponse(std::move(*resp));
+        }
+        return {};
+    }
+
+    if (options.process_route_headers) {
+        processRouteHeaders(request);
+    }
+    if (options.add_record_route) {
+        addRecordRoute(request);
+    }
+
+    auto prep = prepareRequestForForward(request, dest.transport);
+    if (!prep) {
+        int code = (request.maxForwards() == 0) ? 483 : 500;
+        const char* reason = (code == 483) ? "Too Many Hops" : "Internal Server Error";
+        auto resp = createResponse(request, code, reason);
+        if (resp) {
+            upstream_txn->sendResponse(std::move(*resp));
+        }
+        return std::unexpected(prep.error());
+    }
+
+    auto send_result = sip_stack.sendRequest(std::move(request), dest,
+        [this, upstream_txn](const ims::sip::SipMessage& response) {
+            auto forwarded = forwardResponseUpstream(response, upstream_txn);
+            if (!forwarded) {
+                IMS_LOG_WARN("Failed to forward response upstream: {}", forwarded.error().message);
+            }
+        });
+    if (!send_result) {
+        auto resp = createResponse(upstream_txn->request(), 500, "Internal Server Error");
+        if (resp) {
+            upstream_txn->sendResponse(std::move(*resp));
+        }
+        return std::unexpected(send_result.error());
+    }
+
+    return {};
+}
+
+auto ProxyCore::buildPathHeader() const -> std::string {
+    return std::format("<sip:{}:{};lr>", local_address_, local_port_);
+}
+
+auto ProxyCore::buildForwardedCancel(const SipMessage& incoming_cancel,
+                                     const CancelForwardContext& context) -> Result<SipMessage> {
+    auto forwarded = incoming_cancel.clone();
+    if (!forwarded) {
+        return std::unexpected(forwarded.error());
+    }
+
+    if (context.process_route_headers) {
+        processRouteHeaders(*forwarded);
+    }
+
+    while (forwarded->viaCount() > 0) {
+        forwarded->removeTopVia();
+    }
+
+    if (context.decrement_max_forwards) {
+        if (forwarded->maxForwards() < 0) {
+            forwarded->setMaxForwards(70);
+        } else {
+            forwarded->decrementMaxForwards();
+        }
+    }
+
+    std::string transport = context.transport.empty() ? "udp" : context.transport;
+    std::transform(transport.begin(), transport.end(), transport.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::toupper(ch)); });
+    auto branch = context.invite_branch.empty() ? generateBranch() : context.invite_branch;
+    auto via = std::format("SIP/2.0/{} {}:{};branch={};rport",
+                           transport, context.local_address, context.local_port, branch);
+    forwarded->addVia(via);
+    return forwarded;
+}
+
+void ProxyCore::addPathHeader(SipMessage& msg) {
+    msg.addHeader("Path", buildPathHeader());
 }
 
 void ProxyCore::addRecordRoute(SipMessage& msg) {

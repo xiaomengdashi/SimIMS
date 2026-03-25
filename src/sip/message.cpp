@@ -1,12 +1,15 @@
 #include "message.hpp"
 #include "common/logger.hpp"
+#include "uri_utils.hpp"
 #include <osipparser2/osip_port.h>
 #include <osipparser2/osip_parser.h>
 #include <osipparser2/osip_headers.h>
+#include <algorithm>
+#include <cctype>
+#include <cstring>
+#include <iomanip>
 #include <random>
 #include <sstream>
-#include <iomanip>
-#include <cstring>
 
 namespace ims::sip {
 
@@ -64,6 +67,34 @@ auto from_to_string(osip_from_t* header) -> std::string {
     return {};
 }
 
+auto unquote(std::string value) -> std::string {
+    if (value.size() >= 2 && value.front() == '"' && value.back() == '"') {
+        return value.substr(1, value.size() - 2);
+    }
+    return value;
+}
+
+auto param_value(osip_list_t* params, const std::string& key) -> std::optional<std::string> {
+    if (!params) {
+        return std::nullopt;
+    }
+
+    osip_generic_param_t* param = nullptr;
+    if (osip_generic_param_get_byname(params, const_cast<char*>(key.c_str()), &param) == 0 &&
+        param && param->gvalue) {
+        return unquote(std::string(param->gvalue));
+    }
+    return std::nullopt;
+}
+
+auto parse_uint_header(const std::string& value) -> std::optional<uint32_t> {
+    try {
+        return static_cast<uint32_t>(std::stoul(value));
+    } catch (...) {
+        return std::nullopt;
+    }
+}
+
 auto via_to_string(osip_via_t* via) -> std::string {
     if (!via) return {};
     char* buf = nullptr;
@@ -86,10 +117,43 @@ auto contact_to_string(osip_contact_t* contact) -> std::string {
     return {};
 }
 
+auto route_to_string(osip_route_t* route) -> std::string {
+    if (!route) return {};
+    char* buf = nullptr;
+    if (osip_route_to_str(route, &buf) == 0 && buf) {
+        std::string result(buf);
+        osip_free(buf);
+        return result;
+    }
+    return {};
+}
+
 auto record_route_to_string(osip_record_route_t* record_route) -> std::string {
     if (!record_route) return {};
     char* buf = nullptr;
     if (osip_record_route_to_str(record_route, &buf) == 0 && buf) {
+        std::string result(buf);
+        osip_free(buf);
+        return result;
+    }
+    return {};
+}
+
+auto authorization_to_string(osip_authorization_t* authorization) -> std::string {
+    if (!authorization) return {};
+    char* buf = nullptr;
+    if (osip_authorization_to_str(authorization, &buf) == 0 && buf) {
+        std::string result(buf);
+        osip_free(buf);
+        return result;
+    }
+    return {};
+}
+
+auto www_authenticate_to_string(osip_www_authenticate_t* header) -> std::string {
+    if (!header) return {};
+    char* buf = nullptr;
+    if (osip_www_authenticate_to_str(header, &buf) == 0 && buf) {
         std::string result(buf);
         osip_free(buf);
         return result;
@@ -131,6 +195,43 @@ auto split_header_values(const std::string& value) -> std::vector<std::string> {
         parts.push_back(std::move(part));
     }
     return parts;
+}
+
+auto lowercase(std::string value) -> std::string {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    return value;
+}
+
+void clear_contacts(osip_message_t* msg) {
+    while (osip_list_size(&msg->contacts) > 0) {
+        auto* contact = static_cast<osip_contact_t*>(osip_list_get(&msg->contacts, 0));
+        osip_list_remove(&msg->contacts, 0);
+        if (contact) {
+            osip_contact_free(contact);
+        }
+    }
+}
+
+void clear_routes(osip_message_t* msg) {
+    while (osip_list_size(&msg->routes) > 0) {
+        auto* route = static_cast<osip_route_t*>(osip_list_get(&msg->routes, 0));
+        osip_list_remove(&msg->routes, 0);
+        if (route) {
+            osip_route_free(route);
+        }
+    }
+}
+
+void clear_record_routes(osip_message_t* msg) {
+    while (osip_list_size(&msg->record_routes) > 0) {
+        auto* record_route = static_cast<osip_record_route_t*>(osip_list_get(&msg->record_routes, 0));
+        osip_list_remove(&msg->record_routes, 0);
+        if (record_route) {
+            osip_record_route_free(record_route);
+        }
+    }
 }
 
 } // anonymous namespace
@@ -233,34 +334,94 @@ void SipMessage::setStatus(int code, const std::string& reason) {
 }
 
 auto SipMessage::getHeader(const std::string& name) const -> std::optional<std::string> {
-    osip_header_t* header = nullptr;
-    int pos = 0;
-    // osip_message_header_get_byname returns position (>=0) if found, -1 if not
-    if (osip_message_header_get_byname(msg_.get(), name.c_str(), pos, &header) >= 0 && header) {
-        if (header->hvalue) return std::string(header->hvalue);
-        return std::string{};
+    auto headers = getHeaders(name);
+    if (headers.empty()) {
+        return std::nullopt;
     }
-    return std::nullopt;
+    return headers.front();
 }
 
 auto SipMessage::getHeaders(const std::string& name) const -> std::vector<std::string> {
     std::vector<std::string> result;
+    auto lower_name = lowercase(name);
 
-    if (name == "Record-Route" || name == "record-route") {
-        osip_record_route_t* record_route = nullptr;
-        int pos = 0;
-        while (osip_message_get_record_route(msg_.get(), pos, &record_route) == 0 && record_route) {
+    if (lower_name == "contact") {
+        for (int pos = 0; pos < osip_list_size(&msg_->contacts); ++pos) {
+            auto* contact = static_cast<osip_contact_t*>(osip_list_get(&msg_->contacts, pos));
+            auto value = contact_to_string(contact);
+            if (!value.empty()) {
+                result.push_back(std::move(value));
+            }
+        }
+        return result;
+    }
+
+    if (lower_name == "route") {
+        for (int pos = 0; pos < osip_list_size(&msg_->routes); ++pos) {
+            auto* route = static_cast<osip_route_t*>(osip_list_get(&msg_->routes, pos));
+            auto value = route_to_string(route);
+            auto parts = split_header_values(value);
+            result.insert(result.end(), parts.begin(), parts.end());
+        }
+        return result;
+    }
+
+    if (lower_name == "record-route") {
+        for (int pos = 0; pos < osip_list_size(&msg_->record_routes); ++pos) {
+            auto* record_route = static_cast<osip_record_route_t*>(osip_list_get(&msg_->record_routes, pos));
             auto value = record_route_to_string(record_route);
             auto parts = split_header_values(value);
             result.insert(result.end(), parts.begin(), parts.end());
-            ++pos;
+        }
+        return result;
+    }
+
+    if (lower_name == "authorization") {
+        for (int pos = 0; pos < osip_list_size(&msg_->authorizations); ++pos) {
+            auto* authorization = static_cast<osip_authorization_t*>(osip_list_get(&msg_->authorizations, pos));
+            auto value = authorization_to_string(authorization);
+            if (!value.empty()) {
+                result.push_back(std::move(value));
+            }
+        }
+        return result;
+    }
+
+    if (lower_name == "proxy-authorization") {
+        for (int pos = 0; pos < osip_list_size(&msg_->proxy_authorizations); ++pos) {
+            auto* authorization = static_cast<osip_authorization_t*>(osip_list_get(&msg_->proxy_authorizations, pos));
+            auto value = authorization_to_string(authorization);
+            if (!value.empty()) {
+                result.push_back(std::move(value));
+            }
+        }
+        return result;
+    }
+
+    if (lower_name == "www-authenticate") {
+        for (int pos = 0; pos < osip_list_size(&msg_->www_authenticates); ++pos) {
+            auto* header = static_cast<osip_www_authenticate_t*>(osip_list_get(&msg_->www_authenticates, pos));
+            auto value = www_authenticate_to_string(header);
+            if (!value.empty()) {
+                result.push_back(std::move(value));
+            }
+        }
+        return result;
+    }
+
+    if (lower_name == "proxy-authenticate") {
+        for (int pos = 0; pos < osip_list_size(&msg_->proxy_authenticates); ++pos) {
+            auto* header = static_cast<osip_www_authenticate_t*>(osip_list_get(&msg_->proxy_authenticates, pos));
+            auto value = www_authenticate_to_string(header);
+            if (!value.empty()) {
+                result.push_back(std::move(value));
+            }
         }
         return result;
     }
 
     osip_header_t* header = nullptr;
     int pos = 0;
-    // osip_message_header_get_byname returns position (>=0) if found, -1 if not
     while (osip_message_header_get_byname(msg_.get(), name.c_str(), pos, &header) >= 0 && header) {
         if (header->hvalue) {
             result.emplace_back(header->hvalue);
@@ -275,14 +436,29 @@ void SipMessage::addHeader(const std::string& name, const std::string& value) {
 }
 
 void SipMessage::removeHeader(const std::string& name) {
+    auto lower_name = lowercase(name);
+
+    if (lower_name == "contact") {
+        clear_contacts(msg_.get());
+        return;
+    }
+
+    if (lower_name == "route") {
+        clear_routes(msg_.get());
+        return;
+    }
+
+    if (lower_name == "record-route") {
+        clear_record_routes(msg_.get());
+        return;
+    }
+
     osip_header_t* header = nullptr;
     int pos = 0;
-    // osip_message_header_get_byname returns position (>=0) if found, -1 if not
     while (osip_message_header_get_byname(msg_.get(), name.c_str(), pos, &header) >= 0 && header) {
         osip_list_remove(&msg_->headers, pos);
         osip_header_free(header);
         header = nullptr;
-        // Don't increment pos since we removed from the list
     }
 }
 
@@ -322,6 +498,30 @@ void SipMessage::setFromHeader(const std::string& from) {
 auto SipMessage::toHeader() const -> std::string {
     osip_to_t* to = osip_message_get_to(msg_.get());
     return from_to_string(to);
+}
+
+auto SipMessage::from_uri() const -> std::optional<std::string> {
+    osip_from_t* from = osip_message_get_from(msg_.get());
+    if (!from || !from->url) {
+        return std::nullopt;
+    }
+    auto value = uri_to_string(from->url);
+    if (value.empty()) {
+        return std::nullopt;
+    }
+    return value;
+}
+
+auto SipMessage::to_uri() const -> std::optional<std::string> {
+    osip_to_t* to = osip_message_get_to(msg_.get());
+    if (!to || !to->url) {
+        return std::nullopt;
+    }
+    auto value = uri_to_string(to->url);
+    if (value.empty()) {
+        return std::nullopt;
+    }
+    return value;
 }
 
 void SipMessage::setToHeader(const std::string& to) {
@@ -429,18 +629,7 @@ auto SipMessage::viaBranch() const -> std::string {
 }
 
 auto SipMessage::routes() const -> std::vector<std::string> {
-    std::vector<std::string> result;
-    osip_route_t* route = nullptr;
-    int pos = 0;
-    while (osip_message_get_route(msg_.get(), pos, &route) == 0 && route) {
-        char* buf = nullptr;
-        if (osip_route_to_str(route, &buf) == 0 && buf) {
-            result.emplace_back(buf);
-            osip_free(buf);
-        }
-        ++pos;
-    }
-    return result;
+    return getHeaders("Route");
 }
 
 void SipMessage::addRoute(const std::string& route) {
@@ -452,11 +641,13 @@ void SipMessage::addRecordRoute(const std::string& rr) {
 }
 
 void SipMessage::removeTopRoute() {
-    osip_route_t* route = nullptr;
-    if (osip_message_get_route(msg_.get(), 0, &route) == 0 && route) {
-        osip_list_remove(&msg_->routes, 0);
-        osip_route_free(route);
+    auto* route = static_cast<osip_route_t*>(osip_list_get(&msg_->routes, 0));
+    if (!route) {
+        return;
     }
+
+    osip_list_remove(&msg_->routes, 0);
+    osip_route_free(route);
 }
 
 auto SipMessage::contact() const -> std::optional<std::string> {
@@ -465,6 +656,79 @@ auto SipMessage::contact() const -> std::optional<std::string> {
         return contact_to_string(ct);
     }
     return std::nullopt;
+}
+
+auto SipMessage::contact_uri(size_t index) const -> std::optional<std::string> {
+    osip_contact_t* ct = nullptr;
+    if (osip_message_get_contact(msg_.get(), static_cast<int>(index), &ct) != 0 || !ct) {
+        return std::nullopt;
+    }
+    if (ct->url == nullptr) {
+        auto value = contact_to_string(ct);
+        if (value == "*") {
+            return value;
+        }
+        auto extracted = extract_uri_from_name_addr(value);
+        return extracted.empty() ? std::nullopt : std::optional<std::string>(extracted);
+    }
+    auto value = uri_to_string(ct->url);
+    if (value.empty()) {
+        return std::nullopt;
+    }
+    return value;
+}
+
+auto SipMessage::contact_param(const std::string& key, size_t index) const -> std::optional<std::string> {
+    osip_contact_t* ct = nullptr;
+    if (osip_message_get_contact(msg_.get(), static_cast<int>(index), &ct) != 0 || !ct) {
+        return std::nullopt;
+    }
+    return param_value(&ct->gen_params, key);
+}
+
+auto SipMessage::contact_expires(size_t index) const -> std::optional<uint32_t> {
+    auto value = contact_param("expires", index);
+    if (!value) {
+        return std::nullopt;
+    }
+    return parse_uint_header(*value);
+}
+
+auto SipMessage::expires_value() const -> std::optional<uint32_t> {
+    auto expires = getHeader("Expires");
+    if (!expires) {
+        return std::nullopt;
+    }
+    return parse_uint_header(*expires);
+}
+
+auto SipMessage::is_wildcard_contact() const -> bool {
+    auto value = contact();
+    return value && *value == "*";
+}
+
+auto SipMessage::impu_from_to() const -> std::optional<std::string> {
+    return to_uri();
+}
+
+auto SipMessage::impi_from_authorization_or_from() const -> std::optional<std::string> {
+    auto auth = getHeader("Authorization");
+    if (auth) {
+        auto parsed = parse_digest_authorization(*auth);
+        if (parsed && !parsed->username.empty()) {
+            return parsed->username;
+        }
+    }
+
+    auto from = from_uri();
+    if (!from) {
+        return std::nullopt;
+    }
+
+    if (from->rfind("sip:", 0) == 0) {
+        return from->substr(4);
+    }
+    return from;
 }
 
 void SipMessage::setContact(const std::string& contact_str) {
@@ -526,8 +790,17 @@ auto SipMessage::maxForwards() const -> int {
 }
 
 void SipMessage::setMaxForwards(int value) {
-    removeHeader("max-forwards");
     auto val_str = std::to_string(value);
+
+    osip_header_t* mf = nullptr;
+    if (osip_message_header_get_byname(msg_.get(), "max-forwards", 0, &mf) >= 0 && mf) {
+        if (mf->hvalue) {
+            osip_free(mf->hvalue);
+        }
+        mf->hvalue = osip_strdup(val_str.c_str());
+        return;
+    }
+
     addHeader("Max-Forwards", val_str);
 }
 
@@ -548,15 +821,15 @@ auto createResponse(const SipMessage& request, int status_code,
     auto& resp = *result;
     resp.setStatus(status_code, reason);
 
-    // Copy Via headers
-    for (int i = request.viaCount() - 1; i >= 0; --i) {
-        osip_via_t* via = nullptr;
-        if (osip_message_get_via(request.raw(), i, &via) == 0 && via) {
-            char* buf = nullptr;
-            if (osip_via_to_str(via, &buf) == 0 && buf) {
-                resp.addVia(buf);
-                osip_free(buf);
-            }
+    // Copy Via headers preserving all hops and original order.
+    for (int i = 0; i < osip_list_size(&request.raw()->vias); ++i) {
+        auto* via = static_cast<osip_via_t*>(osip_list_get(&request.raw()->vias, i));
+        if (!via) {
+            continue;
+        }
+        osip_via_t* via_clone = nullptr;
+        if (osip_via_clone(via, &via_clone) == 0 && via_clone) {
+            osip_list_add(&resp.raw()->vias, via_clone, -1);
         }
     }
 

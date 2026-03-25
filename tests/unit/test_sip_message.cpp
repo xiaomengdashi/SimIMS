@@ -100,6 +100,27 @@ TEST_F(SipMessageTest, CreateResponsePreservesViaOrder) {
     EXPECT_NE(top_via.find("proxy1.example.com"), std::string::npos);
 }
 
+TEST_F(SipMessageTest, CreateResponseRoundTripPreservesAllVias) {
+    auto req_result = SipMessage::parse(kRegisterMsg);
+    ASSERT_TRUE(req_result.has_value());
+
+    req_result->addVia("SIP/2.0/UDP proxy1.example.com:5060;branch=z9hG4bK-proxy-1");
+    req_result->addVia("SIP/2.0/UDP proxy2.example.com:5060;branch=z9hG4bK-proxy-2");
+    ASSERT_EQ(req_result->viaCount(), 3);
+
+    auto resp_result = createResponse(*req_result, 401, "Unauthorized");
+    ASSERT_TRUE(resp_result.has_value()) << resp_result.error().message;
+    EXPECT_EQ(resp_result->viaCount(), 3);
+
+    auto raw = resp_result->toString();
+    ASSERT_TRUE(raw.has_value()) << raw.error().message;
+
+    auto reparsed = SipMessage::parse(*raw);
+    ASSERT_TRUE(reparsed.has_value()) << reparsed.error().message;
+    EXPECT_EQ(reparsed->viaCount(), 3);
+    EXPECT_EQ(reparsed->viaBranch(), "z9hG4bK-proxy-2");
+}
+
 TEST_F(SipMessageTest, SerializeRoundTrip) {
     auto result = SipMessage::parse(kRegisterMsg);
     ASSERT_TRUE(result.has_value());
@@ -132,6 +153,23 @@ TEST_F(SipMessageTest, ViaOperations) {
     // Remove top Via
     msg.removeTopVia();
     EXPECT_EQ(msg.viaCount(), 1);
+}
+
+TEST_F(SipMessageTest, ParseResponseWithMultipleVias) {
+    auto result = SipMessage::parse(
+        "SIP/2.0 401 Unauthorized\r\n"
+        "Via: SIP/2.0/UDP 127.0.0.1:5061;branch=z9hG4bK-icscf\r\n"
+        "Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bK-pcscf\r\n"
+        "Via: SIP/2.0/UDP ue.example.com:5090;branch=z9hG4bK-ue\r\n"
+        "To: <sip:user@ims.example.com>;tag=to-tag\r\n"
+        "From: <sip:user@ims.example.com>;tag=from-tag\r\n"
+        "Call-ID: response-call-id\r\n"
+        "CSeq: 1 REGISTER\r\n"
+        "Content-Length: 0\r\n"
+        "\r\n");
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+    EXPECT_EQ(result->viaCount(), 3);
+    EXPECT_EQ(result->viaBranch(), "z9hG4bK-icscf");
 }
 
 TEST_F(SipMessageTest, MaxForwardsDecrement) {
@@ -185,3 +223,167 @@ TEST_F(SipMessageTest, BodyOperations) {
     ASSERT_TRUE(body.has_value());
     EXPECT_EQ(*body, sdp);
 }
+
+TEST_F(SipMessageTest, RemoveHeaderRemovesSpecializedContact) {
+    auto result = SipMessage::parse(kRegisterMsg);
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+
+    auto& msg = *result;
+    ASSERT_TRUE(msg.contact().has_value());
+
+    msg.removeHeader("contact");
+
+    EXPECT_FALSE(msg.contact().has_value());
+    auto serialized = msg.toString();
+    ASSERT_TRUE(serialized.has_value()) << serialized.error().message;
+    EXPECT_EQ(serialized->find("Contact:"), std::string::npos);
+}
+
+TEST_F(SipMessageTest, RemoveHeaderRemovesRecordRoute) {
+    auto result = SipMessage::parse(kRegisterMsg);
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+
+    result->addRecordRoute("<sip:edge1.ims.example.com;lr>");
+    result->addRecordRoute("<sip:edge2.ims.example.com;lr>");
+
+    auto raw = result->toString();
+    ASSERT_TRUE(raw.has_value()) << raw.error().message;
+
+    auto reparsed = SipMessage::parse(*raw);
+    ASSERT_TRUE(reparsed.has_value()) << reparsed.error().message;
+    ASSERT_FALSE(reparsed->getHeaders("Record-Route").empty());
+
+    reparsed->removeHeader("Record-Route");
+
+    EXPECT_TRUE(reparsed->getHeaders("Record-Route").empty());
+    auto serialized = reparsed->toString();
+    ASSERT_TRUE(serialized.has_value()) << serialized.error().message;
+    EXPECT_EQ(serialized->find("Record-Route:"), std::string::npos);
+}
+
+TEST_F(SipMessageTest, GetHeaderReturnsSpecializedContact) {
+    auto result = SipMessage::parse(kRegisterMsg);
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+
+    EXPECT_EQ(result->getHeader("Contact"), std::optional<std::string>{"<sip:user@10.0.0.1:5060>"});
+    EXPECT_EQ(result->getHeaders("Contact"), std::vector<std::string>({"<sip:user@10.0.0.1:5060>"}));
+}
+
+TEST_F(SipMessageTest, GetHeadersReturnsSpecializedRoutes) {
+    auto result = SipMessage::parse(kRegisterMsg);
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+
+    result->addRoute("<sip:edge1.ims.example.com;lr>");
+    result->addRoute("<sip:edge2.ims.example.com;lr>");
+
+    auto routes = result->getHeaders("Route");
+    ASSERT_EQ(routes.size(), 2u);
+    EXPECT_NE(routes[0].find("edge1.ims.example.com"), std::string::npos);
+    EXPECT_NE(routes[1].find("edge2.ims.example.com"), std::string::npos);
+}
+
+TEST_F(SipMessageTest, GetHeaderReturnsSpecializedAuthorization) {
+    static constexpr auto kMsg =
+        "REGISTER sip:ims.example.com SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK776asdhds\r\n"
+        "Max-Forwards: 70\r\n"
+        "To: <sip:user@ims.example.com>\r\n"
+        "From: <sip:user@ims.example.com>;tag=1928301774\r\n"
+        "Call-ID: a84b4c76e66710@10.0.0.1\r\n"
+        "CSeq: 2 REGISTER\r\n"
+        "Authorization: Digest username=\"user\", realm=\"ims.example.com\", nonce=\"abc\", uri=\"sip:ims.example.com\", response=\"deadbeef\"\r\n"
+        "Content-Length: 0\r\n"
+        "\r\n";
+
+    auto result = SipMessage::parse(kMsg);
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+
+    auto auth = result->getHeader("Authorization");
+    ASSERT_TRUE(auth.has_value());
+    EXPECT_NE(auth->find("username=\"user\""), std::string::npos);
+}
+
+TEST_F(SipMessageTest, RemoveHeaderRemovesSpecializedRoutes) {
+    auto result = SipMessage::parse(kRegisterMsg);
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+
+    result->addRoute("<sip:edge1.ims.example.com;lr>");
+    result->addRoute("<sip:edge2.ims.example.com;lr>");
+    ASSERT_EQ(result->routes().size(), 2u);
+
+    result->removeHeader("Route");
+
+    EXPECT_TRUE(result->routes().empty());
+    EXPECT_TRUE(result->getHeaders("Route").empty());
+    auto serialized = result->toString();
+    ASSERT_TRUE(serialized.has_value()) << serialized.error().message;
+    EXPECT_EQ(serialized->find("Route:"), std::string::npos);
+}
+
+TEST_F(SipMessageTest, RemoveTopRouteKeepsRemainingRoutes) {
+    auto result = SipMessage::parse(kRegisterMsg);
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+
+    result->addRoute("<sip:edge1.ims.example.com;lr>");
+    result->addRoute("<sip:edge2.ims.example.com;lr>");
+
+    result->removeTopRoute();
+
+    auto routes = result->routes();
+    ASSERT_EQ(routes.size(), 1u);
+    EXPECT_NE(routes.front().find("edge2.ims.example.com"), std::string::npos);
+}
+
+TEST_F(SipMessageTest, TypedAccessorsExtractUrisAndExpires) {
+    static constexpr auto kMsg =
+        "REGISTER sip:ims.example.com SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK776asdhds\r\n"
+        "Max-Forwards: 70\r\n"
+        "To: <sip:user@ims.example.com>\r\n"
+        "From: <sip:user@ims.example.com>;tag=1928301774\r\n"
+        "Call-ID: a84b4c76e66710@10.0.0.1\r\n"
+        "CSeq: 1 REGISTER\r\n"
+        "Contact: <sip:user@10.0.0.1:5060>;expires=120;+sip.instance=\"urn:uuid:00000000-0000-0000-0000-000000000001\";reg-id=3\r\n"
+        "Expires: 3600\r\n"
+        "Authorization: Digest username=\"user@ims.example.com\", realm=\"ims.example.com\", nonce=\"abc\", uri=\"sip:ims.example.com\", response=\"deadbeef\"\r\n"
+        "Content-Length: 0\r\n"
+        "\r\n";
+
+    auto result = SipMessage::parse(kMsg);
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+
+    EXPECT_EQ(result->from_uri(), std::optional<std::string>{"sip:user@ims.example.com"});
+    EXPECT_EQ(result->to_uri(), std::optional<std::string>{"sip:user@ims.example.com"});
+    EXPECT_EQ(result->contact_uri(), std::optional<std::string>{"sip:user@10.0.0.1:5060"});
+    EXPECT_EQ(result->contact_param("+sip.instance"),
+              std::optional<std::string>{"urn:uuid:00000000-0000-0000-0000-000000000001"});
+    EXPECT_EQ(result->contact_param("reg-id"), std::optional<std::string>{"3"});
+    EXPECT_EQ(result->contact_expires(), std::optional<uint32_t>{120});
+    EXPECT_EQ(result->expires_value(), std::optional<uint32_t>{3600});
+    EXPECT_EQ(result->impu_from_to(), std::optional<std::string>{"sip:user@ims.example.com"});
+    EXPECT_EQ(result->impi_from_authorization_or_from(),
+              std::optional<std::string>{"user@ims.example.com"});
+}
+
+TEST_F(SipMessageTest, WildcardContactIsDetected) {
+    static constexpr auto kMsg =
+        "REGISTER sip:ims.example.com SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK776asdhds\r\n"
+        "Max-Forwards: 70\r\n"
+        "To: <sip:user@ims.example.com>\r\n"
+        "From: <sip:user@ims.example.com>;tag=1928301774\r\n"
+        "Call-ID: a84b4c76e66710@10.0.0.1\r\n"
+        "CSeq: 2 REGISTER\r\n"
+        "Contact: *\r\n"
+        "Expires: 0\r\n"
+        "Content-Length: 0\r\n"
+        "\r\n";
+
+    auto result = SipMessage::parse(kMsg);
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+
+    EXPECT_TRUE(result->is_wildcard_contact());
+    EXPECT_EQ(result->contact_uri(), std::optional<std::string>{"*"});
+    EXPECT_EQ(result->contact_expires(), std::nullopt);
+}
+

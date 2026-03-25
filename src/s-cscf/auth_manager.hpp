@@ -12,12 +12,14 @@ class AuthManager {
 public:
     /// Build WWW-Authenticate header value from AKA auth vector
     static auto buildChallenge(const ims::diameter::AuthVector& av,
-                               const std::string& realm) -> std::string;
+                               const std::string& realm,
+                               const std::string& scheme) -> std::string;
 
-    /// Verify client response against expected xres
+    /// Verify client response against expected xres/shared secret
     static auto verifyResponse(const std::string& auth_header,
                                const ims::diameter::AuthVector& av,
-                               const std::string& method) -> bool;
+                               const std::string& method,
+                               const std::string& scheme) -> bool;
 
     /// Parsed Authorization header fields
     struct AuthParams {

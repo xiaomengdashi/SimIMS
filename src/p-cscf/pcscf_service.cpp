@@ -44,11 +44,10 @@ void PcscfService::stop() {
 void PcscfService::onRegister(std::shared_ptr<ims::sip::ServerTransaction> txn,
                                ims::sip::SipMessage& request)
 {
-    IMS_LOG_DEBUG("P-CSCF received REGISTER from UE");
+    IMS_LOG_DEBUG("P-CSCF received REGISTER from UE via_count={} top_via={}",
+                  request.viaCount(), request.topVia());
 
-    // Add Path header so subsequent requests route through P-CSCF
-    auto path = std::format("<sip:{}:{};lr>", config_.listen_addr, config_.listen_port);
-    request.addHeader("Path", path);
+    proxy_.addPathHeader(request);
     forwardStatefulToIcscf(std::move(txn), request);
 }
 
@@ -155,45 +154,17 @@ void PcscfService::forwardStatefulToIcscf(std::shared_ptr<ims::sip::ServerTransa
                                           ims::sip::SipMessage& request,
                                           bool add_record_route)
 {
-    if (proxy_.isLoopDetected(request)) {
-        auto resp = ims::sip::createResponse(request, 482, "Loop Detected");
-        if (resp) txn->sendResponse(std::move(*resp));
-        return;
-    }
-
-    proxy_.processRouteHeaders(request);
-    if (add_record_route) {
-        proxy_.addRecordRoute(request);
-    }
-
     ims::sip::Endpoint dest{
         .address = icscf_addr_,
         .port = icscf_port_,
         .transport = "udp"
     };
 
-    auto prep = proxy_.prepareRequestForForward(request, dest.transport);
-    if (!prep) {
-        int code = (request.maxForwards() == 0) ? 483 : 500;
-        const char* reason = (code == 483) ? "Too Many Hops" : "Internal Server Error";
-        IMS_LOG_ERROR("Failed to prepare request forwarding: {}", prep.error().message);
-        auto resp = ims::sip::createResponse(request, code, reason);
-        if (resp) txn->sendResponse(std::move(*resp));
-        return;
-    }
-
-    auto send_result = sip_stack_->sendRequest(std::move(request), dest,
-        [txn](const ims::sip::SipMessage& response) {
-            auto upstream = response.clone();
-            if (!upstream) return;
-            upstream->removeTopVia();
-            txn->sendResponse(std::move(*upstream));
-        });
-
-    if (!send_result) {
-        IMS_LOG_ERROR("Failed to send request to I-CSCF: {}", send_result.error().message);
-        auto resp = ims::sip::createResponse(txn->request(), 500, "Internal Server Error");
-        if (resp) txn->sendResponse(std::move(*resp));
+    auto result = proxy_.forwardStateful(request, dest, txn, *sip_stack_, {
+        .add_record_route = add_record_route,
+    });
+    if (!result) {
+        IMS_LOG_ERROR("Failed to send request to I-CSCF: {}", result.error().message);
     }
 }
 

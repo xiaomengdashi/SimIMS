@@ -1,5 +1,6 @@
 #include "icscf_service.hpp"
 #include "common/logger.hpp"
+#include "sip/uri_utils.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -10,74 +11,14 @@ namespace ims::icscf {
 
 namespace {
 
-auto parseEndpointFromSipUri(const std::string& sip_uri) -> std::optional<ims::sip::Endpoint> {
-    std::string uri = sip_uri;
-    auto normalized = uri;
-    std::transform(normalized.begin(), normalized.end(), normalized.begin(),
-                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-
-    std::string transport = "udp";
-    auto transport_pos = normalized.find(";transport=");
-    if (transport_pos != std::string::npos) {
-        auto value_start = transport_pos + std::string(";transport=").size();
-        auto value_end = normalized.find(';', value_start);
-        transport = normalized.substr(value_start, value_end - value_start);
+auto normalizeImpu(std::string uri) -> std::string {
+    if (uri.empty()) {
+        return uri;
     }
-
-    if (!uri.empty() && uri.front() == '<') {
-        uri.erase(0, 1);
+    if (uri.find("sip:") == std::string::npos) {
+        uri = "sip:" + uri;
     }
-    if (!uri.empty() && uri.back() == '>') {
-        uri.pop_back();
-    }
-
-    auto sip_pos = uri.find("sip:");
-    if (sip_pos != std::string::npos) {
-        uri = uri.substr(sip_pos + 4);
-    }
-    auto param_pos = uri.find(';');
-    if (param_pos != std::string::npos) {
-        uri = uri.substr(0, param_pos);
-    }
-
-    std::string host;
-    ims::Port port = 5060;
-
-    if (!uri.empty() && uri.front() == '[') {
-        auto close = uri.find(']');
-        if (close == std::string::npos) {
-            return std::nullopt;
-        }
-        host = uri.substr(1, close - 1);
-        if (close + 1 < uri.size() && uri[close + 1] == ':') {
-            try {
-                port = static_cast<ims::Port>(std::stoi(uri.substr(close + 2)));
-            } catch (...) {
-                return std::nullopt;
-            }
-        }
-    } else {
-        auto colon = uri.find(':');
-        if (colon != std::string::npos) {
-            host = uri.substr(0, colon);
-            try {
-                port = static_cast<ims::Port>(std::stoi(uri.substr(colon + 1)));
-            } catch (...) {
-                return std::nullopt;
-            }
-        } else {
-            host = uri;
-        }
-    }
-
-    if (host.empty()) {
-        return std::nullopt;
-    }
-    return ims::sip::Endpoint{
-        .address = host,
-        .port = port,
-        .transport = transport
-    };
+    return uri;
 }
 
 } // namespace
@@ -117,31 +58,11 @@ void IcscfService::stop() {
 void IcscfService::onRegister(std::shared_ptr<ims::sip::ServerTransaction> txn,
                                ims::sip::SipMessage& request)
 {
-    IMS_LOG_DEBUG("I-CSCF received REGISTER");
+    IMS_LOG_DEBUG("I-CSCF received REGISTER via_count={} top_via={}",
+                  request.viaCount(), request.topVia());
 
-    // Extract IMPI/IMPU from the REGISTER
-    auto from = request.fromHeader();
-    auto to = request.toHeader();
-
-    // Simplified: extract user@domain from To header
-    std::string impu;
-    auto start = to.find("sip:");
-    if (start != std::string::npos) {
-        auto end = to.find('>', start);
-        impu = (end != std::string::npos)
-            ? to.substr(start, end - start)
-            : to.substr(start);
-    }
-
-    std::string impi;
-    start = from.find("sip:");
-    if (start != std::string::npos) {
-        auto end = from.find('>', start);
-        auto uri = (end != std::string::npos)
-            ? from.substr(start + 4, end - start - 4)
-            : from.substr(start + 4);
-        impi = uri;
-    }
+    auto impu = request.impu_from_to().value_or("");
+    auto impi = request.impi_from_authorization_or_from().value_or("");
 
     // Query HSS for S-CSCF assignment
     auto scscf_result = selector_->selectForRegistration(impi, impu, config_.hss.realm);
@@ -152,7 +73,7 @@ void IcscfService::onRegister(std::shared_ptr<ims::sip::ServerTransaction> txn,
         return;
     }
 
-    auto endpoint = parseEndpointFromSipUri(*scscf_result);
+    auto endpoint = ims::sip::parse_endpoint_from_uri(*scscf_result);
     if (!endpoint) {
         IMS_LOG_ERROR("Invalid S-CSCF URI from UAA: {}", *scscf_result);
         auto resp = ims::sip::createResponse(request, 500, "Internal Server Error");
@@ -183,7 +104,7 @@ void IcscfService::onInvite(std::shared_ptr<ims::sip::ServerTransaction> txn,
         return;
     }
 
-    auto endpoint = parseEndpointFromSipUri(*scscf_result);
+    auto endpoint = ims::sip::parse_endpoint_from_uri(*scscf_result);
     if (!endpoint) {
         IMS_LOG_ERROR("Invalid serving S-CSCF URI from LIA: {}", *scscf_result);
         auto resp = ims::sip::createResponse(request, 500, "Internal Server Error");
@@ -211,7 +132,7 @@ void IcscfService::onSubscribe(std::shared_ptr<ims::sip::ServerTransaction> txn,
         return;
     }
 
-    auto endpoint = parseEndpointFromSipUri(*scscf_result);
+    auto endpoint = ims::sip::parse_endpoint_from_uri(*scscf_result);
     if (!endpoint) {
         IMS_LOG_ERROR("Invalid serving S-CSCF URI from LIA: {}", *scscf_result);
         auto resp = ims::sip::createResponse(request, 500, "Internal Server Error");
@@ -226,39 +147,11 @@ void IcscfService::forwardStateful(std::shared_ptr<ims::sip::ServerTransaction> 
                                    const ims::sip::Endpoint& dest,
                                    bool add_record_route)
 {
-    if (proxy_.isLoopDetected(request)) {
-        auto resp = ims::sip::createResponse(request, 482, "Loop Detected");
-        if (resp) txn->sendResponse(std::move(*resp));
-        return;
-    }
-
-    proxy_.processRouteHeaders(request);
-    if (add_record_route) {
-        proxy_.addRecordRoute(request);
-    }
-
-    auto prep = proxy_.prepareRequestForForward(request, dest.transport);
-    if (!prep) {
-        int code = (request.maxForwards() == 0) ? 483 : 500;
-        const char* reason = (code == 483) ? "Too Many Hops" : "Internal Server Error";
-        IMS_LOG_ERROR("Failed to prepare request for forwarding: {}", prep.error().message);
-        auto resp = ims::sip::createResponse(request, code, reason);
-        if (resp) txn->sendResponse(std::move(*resp));
-        return;
-    }
-
-    auto send_result = sip_stack_->sendRequest(std::move(request), dest,
-        [txn](const ims::sip::SipMessage& response) {
-            auto upstream = response.clone();
-            if (!upstream) return;
-            upstream->removeTopVia();
-            txn->sendResponse(std::move(*upstream));
-        });
-
-    if (!send_result) {
-        IMS_LOG_ERROR("Failed to forward request statefully: {}", send_result.error().message);
-        auto resp = ims::sip::createResponse(txn->request(), 500, "Internal Server Error");
-        if (resp) txn->sendResponse(std::move(*resp));
+    auto result = proxy_.forwardStateful(request, dest, txn, *sip_stack_, {
+        .add_record_route = add_record_route,
+    });
+    if (!result) {
+        IMS_LOG_ERROR("Failed to forward request statefully: {}", result.error().message);
     }
 }
 

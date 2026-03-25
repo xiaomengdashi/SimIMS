@@ -8,7 +8,7 @@ namespace ims::diameter {
 
 StubHssClient::StubHssClient(const HssAdapterConfig& config)
     : config_(config)
-    , scscf_uri_(std::format("sip:scscf.{}", config.diameter_realm))
+    , scscf_uri_("sip:127.0.0.1:5062;transport=udp")
 {
     IMS_LOG_WARN("Using STUB HSS client - not suitable for production");
 }
@@ -32,19 +32,21 @@ auto StubHssClient::multimediaAuth(const MarParams& params) -> Result<MaaResult>
     AuthVector av;
     av.rand.resize(16);
     av.autn.resize(16);
-    av.xres.resize(8);
     av.ck.resize(16);
     av.ik.resize(16);
 
     for (auto& b : av.rand) b = dist(rng);
     for (auto& b : av.autn) b = dist(rng);
-    for (auto& b : av.xres) b = dist(rng);
     for (auto& b : av.ck) b = dist(rng);
     for (auto& b : av.ik) b = dist(rng);
 
+    // Stub Digest-MD5 shared secret must match tools/test_baresip_register.sh auth_pass.
+    static constexpr char kStubPassword[] = "testpass";
+    av.xres.assign(kStubPassword, kStubPassword + (sizeof(kStubPassword) - 1));
+
     return MaaResult{
         .result_code = 2001,
-        .sip_auth_scheme = "Digest-AKAv1-MD5",
+        .sip_auth_scheme = "Digest-MD5",
         .auth_vector = std::move(av),
     };
 }

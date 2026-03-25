@@ -2,7 +2,7 @@
 # This is a template configuration file. Adjust values for your deployment.
 
 global:
-  log_level: info          # trace, debug, info, warn, error, critical
+  log_level: debug         # trace, debug, info, warn, error, critical
   node_name: ims-node-01
 
 pcscf:

@@ -137,8 +137,9 @@ TEST_F(ScscfServiceTest, SendInitialNotifyBuildsRegEventContext) {
     EXPECT_EQ(context.cseq, 42u);
     EXPECT_EQ(context.event, "reg");
     EXPECT_EQ(context.subscription_state, "active;expires=180");
-    EXPECT_FALSE(context.route_set.empty());
-    EXPECT_NE(context.route_set.front().find("edge1.ims.example.com"), std::string::npos);
+    ASSERT_EQ(context.route_set.size(), 2u);
+    EXPECT_NE(context.route_set[0].find("edge2.ims.example.com"), std::string::npos);
+    EXPECT_NE(context.route_set[1].find("edge1.ims.example.com"), std::string::npos);
     EXPECT_EQ(context.contact, "<sip:ims.example.com:5072>");
     EXPECT_EQ(context.content_type, "application/reginfo+xml");
     EXPECT_NE(context.body.find("aor=\"sip:user@ims.example.com\""), std::string::npos);
@@ -183,6 +184,72 @@ TEST_F(ScscfServiceTest, OnSubscribeSends200OkAndTriggersInitialNotify) {
     EXPECT_EQ(context.to_header, "<sip:watcher@ims.example.com>;tag=from-tag");
     EXPECT_NE(context.from_header.find("<sip:user@ims.example.com>"), std::string::npos);
     EXPECT_NE(context.from_header.find(";tag="), std::string::npos);
+}
+
+TEST_F(ScscfServiceTest, OnSubscribeRejectsNonRegEventWith489) {
+    auto subscribe = make_subscribe();
+    subscribe.removeHeader("Event");
+    subscribe.addHeader("Event", "presence");
+
+    auto subscribe_for_txn = subscribe.clone();
+    ASSERT_TRUE(subscribe_for_txn.has_value()) << subscribe_for_txn.error().message;
+
+    auto transport = std::make_shared<CapturingTransport>();
+    ims::sip::Endpoint source{.address = "127.0.0.1", .port = 5090, .transport = "udp"};
+    auto txn = std::make_shared<ims::sip::ServerTransaction>(std::move(*subscribe_for_txn), transport, source, io);
+
+    EXPECT_CALL(*store, lookup).Times(0);
+
+    ims::scscf::ScscfServiceTestPeer::onSubscribe(*service, txn, subscribe);
+
+    ASSERT_EQ(transport->sent_messages.size(), 1u);
+    const auto& response = transport->sent_messages.front();
+    EXPECT_TRUE(response.isResponse());
+    EXPECT_EQ(response.statusCode(), 489);
+    EXPECT_EQ(response.reasonPhrase(), "Bad Event");
+    EXPECT_TRUE(notifier_ptr->contexts.empty());
+}
+
+TEST_F(ScscfServiceTest, OnSubscribeReturns404WhenBindingMissing) {
+    auto subscribe = make_subscribe();
+    auto subscribe_for_txn = subscribe.clone();
+    ASSERT_TRUE(subscribe_for_txn.has_value()) << subscribe_for_txn.error().message;
+
+    auto transport = std::make_shared<CapturingTransport>();
+    ims::sip::Endpoint source{.address = "127.0.0.1", .port = 5090, .transport = "udp"};
+    auto txn = std::make_shared<ims::sip::ServerTransaction>(std::move(*subscribe_for_txn), transport, source, io);
+
+    EXPECT_CALL(*store, lookup("sip:user@ims.example.com"))
+        .WillOnce(Return(ims::Result<ims::registration::RegistrationBinding>{
+            std::unexpected(ims::ErrorInfo{ims::ErrorCode::kRegistrationNotFound, "Not found"})}));
+
+    ims::scscf::ScscfServiceTestPeer::onSubscribe(*service, txn, subscribe);
+
+    ASSERT_EQ(transport->sent_messages.size(), 1u);
+    const auto& response = transport->sent_messages.front();
+    EXPECT_TRUE(response.isResponse());
+    EXPECT_EQ(response.statusCode(), 404);
+    EXPECT_EQ(response.reasonPhrase(), "Not Found");
+    EXPECT_TRUE(notifier_ptr->contexts.empty());
+}
+
+TEST_F(ScscfServiceTest, SendInitialNotifySkipsWhenContactMissing) {
+    auto subscribe = make_subscribe();
+    auto raw = subscribe.toString();
+    ASSERT_TRUE(raw.has_value()) << raw.error().message;
+
+    auto contact_pos = raw->find("Contact:");
+    ASSERT_NE(contact_pos, std::string::npos);
+    auto line_end = raw->find("\r\n", contact_pos);
+    ASSERT_NE(line_end, std::string::npos);
+    raw->erase(contact_pos, line_end - contact_pos + 2);
+
+    auto parsed = ims::sip::SipMessage::parse(*raw);
+    ASSERT_TRUE(parsed.has_value()) << parsed.error().message;
+
+    ims::scscf::ScscfServiceTestPeer::sendInitialNotify(*service, *parsed, "generated-to-tag");
+
+    EXPECT_TRUE(notifier_ptr->contexts.empty());
 }
 
 } // namespace

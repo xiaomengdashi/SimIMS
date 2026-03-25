@@ -3,8 +3,38 @@
 
 #include <algorithm>
 #include <cctype>
+#include <vector>
+
+#include <osipparser2/osip_parser.h>
 
 namespace ims::sip {
+
+namespace {
+
+auto response_transaction_keys(const SipMessage& response) -> std::vector<std::string> {
+    std::vector<std::string> keys;
+    auto method = response.cseqMethod();
+    if (method.empty()) {
+        return keys;
+    }
+
+    for (int i = 0; i < response.viaCount(); ++i) {
+        osip_via_t* via = nullptr;
+        if (osip_message_get_via(response.raw(), i, &via) != 0 || !via) {
+            continue;
+        }
+
+        osip_generic_param_t* branch = nullptr;
+        osip_via_param_get_byname(via, const_cast<char*>("branch"), &branch);
+        if (branch && branch->gvalue) {
+            keys.emplace_back(std::string(branch->gvalue) + ":" + method);
+        }
+    }
+
+    return keys;
+}
+
+} // namespace
 
 using namespace std::chrono_literals;
 
@@ -265,7 +295,8 @@ auto TransactionLayer::sendRequest(SipMessage request, const Endpoint& dest,
             ErrorCode::kSipTransactionFailed, "Request has no Via branch"});
     }
 
-    auto key = branch + ":" + request.cseqMethod();
+    auto method = request.cseqMethod();
+    auto key = branch + ":" + method;
 
     auto txn = std::make_shared<ClientTransaction>(
         std::move(request), transport_, dest, io_);
@@ -288,6 +319,8 @@ auto TransactionLayer::sendRequest(SipMessage request, const Endpoint& dest,
         client_txns_[key] = txn;
     }
 
+    IMS_LOG_INFO("Created client transaction key={} dest={}:{} method={}",
+                 key, dest.address, dest.port, method);
     txn->start();
     return key;
 }
@@ -362,11 +395,20 @@ void TransactionLayer::processMessage(SipMessage msg, Endpoint source) {
 
 auto TransactionLayer::findClientTransaction(const SipMessage& response)
     -> std::shared_ptr<ClientTransaction> {
-    auto key = response.viaBranch() + ":" + response.cseqMethod();
+    auto keys = response_transaction_keys(response);
+    IMS_LOG_INFO("Looking up client transaction for response {} with {} candidate keys",
+                 response.statusCode(), keys.size());
+    for (const auto& key : keys) {
+        IMS_LOG_INFO("Response candidate key={}", key);
+    }
+
     std::lock_guard lock(mutex_);
-    auto it = client_txns_.find(key);
-    if (it != client_txns_.end()) {
-        return it->second;
+    for (const auto& key : keys) {
+        auto it = client_txns_.find(key);
+        if (it != client_txns_.end()) {
+            IMS_LOG_INFO("Matched client transaction key={}", key);
+            return it->second;
+        }
     }
     return nullptr;
 }

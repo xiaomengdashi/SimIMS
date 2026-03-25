@@ -1,5 +1,6 @@
 #include "auth_manager.hpp"
 #include "common/logger.hpp"
+#include "sip/uri_utils.hpp"
 
 #include <algorithm>
 #include <boost/uuid/detail/md5.hpp>
@@ -14,20 +15,6 @@ namespace {
 
 constexpr char kBase64Chars[] =
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-auto trimQuotes(const std::string& s) -> std::string {
-    if (s.size() >= 2 && s.front() == '"' && s.back() == '"') {
-        return s.substr(1, s.size() - 2);
-    }
-    return s;
-}
-
-auto trim(const std::string& s) -> std::string {
-    auto start = s.find_first_not_of(" \t");
-    auto end = s.find_last_not_of(" \t");
-    if (start == std::string::npos) return {};
-    return s.substr(start, end - start + 1);
-}
 
 auto toLower(std::string value) -> std::string {
     std::transform(value.begin(), value.end(), value.begin(),
@@ -113,7 +100,17 @@ auto AuthManager::base64Decode(const std::string& encoded) -> std::vector<uint8_
 }
 
 auto AuthManager::buildChallenge(const ims::diameter::AuthVector& av,
-                                  const std::string& realm) -> std::string {
+                                  const std::string& realm,
+                                  const std::string& scheme) -> std::string {
+    if (scheme == "Digest-MD5") {
+        auto nonce = base64Encode(av.rand);
+        auto challenge = std::format(
+            "Digest realm=\"{}\", domain=\"sip:{}\", nonce=\"{}\", algorithm=MD5, qop=\"auth\", stale=FALSE",
+            realm, realm, nonce);
+        IMS_LOG_DEBUG("Built MD5 challenge, realm={}, nonce_len={}", realm, nonce.size());
+        return challenge;
+    }
+
     // IMS AKA: nonce = base64(RAND || AUTN || server-specific-data)
     // Concatenate RAND (16 bytes) + AUTN (16 bytes) for AKA nonce
     std::vector<uint8_t> nonce_data;
@@ -123,7 +120,6 @@ auto AuthManager::buildChallenge(const ims::diameter::AuthVector& av,
 
     auto nonce = base64Encode(nonce_data);
 
-    // Build WWW-Authenticate header for Digest-AKAv1-MD5
     auto challenge = std::format(
         "Digest realm=\"{}\", nonce=\"{}\", algorithm=AKAv1-MD5, qop=\"auth\"",
         realm, nonce);
@@ -134,7 +130,8 @@ auto AuthManager::buildChallenge(const ims::diameter::AuthVector& av,
 
 auto AuthManager::verifyResponse(const std::string& auth_header,
                                   const ims::diameter::AuthVector& av,
-                                  const std::string& method) -> bool {
+                                  const std::string& method,
+                                  const std::string& scheme) -> bool {
     auto params_result = parseAuthorization(auth_header);
     if (!params_result) {
         IMS_LOG_WARN("Failed to parse Authorization header: {}", params_result.error().message);
@@ -148,20 +145,26 @@ auto AuthManager::verifyResponse(const std::string& auth_header,
         return false;
     }
 
-    // Nonce must match the challenge generated from RAND||AUTN.
-    std::vector<uint8_t> nonce_data;
-    nonce_data.reserve(av.rand.size() + av.autn.size());
-    nonce_data.insert(nonce_data.end(), av.rand.begin(), av.rand.end());
-    nonce_data.insert(nonce_data.end(), av.autn.begin(), av.autn.end());
-    auto expected_nonce = base64Encode(nonce_data);
+    std::string expected_nonce;
+    std::string secret;
+    if (scheme == "Digest-MD5") {
+        expected_nonce = base64Encode(av.rand);
+        secret.assign(av.xres.begin(), av.xres.end());
+    } else {
+        std::vector<uint8_t> nonce_data;
+        nonce_data.reserve(av.rand.size() + av.autn.size());
+        nonce_data.insert(nonce_data.end(), av.rand.begin(), av.rand.end());
+        nonce_data.insert(nonce_data.end(), av.autn.begin(), av.autn.end());
+        expected_nonce = base64Encode(nonce_data);
+        secret = bytesToHex(av.xres);
+    }
+
     if (params.nonce != expected_nonce) {
         IMS_LOG_WARN("Authorization nonce mismatch");
         return false;
     }
 
-    // AKAv1-MD5 uses RES as digest password.
-    auto xres_hex = bytesToHex(av.xres);
-    auto ha1 = md5Hex(std::format("{}:{}:{}", params.username, params.realm, xres_hex));
+    auto ha1 = md5Hex(std::format("{}:{}:{}", params.username, params.realm, secret));
     auto ha2 = md5Hex(std::format("{}:{}", method, params.uri));
 
     std::string expected_response;
@@ -184,48 +187,21 @@ auto AuthManager::verifyResponse(const std::string& auth_header,
 }
 
 auto AuthManager::parseAuthorization(const std::string& header) -> Result<AuthParams> {
-    // Expected format: Digest username="...", realm="...", nonce="...", ...
+    auto parsed = ims::sip::parse_digest_authorization(header);
+    if (!parsed) {
+        return std::unexpected(parsed.error());
+    }
+
     AuthParams params;
-
-    // Skip "Digest " prefix
-    auto pos = header.find("Digest ");
-    if (pos == std::string::npos) {
-        pos = header.find("digest ");
-    }
-    if (pos == std::string::npos) {
-        return std::unexpected(ims::ErrorInfo{
-            ims::ErrorCode::kSipParseError, "Missing Digest scheme in Authorization header"});
-    }
-
-    std::string fields_str = header.substr(pos + 7);
-    
-    // Parse key=value pairs
-    std::istringstream stream(fields_str);
-    std::string token;
-    while (std::getline(stream, token, ',')) {
-        token = trim(token);
-        auto eq = token.find('=');
-        if (eq == std::string::npos) continue;
-
-        auto key = toLower(trim(token.substr(0, eq)));
-        auto value = trimQuotes(trim(token.substr(eq + 1)));
-
-        if (key == "username") params.username = value;
-        else if (key == "realm") params.realm = value;
-        else if (key == "nonce") params.nonce = value;
-        else if (key == "response") params.response = value;
-        else if (key == "uri") params.uri = value;
-        else if (key == "algorithm") params.algorithm = value;
-        else if (key == "qop") params.qop = value;
-        else if (key == "nc") params.nc = value;
-        else if (key == "cnonce") params.cnonce = value;
-    }
-
-    if (params.username.empty()) {
-        return std::unexpected(ims::ErrorInfo{
-            ims::ErrorCode::kSipParseError, "Missing username in Authorization header"});
-    }
-
+    params.username = parsed->username;
+    params.realm = parsed->realm;
+    params.nonce = parsed->nonce;
+    params.response = parsed->response;
+    params.uri = parsed->uri;
+    params.algorithm = parsed->algorithm;
+    params.qop = parsed->qop;
+    params.nc = parsed->nc;
+    params.cnonce = parsed->cnonce;
     return params;
 }
 

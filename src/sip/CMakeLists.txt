@@ -1,5 +1,6 @@
 add_library(ims_sip
     message.cpp
+    uri_utils.cpp
     stack.cpp
     transaction.cpp
     transport.cpp

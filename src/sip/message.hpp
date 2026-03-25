@@ -49,8 +49,10 @@ public:
 
     auto fromHeader() const -> std::string;
     void setFromHeader(const std::string& from);
+    auto from_uri() const -> std::optional<std::string>;
     auto toHeader() const -> std::string;
     void setToHeader(const std::string& to);
+    auto to_uri() const -> std::optional<std::string>;
     auto fromTag() const -> std::string;
     auto toTag() const -> std::string;
     void setToTag(const std::string& tag);
@@ -71,6 +73,13 @@ public:
     void removeTopRoute();
 
     auto contact() const -> std::optional<std::string>;
+    auto contact_uri(size_t index = 0) const -> std::optional<std::string>;
+    auto contact_param(const std::string& key, size_t index = 0) const -> std::optional<std::string>;
+    auto contact_expires(size_t index = 0) const -> std::optional<uint32_t>;
+    auto expires_value() const -> std::optional<uint32_t>;
+    auto is_wildcard_contact() const -> bool;
+    auto impu_from_to() const -> std::optional<std::string>;
+    auto impi_from_authorization_or_from() const -> std::optional<std::string>;
     void setContact(const std::string& contact_str);
 
     auto body() const -> std::optional<std::string>;

@@ -1,6 +1,7 @@
 #include "registrar.hpp"
 #include "auth_manager.hpp"
 #include "common/logger.hpp"
+#include "sip/uri_utils.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -12,28 +13,11 @@ namespace ims::scscf {
 
 namespace {
 
-auto extractContactParam(const std::string& contact, const std::string& key) -> std::string {
-    auto pos = contact.find(key + "=");
-    if (pos == std::string::npos) {
-        return {};
+auto normalizeUri(std::string uri) -> std::string {
+    if (uri.empty() || uri.find("sip:") != std::string::npos) {
+        return uri;
     }
-
-    auto value_start = pos + key.size() + 1;
-    if (value_start >= contact.size()) {
-        return {};
-    }
-
-    if (contact[value_start] == '"') {
-        auto end_quote = contact.find('"', value_start + 1);
-        if (end_quote == std::string::npos) return {};
-        return contact.substr(value_start + 1, end_quote - value_start - 1);
-    }
-
-    auto end = contact.find(';', value_start);
-    if (end == std::string::npos) {
-        return contact.substr(value_start);
-    }
-    return contact.substr(value_start, end - value_start);
+    return "sip:" + uri;
 }
 
 auto formatGmtDate() -> std::string {
@@ -60,47 +44,14 @@ void addSecurityAgreementHeaders(const ims::sip::SipMessage& request,
     }
 }
 
-auto extractUriFromNameAddr(const std::string& value) -> std::string {
-    auto start = value.find('<');
-    auto end = value.find('>');
-    if (start != std::string::npos && end != std::string::npos && end > start) {
-        return value.substr(start + 1, end - start - 1);
+auto determineRegisterExpires(const ims::sip::SipMessage& request) -> uint32_t {
+    if (auto contact_expires = request.contact_expires()) {
+        return *contact_expires;
     }
-
-    auto semi = value.find(';');
-    if (semi != std::string::npos) {
-        return value.substr(0, semi);
+    if (auto expires = request.expires_value()) {
+        return *expires;
     }
-    return value;
-}
-
-auto determineRegisterExpires(const std::optional<std::string>& contact,
-                              const std::optional<std::string>& expires_header) -> uint32_t {
-    uint32_t expires = 3600;
-    if (contact) {
-        auto contact_expires = extractContactParam(*contact, "expires");
-        if (!contact_expires.empty()) {
-            try {
-                expires = std::stoul(contact_expires);
-            } catch (...) {
-                IMS_LOG_WARN("Invalid Contact expires value '{}', using default", contact_expires);
-            }
-        } else if (expires_header) {
-            try {
-                expires = std::stoul(*expires_header);
-            } catch (...) {
-                IMS_LOG_WARN("Invalid Expires header '{}', using default", *expires_header);
-            }
-        }
-    } else if (expires_header) {
-        try {
-            expires = std::stoul(*expires_header);
-        } catch (...) {
-            IMS_LOG_WARN("Invalid Expires header '{}', using default", *expires_header);
-        }
-    }
-
-    return expires;
+    return 3600;
 }
 
 } // namespace
@@ -167,6 +118,7 @@ void Registrar::sendChallenge(ims::sip::SipMessage& request,
             .vector = maa->auth_vector,
             .impi = impi,
             .impu = impu,
+            .scheme = maa->sip_auth_scheme,
         };
     }
 
@@ -177,7 +129,7 @@ void Registrar::sendChallenge(ims::sip::SipMessage& request,
         return;
     }
 
-    auto challenge = AuthManager::buildChallenge(maa->auth_vector, domain_);
+    auto challenge = AuthManager::buildChallenge(maa->auth_vector, domain_, maa->sip_auth_scheme);
     resp->addHeader("WWW-Authenticate", challenge);
     addSecurityAgreementHeaders(request, *resp, false);
     resp->addHeader("Date", formatGmtDate());
@@ -205,9 +157,9 @@ bool Registrar::tryHandleReregister(ims::sip::SipMessage& request,
         return false;
     }
 
-    auto requested_contact_uri = extractUriFromNameAddr(*contact);
-    auto requested_instance_id = extractContactParam(*contact, "+sip.instance");
-    auto requested_reg_id = extractContactParam(*contact, "reg-id");
+    auto requested_contact_uri = ims::sip::extract_uri_from_name_addr(*contact);
+    auto requested_instance_id = request.contact_param("+sip.instance").value_or("");
+    auto requested_reg_id = request.contact_param("reg-id").value_or("");
     auto now = std::chrono::steady_clock::now();
 
     auto matches_contact = [&](const ims::registration::ContactBinding& candidate) -> bool {
@@ -226,7 +178,7 @@ bool Registrar::tryHandleReregister(ims::sip::SipMessage& request,
             return true;
         }
 
-        return extractUriFromNameAddr(candidate.contact_uri) == requested_contact_uri;
+        return ims::sip::extract_uri_from_name_addr(candidate.contact_uri) == requested_contact_uri;
     };
 
     auto active_contacts = binding.active_contacts();
@@ -239,7 +191,7 @@ bool Registrar::tryHandleReregister(ims::sip::SipMessage& request,
         return false;
     }
 
-    auto expires = determineRegisterExpires(contact, request.getHeader("Expires"));
+    auto expires = determineRegisterExpires(request);
     auto path_headers = request.getHeaders("Path");
     auto user_agent = request.getHeader("User-Agent").value_or(it->user_agent);
 
@@ -364,7 +316,7 @@ void Registrar::verifyAndRegister(ims::sip::SipMessage& request,
     }
 
     // Verify the response
-    if (!AuthManager::verifyResponse(*auth_header, pending.vector, request.method())) {
+    if (!AuthManager::verifyResponse(*auth_header, pending.vector, request.method(), pending.scheme)) {
         IMS_LOG_WARN("Auth verification failed for {}", pending.impi);
         auto resp = ims::sip::createResponse(request, 403, "Forbidden");
         if (resp) txn->sendResponse(std::move(*resp));
@@ -391,13 +343,13 @@ void Registrar::verifyAndRegister(ims::sip::SipMessage& request,
 
     // Store registration binding
     auto contact = request.contact();
-    auto expires = determineRegisterExpires(contact, request.getHeader("Expires"));
+    auto expires = determineRegisterExpires(request);
 
     auto path_headers = request.getHeaders("Path");
     auto path = path_headers.empty() ? std::string{} : path_headers.front();
     auto user_agent = request.getHeader("User-Agent").value_or("");
-    auto instance_id = contact ? extractContactParam(*contact, "+sip.instance") : "";
-    auto reg_id = contact ? extractContactParam(*contact, "reg-id") : "";
+    auto instance_id = request.contact_param("+sip.instance").value_or("");
+    auto reg_id = request.contact_param("reg-id").value_or("");
 
     ims::registration::RegistrationBinding binding{
         .impu = pending.impu,
@@ -468,9 +420,9 @@ void Registrar::handleDeregister(ims::sip::SipMessage& request,
 
     auto wildcard_deregister = contact && *contact == "*";
     auto has_specific_contact = contact.has_value() && !wildcard_deregister;
-    auto requested_contact_uri = has_specific_contact ? extractUriFromNameAddr(*contact) : "";
-    auto requested_instance_id = has_specific_contact ? extractContactParam(*contact, "+sip.instance") : "";
-    auto requested_reg_id = has_specific_contact ? extractContactParam(*contact, "reg-id") : "";
+    auto requested_contact_uri = has_specific_contact ? ims::sip::extract_uri_from_name_addr(*contact) : "";
+    auto requested_instance_id = has_specific_contact ? request.contact_param("+sip.instance").value_or("") : "";
+    auto requested_reg_id = has_specific_contact ? request.contact_param("reg-id").value_or("") : "";
 
     for (const auto& identity : target_impus) {
         auto lookup = store_->lookup(identity);
@@ -496,7 +448,7 @@ void Registrar::handleDeregister(ims::sip::SipMessage& request,
                 return true;
             }
 
-            return extractUriFromNameAddr(candidate.contact_uri) == requested_contact_uri;
+            return ims::sip::extract_uri_from_name_addr(candidate.contact_uri) == requested_contact_uri;
         };
 
         auto old_size = binding.contacts.size();
@@ -526,63 +478,43 @@ void Registrar::handleDeregister(ims::sip::SipMessage& request,
 }
 
 auto Registrar::extractImpi(const ims::sip::SipMessage& msg) const -> std::string {
-    // IMPI is in Authorization header username, or derived from From URI
-    auto auth = msg.getHeader("Authorization");
-    if (auth) {
-        auto params = AuthManager::parseAuthorization(*auth);
-        if (params) return params->username;
+    if (auto impi = msg.impi_from_authorization_or_from()) {
+        return normalizeUri(*impi);
     }
-    // Fallback: extract from From header
-    auto from = msg.fromHeader();
-    // Strip "<sip:" prefix and ">" suffix
-    auto start = from.find("sip:");
-    if (start != std::string::npos) {
-        auto end = from.find('>', start);
-        if (end != std::string::npos) {
-            return from.substr(start + 4, end - start - 4);
-        }
-        return from.substr(start + 4);
-    }
-    return from;
+    return normalizeUri(msg.fromHeader());
 }
 
 auto Registrar::extractImpu(const ims::sip::SipMessage& msg) const -> std::string {
-    // IMPU is in the To header URI
-    auto to_hdr = msg.toHeader();
-    // Extract URI from <sip:user@domain>
-    auto start = to_hdr.find('<');
-    auto end = to_hdr.find('>');
-    if (start != std::string::npos && end != std::string::npos) {
-        return to_hdr.substr(start + 1, end - start - 1);
+    if (auto impu = msg.impu_from_to()) {
+        return normalizeUri(*impu);
     }
-    return to_hdr;
+    return normalizeUri(msg.toHeader());
 }
 
 bool Registrar::isDeregister(const ims::sip::SipMessage& msg) const {
-    auto expires = msg.getHeader("Expires");
-    if (expires && *expires == "0") return true;
-
-    // Contact: * means remove all bindings.
-    auto contact = msg.contact();
-    if (contact && *contact == "*") return true;
-    if (contact) {
-        auto contact_expires = extractContactParam(*contact, "expires");
-        if (contact_expires == "0") return true;
-    }
-
-    return false;
+    if (msg.expires_value() == 0) return true;
+    if (msg.is_wildcard_contact()) return true;
+    return msg.contact_expires() == 0;
 }
 
 bool Registrar::hasAuthorization(const ims::sip::SipMessage& msg) const {
     auto header = msg.getHeader("Authorization");
     if (!header) {
+        IMS_LOG_DEBUG("REGISTER has no Authorization header");
         return false;
     }
 
+    IMS_LOG_DEBUG("REGISTER Authorization header: {}", *header);
     auto params = AuthManager::parseAuthorization(*header);
     if (!params) {
+        IMS_LOG_WARN("Failed to parse Authorization header: {} raw={}",
+                     params.error().message, *header);
         return false;
     }
+
+    IMS_LOG_DEBUG("Parsed Authorization username={} nonce_len={} response_len={} algorithm={} qop={} nc={} cnonce_len={}",
+                  params->username, params->nonce.size(), params->response.size(),
+                  params->algorithm, params->qop, params->nc, params->cnonce.size());
 
     // Some UE sends placeholder Authorization in initial REGISTER with empty nonce/response.
     return !params->nonce.empty() && !params->response.empty();

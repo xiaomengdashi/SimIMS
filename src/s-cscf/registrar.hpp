@@ -54,6 +54,7 @@ private:
         ims::diameter::AuthVector vector;
         std::string impi;
         std::string impu;
+        std::string scheme;
     };
     std::unordered_map<std::string, PendingAuth> pending_auth_;
     std::mutex auth_mutex_;
