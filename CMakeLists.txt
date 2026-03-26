@@ -60,6 +60,14 @@ add_subdirectory(src/allinone)
 enable_testing()
 add_subdirectory(tests/unit)
 
+add_test(
+    NAME BaresipInviteIntegrationTest
+    COMMAND bash ${CMAKE_SOURCE_DIR}/tools/test_baresip_invite.sh
+)
+set_tests_properties(BaresipInviteIntegrationTest PROPERTIES
+    LABELS integration
+)
+
 # Install targets
 install(TARGETS ims_pcscf ims_icscf ims_scscf ims_allinone
     RUNTIME DESTINATION bin

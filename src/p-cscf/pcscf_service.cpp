@@ -73,10 +73,14 @@ void PcscfService::onInvite(std::shared_ptr<ims::sip::ServerTransaction> txn,
 
         auto offer_result = rtpengine_->offer(media_session, *sdp, flags);
         if (offer_result) {
-            // Replace SDP with rtpengine's version
-            request.setBody(offer_result->sdp, "application/sdp");
             media_sessions_.updateCallerSdp(call_id, *sdp);
-            IMS_LOG_DEBUG("SDP rewritten by rtpengine for call={}", call_id);
+            if (!offer_result->sdp.empty()) {
+                // Replace SDP with rtpengine's version
+                request.setBody(offer_result->sdp, "application/sdp");
+                IMS_LOG_DEBUG("SDP rewritten by rtpengine for call={}", call_id);
+            } else {
+                IMS_LOG_WARN("rtpengine offer returned empty SDP for call={}, keeping original SDP", call_id);
+            }
         } else {
             IMS_LOG_WARN("rtpengine offer failed: {}", offer_result.error().message);
         }

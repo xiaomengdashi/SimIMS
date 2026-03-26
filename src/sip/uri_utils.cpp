@@ -76,6 +76,17 @@ auto extract_uri_from_name_addr(const std::string& value) -> std::string {
     return trimmed;
 }
 
+auto normalize_impu_uri(const std::string& value) -> std::string {
+    auto uri = extract_uri_from_name_addr(value);
+    if (uri.empty() || uri == "*") {
+        return uri;
+    }
+    if (uri.find("sip:") != 0 && uri.find("sips:") != 0) {
+        uri = "sip:" + uri;
+    }
+    return uri;
+}
+
 auto parse_endpoint_from_uri(const std::string& sip_uri) -> std::optional<Endpoint> {
     auto uri_text = extract_uri_from_name_addr(sip_uri);
     if (uri_text.empty() || uri_text == "*") {

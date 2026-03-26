@@ -11,16 +11,6 @@ namespace ims::icscf {
 
 namespace {
 
-auto normalizeImpu(std::string uri) -> std::string {
-    if (uri.empty()) {
-        return uri;
-    }
-    if (uri.find("sip:") == std::string::npos) {
-        uri = "sip:" + uri;
-    }
-    return uri;
-}
-
 } // namespace
 
 IcscfService::IcscfService(const ims::IcscfConfig& config,
@@ -42,6 +32,45 @@ auto IcscfService::start() -> VoidResult {
     });
     sip_stack_->onRequest("INVITE", [this](auto txn, auto& req) {
         onInvite(txn, req);
+    });
+    sip_stack_->onRequest("ACK", [this](auto /*txn*/, auto& req) {
+        IMS_LOG_DEBUG("I-CSCF received ACK");
+        proxy_.processRouteHeaders(req);
+        ims::sip::Endpoint dest{
+            .address = "127.0.0.1",
+            .port = 5062,
+            .transport = "udp"
+        };
+        auto result = proxy_.forwardRequest(req, dest, sip_stack_->transport());
+        if (!result) {
+            IMS_LOG_ERROR("Failed to forward ACK statelessly: {}", result.error().message);
+        }
+    });
+    sip_stack_->onRequest("BYE", [this](auto txn, auto& req) {
+        IMS_LOG_DEBUG("I-CSCF received BYE");
+        proxy_.processRouteHeaders(req);
+        ims::sip::Endpoint dest{
+            .address = "127.0.0.1",
+            .port = 5062,
+            .transport = "udp"
+        };
+        auto result = proxy_.forwardStateful(req, dest, txn, *sip_stack_);
+        if (!result) {
+            IMS_LOG_ERROR("Failed to forward BYE statefully: {}", result.error().message);
+        }
+    });
+    sip_stack_->onRequest("CANCEL", [this](auto txn, auto& req) {
+        IMS_LOG_DEBUG("I-CSCF received CANCEL");
+        proxy_.processRouteHeaders(req);
+        ims::sip::Endpoint dest{
+            .address = "127.0.0.1",
+            .port = 5062,
+            .transport = "udp"
+        };
+        auto result = proxy_.forwardStateful(req, dest, txn, *sip_stack_);
+        if (!result) {
+            IMS_LOG_ERROR("Failed to forward CANCEL statefully: {}", result.error().message);
+        }
     });
     sip_stack_->onRequest("SUBSCRIBE", [this](auto txn, auto& req) {
         onSubscribe(txn, req);
@@ -89,11 +118,7 @@ void IcscfService::onInvite(std::shared_ptr<ims::sip::ServerTransaction> txn,
     IMS_LOG_DEBUG("I-CSCF received INVITE (MT routing)");
 
     // Extract callee IMPU from Request-URI
-    auto callee_uri = request.requestUri();
-    std::string impu = callee_uri;
-    if (impu.find("sip:") == std::string::npos) {
-        impu = "sip:" + impu;
-    }
+    auto impu = ims::sip::normalize_impu_uri(request.requestUri());
 
     // Query HSS for serving S-CSCF
     auto scscf_result = selector_->selectForRouting(impu);
@@ -119,10 +144,7 @@ void IcscfService::onSubscribe(std::shared_ptr<ims::sip::ServerTransaction> txn,
 {
     IMS_LOG_DEBUG("I-CSCF received SUBSCRIBE");
 
-    auto impu = request.requestUri();
-    if (impu.find("sip:") == std::string::npos) {
-        impu = "sip:" + impu;
-    }
+    auto impu = ims::sip::normalize_impu_uri(request.requestUri());
 
     auto scscf_result = selector_->selectForRouting(impu);
     if (!scscf_result) {

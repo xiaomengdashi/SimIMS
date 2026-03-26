@@ -30,6 +30,10 @@ public:
     void handleCancel(const ims::sip::SipMessage& request,
                       std::shared_ptr<ims::sip::ServerTransaction> txn);
 
+    /// Handle ACK - forward in-dialog ACK statelessly
+    void handleAck(const ims::sip::SipMessage& request,
+                   std::shared_ptr<ims::sip::ServerTransaction> txn);
+
 private:
     /// Active session tracking (Call-ID -> session info)
     struct SessionInfo {

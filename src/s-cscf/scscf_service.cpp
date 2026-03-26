@@ -9,16 +9,6 @@ namespace ims::scscf {
 
 namespace {
 
-auto normalizeImpu(std::string uri) -> std::string {
-    if (uri.empty()) {
-        return uri;
-    }
-    if (uri.find("sip:") == std::string::npos) {
-        uri = "sip:" + uri;
-    }
-    return uri;
-}
-
 } // namespace
 
 ScscfService::ScscfService(const ims::ScscfConfig& config,
@@ -59,6 +49,9 @@ auto ScscfService::start() -> VoidResult {
     });
     sip_stack_->onRequest("BYE", [this](auto txn, auto& req) {
         onBye(txn, req);
+    });
+    sip_stack_->onRequest("ACK", [this](auto txn, auto& req) {
+        session_router_->handleAck(req, txn);
     });
     sip_stack_->onRequest("CANCEL", [this](auto txn, auto& req) {
         onCancel(txn, req);
@@ -120,7 +113,7 @@ void ScscfService::onSubscribe(std::shared_ptr<ims::sip::ServerTransaction> txn,
         return;
     }
 
-    auto impu = normalizeImpu(request.requestUri());
+    auto impu = ims::sip::normalize_impu_uri(request.requestUri());
 
     auto lookup = store_->lookup(impu);
     if (!lookup) {

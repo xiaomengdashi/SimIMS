@@ -137,21 +137,23 @@ void ServerTransaction::startTimers(int final_response_code) {
 
     if (is_invite && final_response_code >= 300) {
         // Timer H: wait for ACK
+        auto self = shared_from_this();
         timer_h_.expires_after(kTimerH);
-        timer_h_.async_wait([this](boost::system::error_code ec) {
+        timer_h_.async_wait([self](boost::system::error_code ec) {
             if (ec) return;
-            IMS_LOG_DEBUG("Timer H expired, branch={}", branch_);
-            state_ = TransactionState::kTerminated;
-            if (on_terminated_) on_terminated_();
+            IMS_LOG_DEBUG("Timer H expired, branch={}", self->branch_);
+            self->state_ = TransactionState::kTerminated;
+            if (self->on_terminated_) self->on_terminated_();
         });
     } else {
         // Timer J: absorb retransmissions
+        auto self = shared_from_this();
         timer_j_.expires_after(kTimerJ);
-        timer_j_.async_wait([this](boost::system::error_code ec) {
+        timer_j_.async_wait([self](boost::system::error_code ec) {
             if (ec) return;
-            IMS_LOG_DEBUG("Timer J expired, branch={}", branch_);
-            state_ = TransactionState::kTerminated;
-            if (on_terminated_) on_terminated_();
+            IMS_LOG_DEBUG("Timer J expired, branch={}", self->branch_);
+            self->state_ = TransactionState::kTerminated;
+            if (self->on_terminated_) self->on_terminated_();
         });
     }
 }

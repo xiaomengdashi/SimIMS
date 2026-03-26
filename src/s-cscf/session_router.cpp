@@ -15,14 +15,8 @@ auto endpointEquals(const ims::sip::Endpoint& lhs, const ims::sip::Endpoint& rhs
     return lhs.address == rhs.address && lhs.port == rhs.port;
 }
 
-auto normalizeImpu(std::string uri) -> std::string {
-    if (uri.empty()) {
-        return uri;
-    }
-    if (uri.find("sip:") == std::string::npos) {
-        uri = "sip:" + uri;
-    }
-    return uri;
+auto isUsableDestination(const ims::sip::Endpoint& endpoint) -> bool {
+    return !endpoint.address.empty() && endpoint.address != "0.0.0.0";
 }
 
 } // namespace
@@ -76,8 +70,8 @@ void SessionRouter::handleInvite(const ims::sip::SipMessage& request,
         return;
     }
 
-    // Set Request-URI to the callee's contact
-    fwd_request->setRequestUri(contacts[0]->contact_uri);
+    // Set Request-URI to the callee's contact URI without Contact params.
+    fwd_request->setRequestUri(ims::sip::extract_uri_from_name_addr(contacts[0]->contact_uri));
     proxy_.processRouteHeaders(*fwd_request);
 
     // Add Record-Route so subsequent requests pass through us
@@ -88,17 +82,18 @@ void SessionRouter::handleInvite(const ims::sip::SipMessage& request,
     if (!contacts[0]->path.empty()) {
         // Path header contains P-CSCF route URI.
         auto parsed = ims::sip::parse_endpoint_from_uri(contacts[0]->path);
-        if (parsed) {
+        if (parsed && isUsableDestination(*parsed)) {
             dest = *parsed;
         }
-    } else {
+    }
+    if (!isUsableDestination(dest)) {
         auto parsed = ims::sip::parse_endpoint_from_uri(contacts[0]->contact_uri);
         if (parsed) {
             dest = *parsed;
         }
     }
 
-    if (dest.address.empty()) {
+    if (!isUsableDestination(dest)) {
         IMS_LOG_WARN("Failed to derive destination from Path/Contact, fallback to localhost");
         dest.address = "127.0.0.1";
         dest.port = 5060;
@@ -126,6 +121,13 @@ void SessionRouter::handleInvite(const ims::sip::SipMessage& request,
             .callee_invite_branch = invite_branch,
         };
     }
+
+    IMS_LOG_DEBUG("Forwarding INVITE to callee contact={} path={} dest={}:{} transport={}",
+                  contacts[0]->contact_uri,
+                  contacts[0]->path.empty() ? "<none>" : contacts[0]->path,
+                  dest.address,
+                  dest.port,
+                  dest.transport);
 
     sip_stack_.sendRequest(std::move(*fwd_request), dest,
         [this, txn, call_id](const ims::sip::SipMessage& response) {
@@ -188,6 +190,40 @@ void SessionRouter::handleBye(const ims::sip::SipMessage& request,
         });
 }
 
+void SessionRouter::handleAck(const ims::sip::SipMessage& request,
+                               std::shared_ptr<ims::sip::ServerTransaction> txn) {
+    auto call_id = request.callId();
+    IMS_LOG_INFO("ACK received, Call-ID={}", call_id);
+
+    SessionInfo session;
+    {
+        std::lock_guard lock(sessions_mutex_);
+        auto it = sessions_.find(call_id);
+        if (it == sessions_.end()) {
+            IMS_LOG_WARN("No session found for ACK, Call-ID={}", call_id);
+            return;
+        }
+        session = it->second;
+    }
+
+    auto fwd_ack = request.clone();
+    if (!fwd_ack) {
+        IMS_LOG_WARN("Failed to clone ACK for forwarding, Call-ID={}", call_id);
+        return;
+    }
+
+    proxy_.processRouteHeaders(*fwd_ack);
+    auto dest = session.callee_endpoint;
+    if (endpointEquals(txn->source(), session.callee_endpoint)) {
+        dest = session.caller_endpoint;
+    }
+
+    auto result = proxy_.forwardRequest(*fwd_ack, dest, sip_stack_.transport());
+    if (!result) {
+        IMS_LOG_WARN("Failed to forward ACK for Call-ID={}: {}", call_id, result.error().message);
+    }
+}
+
 void SessionRouter::handleCancel(const ims::sip::SipMessage& request,
                                   std::shared_ptr<ims::sip::ServerTransaction> txn) {
     auto call_id = request.callId();
@@ -233,7 +269,7 @@ auto SessionRouter::lookupCallee(const std::string& request_uri)
     -> ims::Result<ims::registration::RegistrationBinding> {
     // Extract IMPU from request URI
     // Request-URI format: sip:user@domain
-    return store_->lookup(normalizeImpu(request_uri));
+    return store_->lookup(ims::sip::normalize_impu_uri(request_uri));
 }
 
 } // namespace ims::scscf

@@ -23,7 +23,7 @@ enum class TransactionState {
     kTerminated,
 };
 
-class ServerTransaction {
+class ServerTransaction : public std::enable_shared_from_this<ServerTransaction> {
 public:
     ServerTransaction(SipMessage request, std::shared_ptr<ITransport> transport,
                       Endpoint source, boost::asio::io_context& io);
