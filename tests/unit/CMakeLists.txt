@@ -41,7 +41,7 @@ gtest_discover_tests(test_diameter_cx)
 
 # Registration store test (uses mocks)
 add_executable(test_registrar test_registrar.cpp)
-target_link_libraries(test_registrar PRIVATE ims_common GTest::gtest_main GTest::gmock)
+target_link_libraries(test_registrar PRIVATE ims_common ims_sip GTest::gtest_main GTest::gmock)
 target_include_directories(test_registrar PRIVATE ${CMAKE_SOURCE_DIR}/tests ${CMAKE_SOURCE_DIR}/src)
 gtest_discover_tests(test_registrar)
 

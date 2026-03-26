@@ -84,6 +84,17 @@ Result<ImsConfig> load_config(const std::string& path) {
         if (auto v = hss["diameter_port"])   config.hss_adapter.diameter_port = v.as<uint16_t>();
         if (auto v = hss["diameter_realm"])  config.hss_adapter.diameter_realm = v.as<std::string>();
         if (auto v = hss["nudm_url"])        config.hss_adapter.nudm_url = v.as<std::string>();
+        if (auto subscribers = hss["subscribers"]) {
+            config.hss_adapter.subscribers.clear();
+            for (const auto& item : subscribers) {
+                HssSubscriberConfig subscriber;
+                if (auto v = item["imsi"])      subscriber.imsi = v.as<std::string>();
+                if (auto v = item["tel"])       subscriber.tel = v.as<std::string>();
+                if (auto v = item["password"])  subscriber.password = v.as<std::string>();
+                if (auto v = item["realm"])     subscriber.realm = v.as<std::string>();
+                config.hss_adapter.subscribers.push_back(std::move(subscriber));
+            }
+        }
     }
 
     // Media section

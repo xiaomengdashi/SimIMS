@@ -1,5 +1,7 @@
 #include "diameter/ihss_client.hpp"
 #include "diameter/types.hpp"
+#include "diameter/cx_client.hpp"
+#include "common/config.hpp"
 #include "../mocks/mock_hss_client.hpp"
 #include <gtest/gtest.h>
 #include <gmock/gmock.h>
@@ -124,4 +126,49 @@ TEST_F(DiameterCxTest, UserNotFound) {
     auto result = hss_.locationInfo(params);
     ASSERT_FALSE(result.has_value());
     EXPECT_EQ(result.error().code, ErrorCode::kDiameterUserNotFound);
+}
+
+TEST(StubHssClientTest, LoadsSubscriberAndReturnsAliasProfiles) {
+    HssAdapterConfig config;
+    config.subscribers = {
+        HssSubscriberConfig{
+            .imsi = "460112024122023",
+            .tel = "+8613824122023",
+            .password = "testpass-a",
+            .realm = "ims.operator.com",
+        },
+    };
+
+    StubHssClient hss(config);
+
+    auto mar = hss.multimediaAuth({
+        .impi = "460112024122023@ims.operator.com",
+        .impu = "sip:460112024122023@ims.operator.com",
+        .sip_auth_scheme = "Digest-AKAv1-MD5",
+        .server_name = "sip:scscf.ims.operator.com",
+    });
+    ASSERT_TRUE(mar.has_value()) << mar.error().message;
+    EXPECT_EQ(std::string(mar->auth_vector.xres.begin(), mar->auth_vector.xres.end()), "testpass-a");
+
+    auto sar = hss.serverAssignment({
+        .impi = "460112024122023@ims.operator.com",
+        .impu = "sip:+8613824122023@ims.operator.com",
+        .server_name = "sip:scscf.ims.operator.com",
+        .assignment_type = SarParams::AssignmentType::kRegistration,
+    });
+    ASSERT_TRUE(sar.has_value()) << sar.error().message;
+    EXPECT_EQ(sar->user_profile.impu, "sip:460112024122023@ims.operator.com");
+    EXPECT_THAT(sar->user_profile.associated_impus,
+                ::testing::ElementsAre("tel:+8613824122023",
+                                       "sip:+8613824122023@ims.operator.com",
+                                       "sip:460112024122023@ims.operator.com"));
+
+    auto lir_tel = hss.locationInfo({.impu = "tel:+8613824122023"});
+    ASSERT_TRUE(lir_tel.has_value()) << lir_tel.error().message;
+
+    auto lir_sip_tel = hss.locationInfo({.impu = "<sip:+8613824122023@IMS.OPERATOR.COM;user=phone>"});
+    ASSERT_TRUE(lir_sip_tel.has_value()) << lir_sip_tel.error().message;
+
+    auto lir_imsi = hss.locationInfo({.impu = "sip:460112024122023@ims.operator.com"});
+    ASSERT_TRUE(lir_imsi.has_value()) << lir_imsi.error().message;
 }

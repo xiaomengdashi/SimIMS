@@ -9,5 +9,6 @@ target_include_directories(ims_diameter PUBLIC
 
 target_link_libraries(ims_diameter PUBLIC
     ims_common
+    ims_sip
     # TODO: add freeDiameter when available
 )

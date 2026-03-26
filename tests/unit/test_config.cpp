@@ -78,6 +78,41 @@ dns:
     EXPECT_EQ(config.dns.timeout_ms, 5000u);
 }
 
+TEST_F(ConfigTest, LoadHssSubscribers) {
+    writeConfig(R"yaml(
+hss_adapter:
+  type: diameter
+  diameter_host: hss.example.com
+  diameter_port: 3868
+  diameter_realm: ims.operator.com
+  subscribers:
+    - imsi: "460112024122023"
+      tel: "+8613824122023"
+      password: "pass-a"
+      realm: "ims.operator.com"
+    - imsi: "460112024122024"
+      tel: "+8613824122024"
+      password: "pass-b"
+      realm: "ims.operator.com"
+)yaml");
+
+    auto result = load_config(config_path_);
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+
+    auto& config = *result;
+    EXPECT_EQ(config.hss_adapter.type, "diameter");
+    EXPECT_EQ(config.hss_adapter.diameter_host, "hss.example.com");
+    EXPECT_EQ(config.hss_adapter.diameter_port, 3868);
+    EXPECT_EQ(config.hss_adapter.diameter_realm, "ims.operator.com");
+    ASSERT_EQ(config.hss_adapter.subscribers.size(), 2u);
+    EXPECT_EQ(config.hss_adapter.subscribers[0].imsi, "460112024122023");
+    EXPECT_EQ(config.hss_adapter.subscribers[0].tel, "+8613824122023");
+    EXPECT_EQ(config.hss_adapter.subscribers[0].password, "pass-a");
+    EXPECT_EQ(config.hss_adapter.subscribers[0].realm, "ims.operator.com");
+    EXPECT_EQ(config.hss_adapter.subscribers[1].imsi, "460112024122024");
+    EXPECT_EQ(config.hss_adapter.subscribers[1].tel, "+8613824122024");
+}
+
 TEST_F(ConfigTest, LoadWithDefaults) {
     writeConfig("global:\n  log_level: info\n");
 

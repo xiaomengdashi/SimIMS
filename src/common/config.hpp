@@ -57,12 +57,20 @@ struct ScscfConfig {
     ExosipConfig exosip;
 };
 
+struct HssSubscriberConfig {
+    std::string imsi;
+    std::string tel;
+    std::string password;
+    std::string realm;
+};
+
 struct HssAdapterConfig {
     std::string type = "diameter";  // "diameter" or "nudm"
     std::string diameter_host = "127.0.0.1";
     uint16_t diameter_port = 3868;
     std::string diameter_realm = "ims.local";
     std::string nudm_url = "http://127.0.0.1:8080";
+    std::vector<HssSubscriberConfig> subscribers;
 };
 
 struct MediaConfig {

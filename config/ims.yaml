@@ -18,7 +18,7 @@ icscf:
   hss:
     host: 127.0.0.1
     port: 3868
-    realm: ims.example.com
+    realm: ims.mnc011.mcc460.3gppnetwork.org
 
 scscf:
   listen_addr: 0.0.0.0
@@ -26,8 +26,8 @@ scscf:
   hss:
     host: 127.0.0.1
     port: 3868
-    realm: ims.example.com
-  domain: ims.example.com
+    realm: ims.mnc011.mcc460.3gppnetwork.org
+  domain: ims.mnc011.mcc460.3gppnetwork.org
   exosip:
     enabled: true
     listen_addr: 0.0.0.0
@@ -38,12 +38,19 @@ scscf:
 
 hss_adapter:
   type: diameter            # diameter or http2
-  diameter:
-    origin_host: scscf.ims.example.com
-    origin_realm: ims.example.com
-    peer_host: hss.ims.example.com
-    peer_port: 3868
+  diameter_host: hss.ims.mnc011.mcc460.3gppnetwork.org
+  diameter_port: 3868
+  diameter_realm: ims.mnc011.mcc460.3gppnetwork.org
   nudm_url: http://127.0.0.1:8080/nudm-uecm/v1
+  subscribers:
+    - imsi: "460112024122023"
+      tel: "+8613824122023"
+      password: "testpass"
+      realm: "ims.mnc011.mcc460.3gppnetwork.org"
+    - imsi: "460112024122024"
+      tel: "+8613824122024"
+      password: "testpass"
+      realm: "ims.mnc011.mcc460.3gppnetwork.org"
 
 media:
   rtpengine_host: 127.0.0.1

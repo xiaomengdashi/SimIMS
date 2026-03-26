@@ -10,11 +10,18 @@ CALLEE_DIR="$RUNTIME_DIR/callee"
 IMS_LOG="$LOG_DIR/ims_baresip_invite.log"
 CALLER_LOG="$LOG_DIR/baresip_caller.log"
 CALLEE_LOG="$LOG_DIR/baresip_callee.log"
-CALLER_USER="testuser"
-CALLEE_USER="callee"
-DOMAIN="ims.example.com"
-PASSWORD="testpass"
-OUTBOUND='sip:127.0.0.1:5060;transport=udp'
+CALLER_IMPU=${CALLER_IMPU:-sip:460112024122023@ims.mnc011.mcc460.3gppnetwork.org}
+CALLER_IMPI=${CALLER_IMPI:-460112024122023@ims.mnc011.mcc460.3gppnetwork.org}
+CALLER_PASSWORD=${CALLER_PASSWORD:-testpass}
+CALLEE_IMPU=${CALLEE_IMPU:-sip:460112024122024@ims.mnc011.mcc460.3gppnetwork.org}
+CALLEE_IMPI=${CALLEE_IMPI:-460112024122024@ims.mnc011.mcc460.3gppnetwork.org}
+CALLEE_PASSWORD=${CALLEE_PASSWORD:-testpass}
+UE_PCSCF_IP=${UE_PCSCF_IP:-127.0.0.1}
+UE_PCSCF_PORT=${UE_PCSCF_PORT:-5060}
+UE_TRANSPORT=${UE_TRANSPORT:-udp}
+UE_REGINT=${UE_REGINT:-600000}
+CALLER_URI=${CALLER_IMPU#sip:}
+CALLEE_URI=${CALLEE_IMPU#sip:}
 RTPENGINE_STUB_LOG="$LOG_DIR/rtpengine_stub.log"
 
 IMS_PID=""
@@ -59,6 +66,20 @@ wait_for_log() {
     done
 
     grep -q "$needle" "$IMS_LOG" 2>/dev/null
+}
+
+wait_for_file_log() {
+    local file="$1"
+    local needle="$2"
+
+    for _ in $(seq 1 10); do
+        if grep -q "$needle" "$file" 2>/dev/null; then
+            return 0
+        fi
+        sleep 1
+    done
+
+    grep -q "$needle" "$file" 2>/dev/null
 }
 
 mkdir -p "$LOG_DIR"
@@ -120,17 +141,19 @@ EOF
 
 write_account() {
     local target_dir="$1"
-    local user="$2"
+    local impu="$2"
+    local impi="$3"
+    local password="$4"
 
     cat > "$target_dir/accounts" <<EOF
-<sip:${user}@${DOMAIN};transport=udp>;auth_user=${user};auth_pass=${PASSWORD};outbound="${OUTBOUND}";regint=3600
+<${impu};transport=${UE_TRANSPORT}>;auth_user=${impi};auth_pass=${password};outbound="sip:${UE_PCSCF_IP}:${UE_PCSCF_PORT};transport=${UE_TRANSPORT}";regint=${UE_REGINT}
 EOF
 }
 
 write_config "$CALLER_DIR" 5555 8000 4444
 write_config "$CALLEE_DIR" 5556 8001 4445
-write_account "$CALLER_DIR" "$CALLER_USER"
-write_account "$CALLEE_DIR" "$CALLEE_USER"
+write_account "$CALLER_DIR" "$CALLER_IMPU" "$CALLER_IMPI" "$CALLER_PASSWORD"
+write_account "$CALLEE_DIR" "$CALLEE_IMPU" "$CALLEE_IMPI" "$CALLEE_PASSWORD"
 
 python3 - <<'PY' > "$RTPENGINE_STUB_LOG" 2>&1 &
 import socket
@@ -166,7 +189,7 @@ exec {CALLEE_FIFO_FD}<>"$CALLEE_FIFO"
 baresip -f "$CALLEE_DIR" -e "/answermode auto" < "$CALLEE_FIFO" > "$CALLEE_LOG" 2>&1 &
 CALLEE_PID=$!
 
-if ! wait_for_log "Registration complete for sip:${CALLEE_USER}@${DOMAIN}"; then
+if ! wait_for_log "Registration complete for sip:${CALLEE_URI}"; then
     echo "ERROR: callee registration not observed within 2 seconds" >&2
     exit 1
 fi
@@ -177,20 +200,20 @@ exec {CALLER_FIFO_FD}<>"$CALLER_FIFO"
 baresip -f "$CALLER_DIR" < "$CALLER_FIFO" > "$CALLER_LOG" 2>&1 &
 CALLER_PID=$!
 
-if ! wait_for_log "Registration complete for sip:${CALLER_USER}@${DOMAIN}"; then
+if ! wait_for_log "Registration complete for sip:${CALLER_URI}"; then
     echo "ERROR: caller registration not observed within 2 seconds" >&2
     exit 1
 fi
 
 sleep 2
-printf '/dial sip:%s@%s\n' "$CALLEE_USER" "$DOMAIN" >&${CALLER_FIFO_FD}
+printf '/dial sip:%s\n' "$CALLEE_URI" >&${CALLER_FIFO_FD}
 
 if grep -Eq "Got response (180|183|200|486|603) for INVITE|SIP/2.0 (180|183|200|486|603)" "$IMS_LOG" "$CALLER_LOG" "$CALLEE_LOG"; then
     sleep 1
     printf '/hangup\n' >&${CALLER_FIFO_FD}
+    wait_for_file_log "$CALLER_LOG" "Call with .* terminated" || true
 fi
 
-sleep 2
 printf '/quit\n' >&${CALLER_FIFO_FD} || true
 printf '/quit\n' >&${CALLEE_FIFO_FD} || true
 
@@ -206,12 +229,12 @@ printf '%s\n' "$CALLEE_LOG"
 printf '=== RTPengine stub log ===\n'
 printf '%s\n\n' "$RTPENGINE_STUB_LOG"
 
-if ! grep -q "Registration complete for sip:${CALLER_USER}@${DOMAIN}" "$IMS_LOG"; then
+if ! grep -q "Registration complete for sip:${CALLER_URI}" "$IMS_LOG"; then
     echo "ERROR: caller registration not observed in IMS log" >&2
     exit 1
 fi
 
-if ! grep -q "Registration complete for sip:${CALLEE_USER}@${DOMAIN}" "$IMS_LOG"; then
+if ! grep -q "Registration complete for sip:${CALLEE_URI}" "$IMS_LOG"; then
     echo "ERROR: callee registration not observed in IMS log" >&2
     exit 1
 fi
@@ -226,8 +249,8 @@ if grep -q "Callee not found\|No active contacts" "$IMS_LOG"; then
     exit 1
 fi
 
-if grep -q "Auth verified for sip:${CALLER_USER}@${DOMAIN}" "$IMS_LOG" && \
-   grep -q "Auth verified for sip:${CALLEE_USER}@${DOMAIN}" "$IMS_LOG"; then
+if grep -q "Auth verified for ${CALLER_IMPI}" "$IMS_LOG" && \
+   grep -q "Auth verified for ${CALLEE_IMPI}" "$IMS_LOG"; then
     :
 else
     echo "ERROR: digest auth did not complete for both UEs" >&2

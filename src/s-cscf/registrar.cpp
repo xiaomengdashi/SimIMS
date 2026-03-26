@@ -13,13 +13,6 @@ namespace ims::scscf {
 
 namespace {
 
-auto normalizeUri(std::string uri) -> std::string {
-    if (uri.empty() || uri.find("sip:") != std::string::npos) {
-        return uri;
-    }
-    return "sip:" + uri;
-}
-
 auto formatGmtDate() -> std::string {
     std::time_t now = std::time(nullptr);
     std::tm gm{};
@@ -479,16 +472,16 @@ void Registrar::handleDeregister(ims::sip::SipMessage& request,
 
 auto Registrar::extractImpi(const ims::sip::SipMessage& msg) const -> std::string {
     if (auto impi = msg.impi_from_authorization_or_from()) {
-        return normalizeUri(*impi);
+        return ims::sip::normalize_impu_uri(*impi);
     }
-    return normalizeUri(msg.fromHeader());
+    return ims::sip::normalize_impu_uri(msg.fromHeader());
 }
 
 auto Registrar::extractImpu(const ims::sip::SipMessage& msg) const -> std::string {
     if (auto impu = msg.impu_from_to()) {
-        return normalizeUri(*impu);
+        return ims::sip::normalize_impu_uri(*impu);
     }
-    return normalizeUri(msg.toHeader());
+    return ims::sip::normalize_impu_uri(msg.toHeader());
 }
 
 bool Registrar::isDeregister(const ims::sip::SipMessage& msg) const {

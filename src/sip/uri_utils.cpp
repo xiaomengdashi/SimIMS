@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <format>
 #include <sstream>
 
 #include <osipparser2/osip_parser.h>
@@ -69,22 +70,53 @@ auto extract_uri_from_name_addr(const std::string& value) -> std::string {
         return trimmed.substr(angle_start + 1, angle_end - angle_start - 1);
     }
 
-    auto semi = trimmed.find(';');
-    if (semi != std::string::npos) {
-        return trimmed.substr(0, semi);
+    auto lowered = lowercase(trimmed);
+    if (lowered.rfind("tel:", 0) == 0) {
+        auto semi = trimmed.find(';');
+        if (semi != std::string::npos) {
+            return trimmed.substr(0, semi);
+        }
     }
+
     return trimmed;
 }
 
 auto normalize_impu_uri(const std::string& value) -> std::string {
-    auto uri = extract_uri_from_name_addr(value);
-    if (uri.empty() || uri == "*") {
-        return uri;
+    auto uri_text = extract_uri_from_name_addr(value);
+    if (uri_text.empty() || uri_text == "*") {
+        return uri_text;
     }
-    if (uri.find("sip:") != 0 && uri.find("sips:") != 0) {
-        uri = "sip:" + uri;
+
+    auto lowered = lowercase(uri_text);
+    if (lowered.rfind("tel:", 0) == 0) {
+        return lowered;
     }
-    return uri;
+
+    OsipUriGuard uri;
+    if (osip_uri_init(&uri.value) != 0 || !uri.value) {
+        return lowered;
+    }
+    if (osip_uri_parse(uri.value, uri_text.c_str()) != 0) {
+        return lowered;
+    }
+
+    auto scheme = uri.value->scheme ? lowercase(uri.value->scheme) : std::string{};
+    if (scheme == "tel") {
+        if (!uri.value->username) {
+            return "tel:";
+        }
+        return std::format("tel:{}", uri.value->username);
+    }
+
+
+    if (scheme != "sip" && scheme != "sips") {
+        return lowercase(uri_text);
+    }
+    if (!uri.value->username || !uri.value->host) {
+        return lowercase(uri_text);
+    }
+
+    return std::format("{}:{}@{}", scheme, uri.value->username, lowercase(uri.value->host));
 }
 
 auto parse_endpoint_from_uri(const std::string& sip_uri) -> std::optional<Endpoint> {

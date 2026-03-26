@@ -6,13 +6,21 @@ REPO_ROOT=$(cd -- "$SCRIPT_DIR/.." && pwd)
 LOG_DIR="$REPO_ROOT/build/test-logs"
 BARESIP_DIR="$REPO_ROOT/.baresip"
 
+UE_IMPU=${UE_IMPU:-sip:460112024122023@ims.mnc011.mcc460.3gppnetwork.org}
+UE_IMPI=${UE_IMPI:-460112024122023@ims.mnc011.mcc460.3gppnetwork.org}
+UE_PASSWORD=${UE_PASSWORD:-testpass}
+UE_PCSCF_IP=${UE_PCSCF_IP:-127.0.0.1}
+UE_PCSCF_PORT=${UE_PCSCF_PORT:-5060}
+UE_TRANSPORT=${UE_TRANSPORT:-tcp}
+UE_REGINT=${UE_REGINT:-600000}
+
 rm -f "$LOG_DIR/ims_baresip_register.log" "$LOG_DIR/baresip_register.log"
 
 mkdir -p "$LOG_DIR"
 mkdir -p "$BARESIP_DIR"
 
-cat > "$BARESIP_DIR/accounts" <<'EOF'
-<sip:testuser@ims.example.com;transport=udp>;auth_user=testuser;auth_pass=testpass;outbound="sip:127.0.0.1:5060;transport=udp";regint=3600
+cat > "$BARESIP_DIR/accounts" <<EOF
+<${UE_IMPU};transport=${UE_TRANSPORT}>;auth_user=${UE_IMPI};auth_pass=${UE_PASSWORD};outbound="sip:${UE_PCSCF_IP}:${UE_PCSCF_PORT};transport=${UE_TRANSPORT}";regint=${UE_REGINT}
 EOF
 
 pkill -f ims_allinone || true

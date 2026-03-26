@@ -1,4 +1,5 @@
 #include "sip/store.hpp"
+#include "sip/uri_utils.hpp"
 #include "../mocks/mock_hss_client.hpp"
 #include "../mocks/mock_registration_store.hpp"
 #include <gtest/gtest.h>
@@ -94,4 +95,13 @@ TEST(RegistrationBindingTest, ActiveContactsFiltersExpired) {
     auto active = binding.active_contacts();
     ASSERT_EQ(active.size(), 1u);
     EXPECT_EQ(active[0]->contact_uri, "sip:active@10.0.0.1");
+}
+
+TEST(UriUtilsTest, NormalizeImpuUriSupportsTelAndSipAliases) {
+    EXPECT_EQ(ims::sip::normalize_impu_uri("tel:+8613824122023;phone-context=ims.operator.com"),
+              "tel:+8613824122023");
+    EXPECT_EQ(ims::sip::normalize_impu_uri("<sip:+8613824122023@IMS.OPERATOR.COM;user=phone>"),
+              "sip:+8613824122023@ims.operator.com");
+    EXPECT_EQ(ims::sip::normalize_impu_uri("sip:460112024122023@IMS.OPERATOR.COM"),
+              "sip:460112024122023@ims.operator.com");
 }
