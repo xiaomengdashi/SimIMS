@@ -5,6 +5,7 @@
 #include "sip/proxy_core.hpp"
 #include "sip/transaction.hpp"
 #include "sip/store.hpp"
+#include "common/types.hpp"
 
 #include <memory>
 #include <mutex>
@@ -35,17 +36,24 @@ public:
                    std::shared_ptr<ims::sip::ServerTransaction> txn);
 
 private:
-    /// Active session tracking (Call-ID -> session info)
     struct SessionInfo {
+        std::string call_id;
+        std::string caller_tag;
+        std::string callee_tag;
         std::string caller_impu;
         std::string callee_impu;
         ims::sip::Endpoint caller_endpoint;
         ims::sip::Endpoint callee_endpoint;
         std::string callee_invite_branch;
+        bool bye_seen = false;
     };
 
     auto lookupCallee(const std::string& request_uri)
         -> ims::Result<ims::registration::RegistrationBinding>;
+    auto findSessionByCallId(const std::string& call_id) -> SessionInfo*;
+    auto resolveInDialogDestination(const ims::sip::SipMessage& request, SessionInfo& session) const
+        -> const ims::sip::Endpoint*;
+    void eraseSession(const std::string& call_id);
 
     std::shared_ptr<ims::registration::IRegistrationStore> store_;
     ims::sip::SipStack& sip_stack_;

@@ -21,8 +21,24 @@ IMS_PID=""
 CALLER_PID=""
 CALLEE_PID=""
 RTPENGINE_STUB_PID=""
+CALLER_FIFO=""
+CALLER_FIFO_FD=""
+CALLEE_FIFO=""
+CALLEE_FIFO_FD=""
 
 cleanup() {
+    if [[ -n "$CALLER_FIFO_FD" ]]; then
+        eval "exec ${CALLER_FIFO_FD}>&-" || true
+    fi
+    if [[ -n "$CALLEE_FIFO_FD" ]]; then
+        eval "exec ${CALLEE_FIFO_FD}>&-" || true
+    fi
+    if [[ -n "$CALLER_FIFO" ]]; then
+        rm -f "$CALLER_FIFO"
+    fi
+    if [[ -n "$CALLEE_FIFO" ]]; then
+        rm -f "$CALLEE_FIFO"
+    fi
     for pid in "$CALLER_PID" "$CALLEE_PID" "$IMS_PID" "$RTPENGINE_STUB_PID"; do
         if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
             kill "$pid" 2>/dev/null || true
@@ -31,6 +47,19 @@ cleanup() {
     done
 }
 trap cleanup EXIT
+
+wait_for_log() {
+    local needle="$1"
+
+    for _ in 1 2; do
+        if grep -q "$needle" "$IMS_LOG" 2>/dev/null; then
+            return 0
+        fi
+        sleep 1
+    done
+
+    grep -q "$needle" "$IMS_LOG" 2>/dev/null
+}
 
 mkdir -p "$LOG_DIR"
 rm -rf "$RUNTIME_DIR"
@@ -131,13 +160,39 @@ IMS_PID=$!
 
 sleep 1
 
-baresip -f "$CALLEE_DIR" -e "/answermode auto" -t 25 > "$CALLEE_LOG" 2>&1 &
+CALLEE_FIFO="$RUNTIME_DIR/callee.stdin"
+mkfifo "$CALLEE_FIFO"
+exec {CALLEE_FIFO_FD}<>"$CALLEE_FIFO"
+baresip -f "$CALLEE_DIR" -e "/answermode auto" < "$CALLEE_FIFO" > "$CALLEE_LOG" 2>&1 &
 CALLEE_PID=$!
 
-sleep 3
+if ! wait_for_log "Registration complete for sip:${CALLEE_USER}@${DOMAIN}"; then
+    echo "ERROR: callee registration not observed within 2 seconds" >&2
+    exit 1
+fi
 
-baresip -f "$CALLER_DIR" -e "/dial sip:${CALLEE_USER}@${DOMAIN}" -t 25 > "$CALLER_LOG" 2>&1 &
+CALLER_FIFO="$RUNTIME_DIR/caller.stdin"
+mkfifo "$CALLER_FIFO"
+exec {CALLER_FIFO_FD}<>"$CALLER_FIFO"
+baresip -f "$CALLER_DIR" < "$CALLER_FIFO" > "$CALLER_LOG" 2>&1 &
 CALLER_PID=$!
+
+if ! wait_for_log "Registration complete for sip:${CALLER_USER}@${DOMAIN}"; then
+    echo "ERROR: caller registration not observed within 2 seconds" >&2
+    exit 1
+fi
+
+sleep 2
+printf '/dial sip:%s@%s\n' "$CALLEE_USER" "$DOMAIN" >&${CALLER_FIFO_FD}
+
+if grep -Eq "Got response (180|183|200|486|603) for INVITE|SIP/2.0 (180|183|200|486|603)" "$IMS_LOG" "$CALLER_LOG" "$CALLEE_LOG"; then
+    sleep 1
+    printf '/hangup\n' >&${CALLER_FIFO_FD}
+fi
+
+sleep 2
+printf '/quit\n' >&${CALLER_FIFO_FD} || true
+printf '/quit\n' >&${CALLEE_FIFO_FD} || true
 
 wait "$CALLER_PID" || true
 wait "$CALLEE_PID" || true

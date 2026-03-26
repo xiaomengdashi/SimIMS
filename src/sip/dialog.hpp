@@ -21,8 +21,13 @@ struct DialogId {
     std::string call_id;
     std::string local_tag;
     std::string remote_tag;
-    bool operator==(const DialogId&) const = default;
 };
+
+inline auto operator==(const DialogId& lhs, const DialogId& rhs) -> bool {
+    return lhs.call_id == rhs.call_id
+        && lhs.local_tag == rhs.local_tag
+        && lhs.remote_tag == rhs.remote_tag;
+}
 
 struct DialogIdHash {
     std::size_t operator()(const DialogId& id) const {
