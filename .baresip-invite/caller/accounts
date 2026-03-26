@@ -1,0 +1,1 @@
+<sip:460112024122023@ims.mnc011.mcc460.3gppnetwork.org;transport=udp>;auth_user=460112024122023@ims.mnc011.mcc460.3gppnetwork.org;auth_pass=testpass;outbound="sip:127.0.0.1:5060;transport=udp";regint=600000
