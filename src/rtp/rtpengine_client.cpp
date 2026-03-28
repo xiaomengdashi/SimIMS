@@ -3,6 +3,32 @@
 
 #include <format>
 #include <array>
+#include <chrono>
+#include <string_view>
+#include <thread>
+
+namespace {
+
+constexpr auto kReceiveTimeout = std::chrono::seconds(2);
+constexpr auto kReceivePollInterval = std::chrono::milliseconds(10);
+
+auto findStringField(const ims::media::BencodeDict& dict,
+                     std::string_view key) -> ims::Result<std::optional<std::string>>
+{
+    auto it = dict.find(std::string(key));
+    if (it == dict.end()) {
+        return std::optional<std::string>{};
+    }
+    if (auto* value = std::get_if<std::string>(&it->second)) {
+        return std::optional<std::string>{*value};
+    }
+    return std::unexpected(ims::ErrorInfo{
+        ims::ErrorCode::kMediaRtpengineError,
+        std::format("rtpengine response field '{}' has unexpected type", key)
+    });
+}
+
+} // namespace
 
 namespace ims::media {
 
@@ -46,22 +72,36 @@ auto RtpengineClientImpl::offer(const MediaSession& session, const std::string& 
     if (!response) return std::unexpected(response.error());
 
     auto& dict = *response;
-    auto result_it = dict.find("result");
-    if (result_it == dict.end() ||
-        std::get<std::string>(result_it->second) != "ok") {
+    auto result_value = findStringField(dict, "result");
+    if (!result_value) {
+        return std::unexpected(result_value.error());
+    }
+    if (!result_value->has_value() || **result_value != "ok") {
         std::string err_msg = "rtpengine offer failed";
-        if (auto it = dict.find("error-reason"); it != dict.end()) {
-            err_msg = std::get<std::string>(it->second);
+        auto error_reason = findStringField(dict, "error-reason");
+        if (!error_reason) {
+            return std::unexpected(error_reason.error());
+        }
+        if (error_reason->has_value()) {
+            err_msg = **error_reason;
         }
         return std::unexpected(ErrorInfo{ErrorCode::kMediaRtpengineError, err_msg});
     }
 
     RtpengineResult result;
-    if (auto it = dict.find("sdp"); it != dict.end()) {
-        result.sdp = std::get<std::string>(it->second);
+    auto sdp_value = findStringField(dict, "sdp");
+    if (!sdp_value) {
+        return std::unexpected(sdp_value.error());
     }
-    if (auto it = dict.find("tag"); it != dict.end()) {
-        result.tag = std::get<std::string>(it->second);
+    if (sdp_value->has_value()) {
+        result.sdp = **sdp_value;
+    }
+    auto tag_value = findStringField(dict, "tag");
+    if (!tag_value) {
+        return std::unexpected(tag_value.error());
+    }
+    if (tag_value->has_value()) {
+        result.tag = **tag_value;
     }
 
     IMS_LOG_DEBUG("rtpengine offer success for call={}", session.call_id);
@@ -88,15 +128,21 @@ auto RtpengineClientImpl::answer(const MediaSession& session, const std::string&
     if (!response) return std::unexpected(response.error());
 
     auto& dict = *response;
-    auto result_it = dict.find("result");
-    if (result_it == dict.end() ||
-        std::get<std::string>(result_it->second) != "ok") {
+    auto result_value = findStringField(dict, "result");
+    if (!result_value) {
+        return std::unexpected(result_value.error());
+    }
+    if (!result_value->has_value() || **result_value != "ok") {
         return std::unexpected(ErrorInfo{ErrorCode::kMediaRtpengineError, "rtpengine answer failed"});
     }
 
     RtpengineResult result;
-    if (auto it = dict.find("sdp"); it != dict.end()) {
-        result.sdp = std::get<std::string>(it->second);
+    auto sdp_value = findStringField(dict, "sdp");
+    if (!sdp_value) {
+        return std::unexpected(sdp_value.error());
+    }
+    if (sdp_value->has_value()) {
+        result.sdp = **sdp_value;
     }
 
     IMS_LOG_DEBUG("rtpengine answer success for call={}", session.call_id);
@@ -133,10 +179,12 @@ auto RtpengineClientImpl::ping() -> VoidResult {
     if (!response) return std::unexpected(response.error());
 
     auto& dict = *response;
-    if (auto it = dict.find("result"); it != dict.end()) {
-        if (std::get<std::string>(it->second) == "pong") {
-            return {};
-        }
+    auto result_value = findStringField(dict, "result");
+    if (!result_value) {
+        return std::unexpected(result_value.error());
+    }
+    if (result_value->has_value() && **result_value == "pong") {
+        return {};
     }
 
     return std::unexpected(ErrorInfo{ErrorCode::kMediaRtpengineError, "Unexpected ping response"});
@@ -157,21 +205,52 @@ auto RtpengineClientImpl::sendCommand(const BencodeDict& cmd) -> Result<BencodeD
         });
     }
 
-    // Receive response (synchronous with timeout)
+    // Receive response with bounded wait.
     std::array<char, 65535> recv_buf;
     boost::asio::ip::udp::endpoint sender_ep;
-
-    // Set up a deadline for receive
     socket_.non_blocking(true, ec);
-
-    // Simple blocking receive for now
-    socket_.non_blocking(false, ec);
-    auto bytes = socket_.receive_from(boost::asio::buffer(recv_buf), sender_ep, 0, ec);
     if (ec) {
         return std::unexpected(ErrorInfo{
             ErrorCode::kMediaRtpengineError,
-            "Failed to receive from rtpengine",
+            "Failed to set non-blocking mode",
             ec.message()
+        });
+    }
+
+    const auto deadline = std::chrono::steady_clock::now() + kReceiveTimeout;
+    size_t bytes = 0;
+    while (true) {
+        bytes = socket_.receive_from(boost::asio::buffer(recv_buf), sender_ep, 0, ec);
+        if (!ec) {
+            break;
+        }
+        if (ec != boost::asio::error::would_block && ec != boost::asio::error::try_again) {
+            boost::system::error_code restore_ec;
+            socket_.non_blocking(false, restore_ec);
+            return std::unexpected(ErrorInfo{
+                ErrorCode::kMediaRtpengineError,
+                "Failed to receive from rtpengine",
+                ec.message()
+            });
+        }
+        if (std::chrono::steady_clock::now() >= deadline) {
+            boost::system::error_code restore_ec;
+            socket_.non_blocking(false, restore_ec);
+            return std::unexpected(ErrorInfo{
+                ErrorCode::kMediaRtpengineError,
+                "Timed out waiting for rtpengine response"
+            });
+        }
+        std::this_thread::sleep_for(kReceivePollInterval);
+    }
+    boost::system::error_code restore_ec;
+    socket_.non_blocking(false, restore_ec);
+
+    if (sender_ep.address() != rtpengine_ep_.address() || sender_ep.port() != rtpengine_ep_.port()) {
+        return std::unexpected(ErrorInfo{
+            ErrorCode::kMediaRtpengineError,
+            "Received rtpengine response from unexpected endpoint",
+            std::format("{}:{}", sender_ep.address().to_string(), sender_ep.port())
         });
     }
 

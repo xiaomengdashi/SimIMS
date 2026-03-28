@@ -15,10 +15,8 @@ auto isUsableDestination(const ims::sip::Endpoint& endpoint) -> bool {
     return !endpoint.address.empty() && endpoint.address != "0.0.0.0";
 }
 
-auto dialogEquals(const ims::sip::DialogId& lhs, const ims::sip::DialogId& rhs) -> bool {
-    return lhs.call_id == rhs.call_id
-        && lhs.local_tag == rhs.local_tag
-        && lhs.remote_tag == rhs.remote_tag;
+auto isInDialogRequest(const ims::sip::SipMessage& request) -> bool {
+    return !request.toTag().empty();
 }
 
 } // namespace
@@ -36,6 +34,7 @@ void SessionRouter::handleInvite(const ims::sip::SipMessage& request,
     auto call_id = request.callId();
     auto from = request.fromHeader();
     auto request_uri = request.requestUri();
+    auto in_dialog = isInDialogRequest(request);
 
     IMS_LOG_INFO("INVITE received, Call-ID={}, From={}, To={}", call_id, from, request_uri);
 
@@ -43,24 +42,6 @@ void SessionRouter::handleInvite(const ims::sip::SipMessage& request,
     auto trying = ims::sip::createResponse(request, 100, "Trying");
     if (trying) {
         txn->sendResponse(std::move(*trying));
-    }
-
-    // Look up callee registration
-    auto binding = lookupCallee(request_uri);
-    if (!binding) {
-        IMS_LOG_WARN("Callee not found: {}", request_uri);
-        auto resp = ims::sip::createResponse(request, 404, "Not Found");
-        if (resp) txn->sendResponse(std::move(*resp));
-        return;
-    }
-
-    // Get active contacts for the callee
-    auto contacts = binding->active_contacts();
-    if (contacts.empty()) {
-        IMS_LOG_WARN("No active contacts for callee: {}", request_uri);
-        auto resp = ims::sip::createResponse(request, 480, "Temporarily Unavailable");
-        if (resp) txn->sendResponse(std::move(*resp));
-        return;
     }
 
     // Clone the request for forwarding
@@ -72,34 +53,75 @@ void SessionRouter::handleInvite(const ims::sip::SipMessage& request,
         return;
     }
 
-    // Set Request-URI to the callee's contact URI without Contact params.
-    fwd_request->setRequestUri(ims::sip::extract_uri_from_name_addr(contacts[0]->contact_uri));
+    ims::sip::Endpoint dest;
+    std::string contact_uri = "<existing-target>";
+    std::string path = "<none>";
+    std::string callee_impu;
+
+    if (in_dialog) {
+        std::lock_guard lock(sessions_mutex_);
+        auto* session = findSessionByCallId(call_id);
+        if (!session) {
+            IMS_LOG_WARN("No session found for in-dialog INVITE, Call-ID={} from_tag={} to_tag={}",
+                         call_id, request.fromTag(), request.toTag());
+            auto resp = ims::sip::createResponse(request, 481, "Call/Transaction Does Not Exist");
+            if (resp) txn->sendResponse(std::move(*resp));
+            return;
+        }
+
+        auto* resolved = resolveInDialogDestination(request, *session);
+        if (!resolved) {
+            IMS_LOG_WARN("Unable to resolve in-dialog INVITE destination, Call-ID={} from_tag={} to_tag={}",
+                         call_id, request.fromTag(), request.toTag());
+            auto resp = ims::sip::createResponse(request, 481, "Call/Transaction Does Not Exist");
+            if (resp) txn->sendResponse(std::move(*resp));
+            return;
+        }
+
+        dest = *resolved;
+    } else {
+        auto binding = lookupCallee(request_uri);
+        if (!binding) {
+            IMS_LOG_WARN("Callee not found: {}", request_uri);
+            auto resp = ims::sip::createResponse(request, 404, "Not Found");
+            if (resp) txn->sendResponse(std::move(*resp));
+            return;
+        }
+
+        auto contacts = binding->active_contacts();
+        if (contacts.empty()) {
+            IMS_LOG_WARN("No active contacts for callee: {}", request_uri);
+            auto resp = ims::sip::createResponse(request, 480, "Temporarily Unavailable");
+            if (resp) txn->sendResponse(std::move(*resp));
+            return;
+        }
+
+        contact_uri = contacts[0]->contact_uri;
+        if (!contacts[0]->path.empty()) {
+            path = contacts[0]->path;
+        }
+        callee_impu = binding->impu;
+
+        // For dialog-forming INVITE, retarget to the registered contact.
+        fwd_request->setRequestUri(ims::sip::extract_uri_from_name_addr(contact_uri));
+
+        auto resolved_dest = resolveBindingDestination(*binding);
+        if (!resolved_dest) {
+            IMS_LOG_WARN("Failed to resolve INVITE destination for {}: {}",
+                         request_uri, resolved_dest.error().message);
+            auto resp = ims::sip::createResponse(request, 480, "Temporarily Unavailable");
+            if (resp) txn->sendResponse(std::move(*resp));
+            return;
+        }
+
+        dest = *resolved_dest;
+    }
+
     proxy_.processRouteHeaders(*fwd_request);
 
-    // Add Record-Route so subsequent requests pass through us
-    proxy_.addRecordRoute(*fwd_request);
-
-    // Determine destination from contact's Path or contact URI
-    ims::sip::Endpoint dest;
-    if (!contacts[0]->path.empty()) {
-        // Path header contains P-CSCF route URI.
-        auto parsed = ims::sip::parse_endpoint_from_uri(contacts[0]->path);
-        if (parsed && isUsableDestination(*parsed)) {
-            dest = *parsed;
-        }
-    }
-    if (!isUsableDestination(dest)) {
-        auto parsed = ims::sip::parse_endpoint_from_uri(contacts[0]->contact_uri);
-        if (parsed) {
-            dest = *parsed;
-        }
-    }
-
-    if (!isUsableDestination(dest)) {
-        IMS_LOG_WARN("Failed to derive destination from Path/Contact, fallback to localhost");
-        dest.address = "127.0.0.1";
-        dest.port = 5060;
-        dest.transport = "udp";
+    if (!in_dialog) {
+        // Keep ourselves on the route set only for dialog-forming requests.
+        proxy_.addRecordRoute(*fwd_request);
     }
 
     auto prep = proxy_.prepareRequestForForward(*fwd_request, dest.transport);
@@ -114,21 +136,27 @@ void SessionRouter::handleInvite(const ims::sip::SipMessage& request,
 
     {
         std::lock_guard lock(sessions_mutex_);
-        sessions_[call_id] = SessionInfo{
-            .call_id = call_id,
-            .caller_tag = request.fromTag(),
-            .callee_tag = request.toTag(),
-            .caller_impu = from,
-            .callee_impu = binding->impu,
-            .caller_endpoint = txn->source(),
-            .callee_endpoint = dest,
-            .callee_invite_branch = invite_branch,
-        };
+        auto& session = sessions_[call_id];
+        if (session.call_id.empty()) {
+            session.call_id = call_id;
+            session.caller_tag = request.fromTag();
+            session.caller_impu = from;
+            session.caller_endpoint = txn->source();
+        }
+        if (!in_dialog) {
+            session.callee_tag = request.toTag();
+            session.callee_impu = callee_impu;
+            session.callee_endpoint = dest;
+            session.callee_invite_branch = invite_branch;
+            session.bye_seen = false;
+        }
     }
 
-    IMS_LOG_DEBUG("Forwarding INVITE to callee contact={} path={} dest={}:{} transport={}",
-                  contacts[0]->contact_uri,
-                  contacts[0]->path.empty() ? "<none>" : contacts[0]->path,
+    IMS_LOG_DEBUG("Forwarding {}INVITE request_uri={} contact={} path={} dest={}:{} transport={}",
+                  in_dialog ? "in-dialog " : "",
+                  fwd_request->requestUri(),
+                  contact_uri,
+                  path,
                   dest.address,
                   dest.port,
                   dest.transport);
@@ -285,6 +313,40 @@ void SessionRouter::handleCancel(const ims::sip::SipMessage& request,
 auto SessionRouter::lookupCallee(const std::string& request_uri)
     -> ims::Result<ims::registration::RegistrationBinding> {
     return store_->lookup(ims::sip::normalize_impu_uri(request_uri));
+}
+
+auto SessionRouter::resolveBindingDestination(const ims::registration::RegistrationBinding& binding)
+    -> ims::Result<ims::sip::Endpoint> {
+    auto contacts = binding.active_contacts();
+    if (contacts.empty()) {
+        return std::unexpected(ims::ErrorInfo{
+            ims::ErrorCode::kRegistrationExpired,
+            "No active contacts for callee"
+        });
+    }
+
+    ims::sip::Endpoint dest;
+    if (!contacts[0]->path.empty()) {
+        auto parsed = ims::sip::parse_endpoint_from_uri(contacts[0]->path);
+        if (parsed && isUsableDestination(*parsed)) {
+            dest = *parsed;
+        }
+    }
+    if (!isUsableDestination(dest)) {
+        auto parsed = ims::sip::parse_endpoint_from_uri(contacts[0]->contact_uri);
+        if (parsed) {
+            dest = *parsed;
+        }
+    }
+
+    if (!isUsableDestination(dest)) {
+        return std::unexpected(ims::ErrorInfo{
+            ims::ErrorCode::kSipDialogNotFound,
+            "Failed to derive destination from Path or Contact"
+        });
+    }
+
+    return dest;
 }
 
 auto SessionRouter::findSessionByCallId(const std::string& call_id) -> SessionInfo* {

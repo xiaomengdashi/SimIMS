@@ -39,14 +39,17 @@
 
 ## 快速开始
 
+完整部署说明见：[docs/deployment.md](docs/deployment.md)。
+
 ### 依赖安装
 
 ```bash
 # Ubuntu/Debian
 sudo apt install -y \
-    build-essential cmake pkg-config \
+    build-essential cmake pkg-config ninja-build \
     libboost-system-dev \
     libosip2-dev \
+    libexosip2-dev \
     libc-ares-dev \
     libspdlog-dev \
     libyaml-cpp-dev \
@@ -60,9 +63,8 @@ sudo apt install -y rtpengine
 ### 构建
 
 ```bash
-mkdir build && cd build
-cmake .. -DCMAKE_BUILD_TYPE=Debug
-cmake --build . -j$(nproc)
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+cmake --build build
 ```
 
 ### 运行
@@ -75,16 +77,16 @@ cp config/ims.yaml config/local.yaml
 vim config/local.yaml
 
 # 启动所有 CSCF
-./build/src/allinone/ims_allinone config/local.yaml
+./bin/ims_allinone config/local.yaml
 ```
 
 #### 独立进程模式
 
 ```bash
 # 分别启动三个网元
-./build/src/scscf/ims_scscf config/ims.yaml &
-./build/src/icscf/ims_icscf config/ims.yaml &
-./build/src/pcscf/ims_pcscf config/ims.yaml &
+./bin/ims_scscf config/ims.yaml &
+./bin/ims_icscf config/ims.yaml &
+./bin/ims_pcscf config/ims.yaml &
 ```
 
 ### 测试
@@ -93,6 +95,106 @@ vim config/local.yaml
 cd build
 ctest --output-on-failure
 ```
+
+## SIP 客户端对接
+
+### S-CSCF 鉴权模式
+
+`scscf.auth_mode` 目前支持三种模式：
+
+- `ims_only`: 仅允许 IMS AKA，适合真实 IMS/VoNR UE
+- `digest_only`: 仅允许普通 SIP Digest，适合 Linphone、Zoiper、MicroSIP 这类软电话
+- `hybrid_fallback`: 先尝试 IMS AKA，失败后回退到本地 Digest 用户库
+
+`digest_only` 和 `hybrid_fallback` 会复用 `hss_adapter.subscribers` 中的订户信息作为本地 Digest 用户库。
+
+### 普通 SIP 客户端最小配置
+
+如果你要对接普通 SIP 客户端，建议先把 `scscf.auth_mode` 设成 `digest_only`，例如：
+
+```yaml
+scscf:
+  listen_addr: 0.0.0.0
+  listen_port: 5062
+  domain: ims.mnc011.mcc460.3gppnetwork.org
+  auth_mode: digest_only
+```
+
+然后客户端填写：
+
+- `Domain/Realm`: `ims.mnc011.mcc460.3gppnetwork.org`
+- `SIP Server`: `sip:<你的S-CSCF地址>:5062`
+- `Transport`: `UDP`
+- `Password`: 与 `hss_adapter.subscribers[].password` 一致
+
+用户名可使用以下任一种：
+
+- `460112024122023@ims.mnc011.mcc460.3gppnetwork.org`
+- `460112024122023`
+- `+8613824122023`
+- `+8613824122023@ims.mnc011.mcc460.3gppnetwork.org`
+
+建议优先使用完整 IMPI 形式：
+
+```text
+460112024122023@ims.mnc011.mcc460.3gppnetwork.org
+```
+
+### Linphone 本地联调
+
+仓库里提供了一份本机联调用配置：
+
+- [`config/linphone-local.yaml`](/Users/kolane/SimIMS/config/linphone-local.yaml)
+
+这份配置的特点是：
+
+- `S-CSCF` 监听在 `127.0.0.1:15060`
+- `scscf.auth_mode=digest_only`
+- 预置两个本地测试账号
+
+```text
+1001 / testpass
+1002 / testpass
+```
+
+启动方式：
+
+```bash
+./bin/ims_scscf config/linphone-local.yaml
+```
+
+Linphone 中可直接填写：
+
+- `SIP identity`: `sip:1001@ims.local` 或 `sip:1002@ims.local`
+- `Authentication username`: `1001@ims.local` 或 `1002@ims.local`
+- `Password`: `testpass`
+- `Domain`: `ims.local`
+- `Proxy / Server`: `sip:127.0.0.1:15060;transport=udp`
+- `Transport`: `UDP`
+
+### 关于同机双账号
+
+如果 `1001` 和 `1002` 都在同一个 Linphone 进程里登录，服务端日志里可能会看到它们共用同一个本地 Contact 端口，例如：
+
+```text
+127.0.0.1:49441
+```
+
+这通常不影响收发，因为：
+
+- 这个端口代表 Linphone 进程的本地 SIP socket
+- 真正区分账号的是 `Request-URI`、`From`、`To`、`Authorization`、注册绑定的 `IMPU`
+
+因此，即使两个账号共用同一个本地 UDP 端口，只要客户端本身支持多账号分发，`INVITE` 仍然可以按账号正确投递。
+
+### 什么时候用 hybrid_fallback
+
+如果你希望同一套 S-CSCF 同时服务两类终端，可以用 `hybrid_fallback`：
+
+- 真正的 IMS/VoNR UE 继续走 HSS/MAR/MAA 的 IMS AKA
+- HSS 不匹配或实验用软电话，可回退到本地 Digest
+
+这个模式更适合实验环境，不建议把它当作严格 3GPP 兼容行为。
 
 ## 项目结构
 
@@ -104,23 +206,15 @@ ims/
 │   ├── requirements.md     # 需求分析
 │   ├── architecture.md     # 架构设计
 │   └── dns.md              # DNS 使用说明（局域网）
-├── include/ims/            # 公共头文件
-│   ├── common/             # 基础设施（types, config, logger, io_context）
-│   ├── sip/                # SIP 协议栈（message, transport, transaction, dialog, stack）
-│   ├── diameter/           # Diameter 接口（IHssClient, IPcfClient）
-│   ├── media/              # 媒体接口（IRtpengineClient）
-│   ├── dns/                # DNS 解析器
-│   └── registration/       # 注册存储接口
 ├── src/
 │   ├── common/             # 公共库实现
 │   ├── sip/                # SIP 核心实现
 │   ├── dns/                # DNS 解析器实现
 │   ├── diameter/           # Diameter Stub 实现
-│   ├── media/              # Bencode + rtpengine 客户端
-│   ├── registration/       # 内存注册存储
-│   ├── pcscf/              # P-CSCF 服务 + main
-│   ├── icscf/              # I-CSCF 服务 + main
-│   ├── scscf/              # S-CSCF 服务 + main（含 registrar, auth_manager, session_router）
+│   ├── rtp/                # Bencode + rtpengine 客户端与媒体会话管理
+│   ├── p-cscf/             # P-CSCF 服务 + main
+│   ├── i-cscf/             # I-CSCF 服务 + main
+│   ├── s-cscf/             # S-CSCF 服务 + main（含 registrar, auth_manager, session_router）
 │   └── allinone/           # 一体化二进制
 └── tests/
     ├── mocks/              # Google Mock（HSS, PCF, Transport, Store, rtpengine）
@@ -139,6 +233,12 @@ global:
 pcscf:
   listen_addr: 0.0.0.0
   listen_port: 5060         # UE 接入端口
+  rtpengine:
+    host: 127.0.0.1
+    port: 22222
+  pcf:
+    host: 127.0.0.1
+    port: 8080
 
 icscf:
   listen_addr: 0.0.0.0
@@ -162,6 +262,8 @@ dns:
     - 127.0.0.1
   timeout_ms: 3000
 ```
+
+注意：当前 [config/ims.yaml](/Users/kolane/SimIMS/config/ims.yaml) 里 `pcscf` 和 `dns` 仍保留了一些历史键名示例，实际解析字段以 [config.hpp](/Users/kolane/SimIMS/src/common/config.hpp) 和 [config.cpp](/Users/kolane/SimIMS/src/common/config.cpp) 为准。
 
 DNS 局域网部署与记录示例见：`docs/dns.md`。
 

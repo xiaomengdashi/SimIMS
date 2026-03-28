@@ -43,23 +43,18 @@ int main(int argc, char* argv[]) {
     auto hss = std::make_shared<ims::diameter::StubHssClient>(config.hss_adapter);
     auto pcf = std::make_shared<ims::diameter::StubPcfClient>(config.pcscf.pcf);
     auto store = std::make_shared<ims::registration::MemoryRegistrationStore>();
+    auto digest_store = ims::scscf::make_local_digest_credential_store(config.hss_adapter);
 
-    // rtpengine client (optional - may not be running in dev)
-    std::shared_ptr<ims::media::IRtpengineClient> rtpengine;
-    try {
-        rtpengine = std::make_shared<ims::media::RtpengineClientImpl>(
-            io_ctx.get(), config.media.rtpengine_host, config.media.rtpengine_port);
-        IMS_LOG_INFO("rtpengine client configured for {}:{}",
-                     config.media.rtpengine_host, config.media.rtpengine_port);
-    } catch (const std::exception& e) {
-        IMS_LOG_WARN("rtpengine not available: {} - media relay disabled", e.what());
-    }
+    auto rtpengine = std::make_shared<ims::media::RtpengineClientImpl>(
+        io_ctx.get(), config.media.rtpengine_host, config.media.rtpengine_port);
+    IMS_LOG_INFO("rtpengine client configured for {}:{}",
+                 config.media.rtpengine_host, config.media.rtpengine_port);
 
     // I-CSCF address for P-CSCF forwarding
     std::string icscf_addr = "127.0.0.1";
 
     // Create services
-    ims::scscf::ScscfService scscf(config.scscf, io_ctx.get(), hss, store);
+    ims::scscf::ScscfService scscf(config.scscf, io_ctx.get(), hss, store, digest_store, nullptr);
     ims::icscf::IcscfService icscf(config.icscf, io_ctx.get(), hss);
     ims::pcscf::PcscfService pcscf(config.pcscf, io_ctx.get(), pcf, rtpengine,
                                     icscf_addr, config.icscf.listen_port);

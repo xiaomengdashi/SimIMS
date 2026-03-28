@@ -1,4 +1,5 @@
 #include "sip/store.hpp"
+#include "sip/memory_store.hpp"
 #include "sip/uri_utils.hpp"
 #include "../mocks/mock_hss_client.hpp"
 #include "../mocks/mock_registration_store.hpp"
@@ -95,6 +96,53 @@ TEST(RegistrationBindingTest, ActiveContactsFiltersExpired) {
     auto active = binding.active_contacts();
     ASSERT_EQ(active.size(), 1u);
     EXPECT_EQ(active[0]->contact_uri, "sip:active@10.0.0.1");
+}
+
+TEST(MemoryRegistrationStoreTest, LookupPrunesExpiredContacts) {
+    ims::registration::MemoryRegistrationStore store;
+
+    RegistrationBinding binding;
+    binding.impu = "sip:user@ims.example.com";
+    binding.impi = "user@ims.example.com";
+    binding.state = RegistrationBinding::State::kRegistered;
+    binding.contacts.push_back({
+        .contact_uri = "sip:active@10.0.0.1",
+        .expires = std::chrono::steady_clock::now() + std::chrono::hours(1),
+    });
+    binding.contacts.push_back({
+        .contact_uri = "sip:expired@10.0.0.2",
+        .expires = std::chrono::steady_clock::now() - std::chrono::minutes(1),
+    });
+
+    ASSERT_TRUE(store.store(binding).has_value());
+
+    auto lookup = store.lookup("sip:user@ims.example.com");
+    ASSERT_TRUE(lookup.has_value()) << lookup.error().message;
+    ASSERT_EQ(lookup->contacts.size(), 1u);
+    EXPECT_EQ(lookup->contacts[0].contact_uri, "sip:active@10.0.0.1");
+}
+
+TEST(MemoryRegistrationStoreTest, LookupRemovesFullyExpiredBinding) {
+    ims::registration::MemoryRegistrationStore store;
+
+    RegistrationBinding binding;
+    binding.impu = "sip:user@ims.example.com";
+    binding.impi = "user@ims.example.com";
+    binding.state = RegistrationBinding::State::kRegistered;
+    binding.contacts.push_back({
+        .contact_uri = "sip:expired@10.0.0.2",
+        .expires = std::chrono::steady_clock::now() - std::chrono::minutes(1),
+    });
+
+    ASSERT_TRUE(store.store(binding).has_value());
+
+    auto lookup = store.lookup("sip:user@ims.example.com");
+    ASSERT_FALSE(lookup.has_value());
+    EXPECT_EQ(lookup.error().code, ErrorCode::kRegistrationNotFound);
+
+    auto registered = store.isRegistered("sip:user@ims.example.com");
+    ASSERT_TRUE(registered.has_value());
+    EXPECT_FALSE(*registered);
 }
 
 TEST(UriUtilsTest, NormalizeImpuUriSupportsTelAndSipAliases) {

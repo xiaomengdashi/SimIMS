@@ -36,6 +36,9 @@ global:
 pcscf:
   listen_addr: 10.0.0.1
   listen_port: 5060
+  pcf:
+    host: 10.0.0.9
+    port: 7777
 
 icscf:
   listen_addr: 10.0.0.2
@@ -45,6 +48,8 @@ scscf:
   listen_addr: 10.0.0.3
   listen_port: 5062
   domain: test.ims.com
+  auth_mode: hybrid_fallback
+  registration_cleanup_interval_ms: 15000
   exosip:
     enabled: true
     listen_addr: 0.0.0.0
@@ -66,9 +71,13 @@ dns:
     EXPECT_EQ(config.global.node_name, "test-node");
     EXPECT_EQ(config.pcscf.listen_addr, "10.0.0.1");
     EXPECT_EQ(config.pcscf.listen_port, 5060);
+    EXPECT_EQ(config.pcscf.pcf.host, "10.0.0.9");
+    EXPECT_EQ(config.pcscf.pcf.port, 7777);
     EXPECT_EQ(config.icscf.listen_port, 5061);
     EXPECT_EQ(config.scscf.listen_port, 5062);
     EXPECT_EQ(config.scscf.domain, "test.ims.com");
+    EXPECT_EQ(config.scscf.auth_mode, "hybrid_fallback");
+    EXPECT_EQ(config.scscf.registration_cleanup_interval_ms, 15000u);
     EXPECT_TRUE(config.scscf.exosip.enabled);
     EXPECT_EQ(config.scscf.exosip.listen_addr, "0.0.0.0");
     EXPECT_EQ(config.scscf.exosip.listen_port, 5072);
@@ -124,6 +133,8 @@ TEST_F(ConfigTest, LoadWithDefaults) {
     EXPECT_EQ(config.pcscf.listen_addr, "0.0.0.0");
     EXPECT_EQ(config.pcscf.listen_port, 5060);
     EXPECT_EQ(config.scscf.domain, "ims.local");
+    EXPECT_EQ(config.scscf.auth_mode, "ims_only");
+    EXPECT_EQ(config.scscf.registration_cleanup_interval_ms, 30000u);
     EXPECT_TRUE(config.scscf.exosip.enabled);
     EXPECT_EQ(config.scscf.exosip.listen_addr, "0.0.0.0");
     EXPECT_EQ(config.scscf.exosip.listen_port, 5072);

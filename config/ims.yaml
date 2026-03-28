@@ -8,9 +8,9 @@ global:
 pcscf:
   listen_addr: 0.0.0.0
   listen_port: 5060
-  rtpengine_addr: 127.0.0.1:22222
-  pcf_addr: 127.0.0.1:7777
-  dns_server: 127.0.0.1:53
+  pcf:
+    host: 127.0.0.1
+    port: 7777
 
 icscf:
   listen_addr: 0.0.0.0
@@ -23,6 +23,8 @@ icscf:
 scscf:
   listen_addr: 0.0.0.0
   listen_port: 5062
+  auth_mode: ims_only      # ims_only=仅IMS AKA, digest_only=仅普通SIP Digest, hybrid_fallback=优先IMS失败后回退Digest
+  registration_cleanup_interval_ms: 30000
   hss:
     host: 127.0.0.1
     port: 3868
@@ -43,6 +45,13 @@ hss_adapter:
   diameter_realm: ims.mnc011.mcc460.3gppnetwork.org
   nudm_url: http://127.0.0.1:8080/nudm-uecm/v1
   subscribers:
+    # 这些订户既可供 Stub HSS 的 IMS 鉴权使用，也可在 digest_only/hybrid_fallback 模式下
+    # 作为普通 SIP 客户端的本地用户名/密码来源。
+    # Digest 用户名可使用:
+    # - 460112024122023@ims.mnc011.mcc460.3gppnetwork.org
+    # - 460112024122023
+    # - +8613824122023
+    # - +8613824122023@ims.mnc011.mcc460.3gppnetwork.org
     - imsi: "460112024122023"
       tel: "+8613824122023"
       password: "testpass"
@@ -60,4 +69,4 @@ dns:
   servers:
     - 127.0.0.1
     - 8.8.8.8
-  timeout: 3000            # milliseconds
+  timeout_ms: 3000         # milliseconds

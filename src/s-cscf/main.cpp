@@ -34,8 +34,9 @@ int main(int argc, char* argv[]) {
 
     auto hss = std::make_shared<ims::diameter::StubHssClient>(config.hss_adapter);
     auto store = std::make_shared<ims::registration::MemoryRegistrationStore>();
+    auto digest_store = ims::scscf::make_local_digest_credential_store(config.hss_adapter);
 
-    ims::scscf::ScscfService service(config.scscf, io_ctx.get(), hss, store);
+    ims::scscf::ScscfService service(config.scscf, io_ctx.get(), hss, store, digest_store, nullptr);
 
     auto start_result = service.start();
     if (!start_result) {

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "i_auth_provider.hpp"
 #include "sip/message.hpp"
 #include "sip/transaction.hpp"
 #include "sip/store.hpp"
@@ -17,6 +18,7 @@ namespace ims::scscf {
 class Registrar {
 public:
     Registrar(std::shared_ptr<ims::registration::IRegistrationStore> store,
+              std::vector<std::shared_ptr<IAuthProvider>> auth_providers,
               std::shared_ptr<ims::diameter::IHssClient> hss,
               const std::string& domain = "ims.local");
 
@@ -45,19 +47,15 @@ private:
     auto extractImpu(const ims::sip::SipMessage& msg) const -> std::string;
     bool isDeregister(const ims::sip::SipMessage& msg) const;
     bool hasAuthorization(const ims::sip::SipMessage& msg) const;
+    auto selectProviderForInitialRegister(const ims::sip::SipMessage& request) const
+        -> std::shared_ptr<IAuthProvider>;
+    auto selectProviderForAuthorization(const ims::sip::SipMessage& request) const
+        -> std::shared_ptr<IAuthProvider>;
 
     std::shared_ptr<ims::registration::IRegistrationStore> store_;
+    std::vector<std::shared_ptr<IAuthProvider>> auth_providers_;
     std::shared_ptr<ims::diameter::IHssClient> hss_;
     std::string domain_;
-
-    struct PendingAuth {
-        ims::diameter::AuthVector vector;
-        std::string impi;
-        std::string impu;
-        std::string scheme;
-    };
-    std::unordered_map<std::string, PendingAuth> pending_auth_;
-    std::mutex auth_mutex_;
 };
 
 } // namespace ims::scscf

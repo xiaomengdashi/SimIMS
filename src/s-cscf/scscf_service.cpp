@@ -1,5 +1,7 @@
 #include "scscf_service.hpp"
 #include "common/logger.hpp"
+#include "digest_auth_provider.hpp"
+#include "ims_aka_auth_provider.hpp"
 #include "sip/uri_utils.hpp"
 
 #include <format>
@@ -9,6 +11,42 @@ namespace ims::scscf {
 
 namespace {
 
+auto buildAuthProviders(const ims::ScscfConfig& config,
+                        const std::shared_ptr<ims::diameter::IHssClient>& hss,
+                        const std::shared_ptr<IDigestCredentialStore>& digest_store)
+    -> std::vector<std::shared_ptr<IAuthProvider>> {
+    std::vector<std::shared_ptr<IAuthProvider>> auth_providers;
+
+    auto add_ims = [&] {
+        auth_providers.push_back(std::make_shared<ImsAkaAuthProvider>(hss, config.domain));
+    };
+    auto add_digest = [&] {
+        if (digest_store) {
+            auth_providers.push_back(std::make_shared<DigestAuthProvider>(digest_store, config.domain));
+        } else {
+            IMS_LOG_WARN("S-CSCF auth_mode={} requested Digest auth, but no credential store is configured",
+                         config.auth_mode);
+        }
+    };
+
+    if (config.auth_mode == "digest_only") {
+        add_digest();
+        return auth_providers;
+    }
+
+    if (config.auth_mode == "hybrid_fallback") {
+        add_ims();
+        add_digest();
+        return auth_providers;
+    }
+
+    if (config.auth_mode != "ims_only") {
+        IMS_LOG_WARN("Unknown S-CSCF auth_mode={}, falling back to ims_only", config.auth_mode);
+    }
+    add_ims();
+    return auth_providers;
+}
+
 } // namespace
 
 ScscfService::ScscfService(const ims::ScscfConfig& config,
@@ -16,23 +54,41 @@ ScscfService::ScscfService(const ims::ScscfConfig& config,
                            std::shared_ptr<ims::diameter::IHssClient> hss,
                            std::shared_ptr<ims::registration::IRegistrationStore> store,
                            std::unique_ptr<ims::sip::IRegEventNotifier> reg_event_notifier)
+    : ScscfService(config, io, std::move(hss), std::move(store), nullptr,
+                   std::move(reg_event_notifier))
+{
+}
+
+ScscfService::ScscfService(const ims::ScscfConfig& config,
+                           boost::asio::io_context& io,
+                           std::shared_ptr<ims::diameter::IHssClient> hss,
+                           std::shared_ptr<ims::registration::IRegistrationStore> store,
+                           std::shared_ptr<IDigestCredentialStore> digest_store,
+                           std::unique_ptr<ims::sip::IRegEventNotifier> reg_event_notifier)
     : config_(config)
     , sip_stack_(std::make_unique<ims::sip::SipStack>(
           io, config.listen_addr, config.listen_port))
     , reg_event_notifier_(std::move(reg_event_notifier))
     , hss_(std::move(hss))
     , store_(std::move(store))
+    , digest_store_(std::move(digest_store))
+    , registration_cleanup_timer_(io)
 {
     if (!reg_event_notifier_) {
         reg_event_notifier_ = std::make_unique<ims::sip::ExosipRegEventNotifier>(config.exosip);
     }
-    registrar_ = std::make_unique<Registrar>(store_, hss_, config.domain);
+    auto auth_providers = buildAuthProviders(config_, hss_, digest_store_);
+    registrar_ = std::make_unique<Registrar>(store_, std::move(auth_providers), hss_, config.domain);
     session_router_ = std::make_unique<SessionRouter>(store_, *sip_stack_);
 }
 
 auto ScscfService::start() -> VoidResult {
-    IMS_LOG_INFO("Starting S-CSCF on {}:{} domain={}",
-                 config_.listen_addr, config_.listen_port, config_.domain);
+    IMS_LOG_INFO("Starting S-CSCF on {}:{} domain={} auth_mode={} cleanup_interval_ms={}",
+                 config_.listen_addr,
+                 config_.listen_port,
+                 config_.domain,
+                 config_.auth_mode,
+                 config_.registration_cleanup_interval_ms);
 
     if (reg_event_notifier_) {
         auto notifier_start = reg_event_notifier_->start();
@@ -60,15 +116,56 @@ auto ScscfService::start() -> VoidResult {
         onSubscribe(txn, req);
     });
 
-    return sip_stack_->start();
+    auto start_result = sip_stack_->start();
+    if (!start_result) {
+        return start_result;
+    }
+
+    scheduleRegistrationCleanup();
+    return {};
 }
 
 void ScscfService::stop() {
     IMS_LOG_INFO("Stopping S-CSCF");
+    registration_cleanup_timer_.cancel();
     if (reg_event_notifier_) {
         reg_event_notifier_->shutdown();
     }
     sip_stack_->stop();
+}
+
+void ScscfService::scheduleRegistrationCleanup() {
+    if (config_.registration_cleanup_interval_ms == 0) {
+        IMS_LOG_INFO("Registration cleanup scheduler disabled");
+        return;
+    }
+
+    registration_cleanup_timer_.expires_after(
+        std::chrono::milliseconds(config_.registration_cleanup_interval_ms));
+    registration_cleanup_timer_.async_wait([this](const boost::system::error_code& ec) {
+        if (ec == boost::asio::error::operation_aborted) {
+            return;
+        }
+        if (ec) {
+            IMS_LOG_WARN("Registration cleanup timer error: {}", ec.message());
+            scheduleRegistrationCleanup();
+            return;
+        }
+        runRegistrationCleanup();
+        scheduleRegistrationCleanup();
+    });
+}
+
+void ScscfService::runRegistrationCleanup() {
+    auto purge_result = store_->purgeExpired();
+    if (!purge_result) {
+        IMS_LOG_WARN("Failed to purge expired registrations: {}", purge_result.error().message);
+        return;
+    }
+
+    if (*purge_result > 0) {
+        IMS_LOG_INFO("Purged {} expired registration contact(s)", *purge_result);
+    }
 }
 
 void ScscfService::onRegister(std::shared_ptr<ims::sip::ServerTransaction> txn,

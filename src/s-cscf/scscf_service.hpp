@@ -1,5 +1,6 @@
 #pragma once
 
+#include "digest_credential_store.hpp"
 #include "registrar.hpp"
 #include "session_router.hpp"
 #include "sip/stack.hpp"
@@ -9,6 +10,7 @@
 #include "diameter/ihss_client.hpp"
 #include "sip/store.hpp"
 
+#include <boost/asio/steady_timer.hpp>
 #include <memory>
 
 namespace ims::scscf {
@@ -22,6 +24,13 @@ public:
                  std::shared_ptr<ims::diameter::IHssClient> hss,
                  std::shared_ptr<ims::registration::IRegistrationStore> store,
                  std::unique_ptr<ims::sip::IRegEventNotifier> reg_event_notifier = nullptr);
+
+    ScscfService(const ims::ScscfConfig& config,
+                 boost::asio::io_context& io,
+                 std::shared_ptr<ims::diameter::IHssClient> hss,
+                 std::shared_ptr<ims::registration::IRegistrationStore> store,
+                 std::shared_ptr<IDigestCredentialStore> digest_store,
+                 std::unique_ptr<ims::sip::IRegEventNotifier> reg_event_notifier);
 
     auto start() -> VoidResult;
     void stop();
@@ -41,6 +50,8 @@ private:
                      ims::sip::SipMessage& request);
     void sendInitialNotify(const ims::sip::SipMessage& subscribe,
                            const std::string& to_tag);
+    void scheduleRegistrationCleanup();
+    void runRegistrationCleanup();
 
 private:
 
@@ -51,6 +62,8 @@ private:
     std::unique_ptr<SessionRouter> session_router_;
     std::shared_ptr<ims::diameter::IHssClient> hss_;
     std::shared_ptr<ims::registration::IRegistrationStore> store_;
+    std::shared_ptr<IDigestCredentialStore> digest_store_;
+    boost::asio::steady_timer registration_cleanup_timer_;
 };
 
 } // namespace ims::scscf

@@ -36,10 +36,6 @@ Result<ImsConfig> load_config(const std::string& path) {
     if (auto pcscf = root["pcscf"]) {
         if (auto v = pcscf["listen_addr"])  config.pcscf.listen_addr = v.as<std::string>();
         if (auto v = pcscf["listen_port"])  config.pcscf.listen_port = v.as<uint16_t>();
-        if (auto rtp = pcscf["rtpengine"]) {
-            if (auto v = rtp["host"])  config.pcscf.rtpengine.host = v.as<std::string>();
-            if (auto v = rtp["port"])  config.pcscf.rtpengine.port = v.as<uint16_t>();
-        }
         if (auto pcf = pcscf["pcf"]) {
             if (auto v = pcf["host"])  config.pcscf.pcf.host = v.as<std::string>();
             if (auto v = pcf["port"])  config.pcscf.pcf.port = v.as<uint16_t>();
@@ -62,6 +58,10 @@ Result<ImsConfig> load_config(const std::string& path) {
         if (auto v = scscf["listen_addr"])  config.scscf.listen_addr = v.as<std::string>();
         if (auto v = scscf["listen_port"])  config.scscf.listen_port = v.as<uint16_t>();
         if (auto v = scscf["domain"])       config.scscf.domain = v.as<std::string>();
+        if (auto v = scscf["auth_mode"])    config.scscf.auth_mode = v.as<std::string>();
+        if (auto v = scscf["registration_cleanup_interval_ms"]) {
+            config.scscf.registration_cleanup_interval_ms = v.as<uint32_t>();
+        }
         if (auto hss = scscf["hss"]) {
             if (auto v = hss["host"])   config.scscf.hss.host = v.as<std::string>();
             if (auto v = hss["port"])   config.scscf.hss.port = v.as<uint16_t>();

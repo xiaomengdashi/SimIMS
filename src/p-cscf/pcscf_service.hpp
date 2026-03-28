@@ -44,9 +44,11 @@ private:
                  ims::sip::SipMessage& request);
     void onSubscribe(std::shared_ptr<ims::sip::ServerTransaction> txn,
                      ims::sip::SipMessage& request);
+    void onInviteResponse(ims::sip::SipMessage& response);
     void forwardStatefulToIcscf(std::shared_ptr<ims::sip::ServerTransaction> txn,
                                 ims::sip::SipMessage& request,
-                                bool add_record_route = false);
+                                bool add_record_route = false,
+                                bool process_invite_response_media = false);
     void forwardStatelessToIcscf(ims::sip::SipMessage& request,
                                  bool add_record_route = false);
 

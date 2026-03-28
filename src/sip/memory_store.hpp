@@ -20,6 +20,9 @@ public:
     auto isRegistered(std::string_view impu) -> Result<bool> override;
 
 private:
+    auto pruneExpiredLocked(std::string_view impu)
+        -> std::unordered_map<std::string, RegistrationBinding>::iterator;
+
     mutable std::mutex mutex_;
     std::unordered_map<std::string, RegistrationBinding> bindings_;
 };

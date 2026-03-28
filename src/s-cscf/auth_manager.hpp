@@ -10,6 +10,10 @@ namespace ims::scscf {
 
 class AuthManager {
 public:
+    /// Build a plain Digest-MD5 challenge from server-generated nonce
+    static auto buildDigestChallenge(const std::string& realm,
+                                     const std::string& nonce) -> std::string;
+
     /// Build WWW-Authenticate header value from AKA auth vector
     static auto buildChallenge(const ims::diameter::AuthVector& av,
                                const std::string& realm,
@@ -20,6 +24,11 @@ public:
                                const ims::diameter::AuthVector& av,
                                const std::string& method,
                                const std::string& scheme) -> bool;
+
+    static auto verifyDigestPassword(const std::string& auth_header,
+                                     const std::string& password,
+                                     const std::string& method,
+                                     const std::string& expected_nonce) -> bool;
 
     /// Parsed Authorization header fields
     struct AuthParams {

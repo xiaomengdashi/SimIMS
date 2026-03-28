@@ -23,6 +23,16 @@ public:
                             ims::sip::SipMessage& request) {
         service.onSubscribe(std::move(txn), request);
     }
+
+    static void onInvite(ScscfService& service,
+                         std::shared_ptr<ims::sip::ServerTransaction> txn,
+                         ims::sip::SipMessage& request) {
+        service.onInvite(std::move(txn), request);
+    }
+
+    static void scheduleRegistrationCleanup(ScscfService& service) {
+        service.scheduleRegistrationCleanup();
+    }
 };
 
 } // namespace ims::scscf
@@ -250,6 +260,22 @@ TEST_F(ScscfServiceTest, SendInitialNotifySkipsWhenContactMissing) {
     ims::scscf::ScscfServiceTestPeer::sendInitialNotify(*service, *parsed, "generated-to-tag");
 
     EXPECT_TRUE(notifier_ptr->contexts.empty());
+}
+
+TEST_F(ScscfServiceTest, StartSchedulesPeriodicRegistrationCleanup) {
+    config.registration_cleanup_interval_ms = 1;
+
+    auto notifier = std::make_unique<RecordingRegEventNotifier>();
+    notifier_ptr = notifier.get();
+    service = std::make_unique<ims::scscf::ScscfService>(config, io, hss, store, std::move(notifier));
+
+    EXPECT_CALL(*store, purgeExpired())
+        .WillOnce(Return(ims::Result<size_t>{1}))
+        .WillRepeatedly(Return(ims::Result<size_t>{0}));
+
+    ims::scscf::ScscfServiceTestPeer::scheduleRegistrationCleanup(*service);
+    io.run_for(std::chrono::milliseconds(20));
+    service->stop();
 }
 
 } // namespace

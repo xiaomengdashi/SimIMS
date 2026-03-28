@@ -1,6 +1,6 @@
 #pragma once
 
-#include "media/rtpengine_client.hpp"
+#include "rtp/rtpengine_client.hpp"
 #include <gmock/gmock.h>
 
 namespace ims::test {

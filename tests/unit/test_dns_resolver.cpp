@@ -1,6 +1,8 @@
 #include "dns/resolver.hpp"
 #include <gtest/gtest.h>
 
+#include <algorithm>
+
 using namespace ims::dns;
 
 class DnsResolverTest : public ::testing::Test {

@@ -40,15 +40,9 @@ auto md5Hex(const std::string& input) -> std::string {
 
     std::ostringstream oss;
     oss << std::hex << std::setfill('0');
-    for (auto word : digest) {
-        auto b0 = static_cast<uint8_t>((word >> 24) & 0xFF);
-        auto b1 = static_cast<uint8_t>((word >> 16) & 0xFF);
-        auto b2 = static_cast<uint8_t>((word >> 8) & 0xFF);
-        auto b3 = static_cast<uint8_t>(word & 0xFF);
-        oss << std::setw(2) << static_cast<unsigned int>(b0)
-            << std::setw(2) << static_cast<unsigned int>(b1)
-            << std::setw(2) << static_cast<unsigned int>(b2)
-            << std::setw(2) << static_cast<unsigned int>(b3);
+    auto* bytes = reinterpret_cast<const unsigned char*>(digest);
+    for (std::size_t i = 0; i < sizeof(digest); ++i) {
+        oss << std::setw(2) << static_cast<unsigned int>(bytes[i]);
     }
     return oss.str();
 }
@@ -99,14 +93,19 @@ auto AuthManager::base64Decode(const std::string& encoded) -> std::vector<uint8_
     return result;
 }
 
+auto AuthManager::buildDigestChallenge(const std::string& realm,
+                                       const std::string& nonce) -> std::string {
+    return std::format(
+        "Digest realm=\"{}\", domain=\"sip:{}\", nonce=\"{}\", algorithm=MD5, qop=\"auth\", stale=FALSE",
+        realm, realm, nonce);
+}
+
 auto AuthManager::buildChallenge(const ims::diameter::AuthVector& av,
                                   const std::string& realm,
                                   const std::string& scheme) -> std::string {
     if (scheme == "Digest-MD5") {
         auto nonce = base64Encode(av.rand);
-        auto challenge = std::format(
-            "Digest realm=\"{}\", domain=\"sip:{}\", nonce=\"{}\", algorithm=MD5, qop=\"auth\", stale=FALSE",
-            realm, realm, nonce);
+        auto challenge = buildDigestChallenge(realm, nonce);
         IMS_LOG_DEBUG("Built MD5 challenge, realm={}, nonce_len={}", realm, nonce.size());
         return challenge;
     }
@@ -184,6 +183,47 @@ auto AuthManager::verifyResponse(const std::string& auth_header,
     bool match = (toLower(params.response) == toLower(expected_response));
     IMS_LOG_DEBUG("AKA Digest verification: {}", match ? "success" : "failure");
     return match;
+}
+
+auto AuthManager::verifyDigestPassword(const std::string& auth_header,
+                                       const std::string& password,
+                                       const std::string& method,
+                                       const std::string& expected_nonce) -> bool {
+    auto params_result = parseAuthorization(auth_header);
+    if (!params_result) {
+        IMS_LOG_WARN("Failed to parse Authorization header: {}", params_result.error().message);
+        return false;
+    }
+
+    const auto& params = *params_result;
+    if (params.username.empty() || params.realm.empty() || params.uri.empty() || params.response.empty()) {
+        IMS_LOG_WARN("Authorization header missing required digest password fields");
+        return false;
+    }
+
+    if (params.nonce != expected_nonce) {
+        IMS_LOG_WARN("Digest password nonce mismatch");
+        return false;
+    }
+
+    auto ha1 = md5Hex(std::format("{}:{}:{}", params.username, params.realm, password));
+    auto ha2 = md5Hex(std::format("{}:{}", method, params.uri));
+
+    std::string expected_response;
+    if (!params.qop.empty()) {
+        if (params.nc.empty() || params.cnonce.empty()) {
+            IMS_LOG_WARN("Authorization qop present but nc/cnonce missing");
+            return false;
+        }
+
+        expected_response = md5Hex(std::format("{}:{}:{}:{}:{}:{}",
+                                               ha1, params.nonce, params.nc,
+                                               params.cnonce, params.qop, ha2));
+    } else {
+        expected_response = md5Hex(std::format("{}:{}:{}", ha1, params.nonce, ha2));
+    }
+
+    return toLower(params.response) == toLower(expected_response);
 }
 
 auto AuthManager::parseAuthorization(const std::string& header) -> Result<AuthParams> {

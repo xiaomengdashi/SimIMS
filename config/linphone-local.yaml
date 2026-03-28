@@ -1,0 +1,60 @@
+# Local single-node config for ordinary SIP clients such as Linphone.
+# Runs only S-CSCF on localhost and uses Digest authentication.
+
+global:
+  log_level: debug
+  node_name: ims-linphone-local
+
+pcscf:
+  listen_addr: 127.0.0.1
+  listen_port: 15060
+
+icscf:
+  listen_addr: 127.0.0.1
+  listen_port: 5061
+  hss:
+    host: 127.0.0.1
+    port: 3868
+    realm: ims.local
+
+scscf:
+  listen_addr: 127.0.0.1
+  listen_port: 15060
+  auth_mode: digest_only
+  hss:
+    host: 127.0.0.1
+    port: 3868
+    realm: ims.local
+  domain: ims.local
+  exosip:
+    enabled: false
+    listen_addr: 127.0.0.1
+    listen_port: 5072
+    transport: udp
+    user_agent: SimIMS-eXosip2
+    event_poll_ms: 100
+
+hss_adapter:
+  type: diameter
+  diameter_host: 127.0.0.1
+  diameter_port: 3868
+  diameter_realm: ims.local
+  nudm_url: http://127.0.0.1:8080/nudm-uecm/v1
+  subscribers:
+    - imsi: "1001"
+      tel: "1001"
+      password: "testpass"
+      realm: "ims.local"
+    - imsi: "1002"
+      tel: "1002"
+      password: "testpass"
+      realm: "ims.local"
+
+media:
+  rtpengine_host: 127.0.0.1
+  rtpengine_port: 22222
+
+dns:
+  servers:
+    - 127.0.0.1
+  timeout_ms: 3000

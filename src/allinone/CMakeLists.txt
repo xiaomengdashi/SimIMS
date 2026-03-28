@@ -22,5 +22,8 @@ target_sources(ims_allinone PRIVATE
     ${CMAKE_SOURCE_DIR}/src/s-cscf/scscf_service.cpp
     ${CMAKE_SOURCE_DIR}/src/s-cscf/registrar.cpp
     ${CMAKE_SOURCE_DIR}/src/s-cscf/auth_manager.cpp
+    ${CMAKE_SOURCE_DIR}/src/s-cscf/digest_credential_store.cpp
+    ${CMAKE_SOURCE_DIR}/src/s-cscf/digest_auth_provider.cpp
+    ${CMAKE_SOURCE_DIR}/src/s-cscf/ims_aka_auth_provider.cpp
     ${CMAKE_SOURCE_DIR}/src/s-cscf/session_router.cpp
 )

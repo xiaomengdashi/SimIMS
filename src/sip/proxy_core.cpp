@@ -164,8 +164,18 @@ auto ProxyCore::forwardStateful(SipMessage& request,
     }
 
     auto send_result = sip_stack.sendRequest(std::move(request), dest,
-        [this, upstream_txn](const ims::sip::SipMessage& response) {
-            auto forwarded = forwardResponseUpstream(response, upstream_txn);
+        [this, upstream_txn, options](const ims::sip::SipMessage& response) {
+            auto response_copy = response.clone();
+            if (!response_copy) {
+                IMS_LOG_WARN("Failed to clone downstream response: {}", response_copy.error().message);
+                return;
+            }
+
+            if (options.on_response) {
+                options.on_response(*response_copy);
+            }
+
+            auto forwarded = forwardResponseUpstream(*response_copy, upstream_txn);
             if (!forwarded) {
                 IMS_LOG_WARN("Failed to forward response upstream: {}", forwarded.error().message);
             }

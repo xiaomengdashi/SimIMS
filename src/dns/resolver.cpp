@@ -5,6 +5,7 @@
 #include <arpa/nameser.h>
 #include <netdb.h>
 #include <arpa/inet.h>
+#include <sys/select.h>
 
 #include <algorithm>
 #include <cstring>

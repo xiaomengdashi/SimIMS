@@ -50,6 +50,8 @@ private:
 
     auto lookupCallee(const std::string& request_uri)
         -> ims::Result<ims::registration::RegistrationBinding>;
+    auto resolveBindingDestination(const ims::registration::RegistrationBinding& binding)
+        -> ims::Result<ims::sip::Endpoint>;
     auto findSessionByCallId(const std::string& call_id) -> SessionInfo*;
     auto resolveInDialogDestination(const ims::sip::SipMessage& request, SessionInfo& session) const
         -> const ims::sip::Endpoint*;

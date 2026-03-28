@@ -8,6 +8,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <functional>
 
 namespace ims::sip {
 
@@ -17,6 +18,7 @@ struct ForwardOptions {
     bool add_record_route = false;
     bool process_route_headers = true;
     bool detect_loop = true;
+    std::function<void(SipMessage&)> on_response;
 };
 
 struct CancelForwardContext {

@@ -1,8 +1,54 @@
 #include "s-cscf/auth_manager.hpp"
 
+#include <boost/uuid/detail/md5.hpp>
 #include <gtest/gtest.h>
+#include <iomanip>
+#include <sstream>
 
 using namespace ims::scscf;
+
+namespace {
+
+auto md5Hex(const std::string& input) -> std::string {
+    boost::uuids::detail::md5 hash;
+    boost::uuids::detail::md5::digest_type digest{};
+
+    hash.process_bytes(input.data(), input.size());
+    hash.get_digest(digest);
+
+    std::ostringstream oss;
+    oss << std::hex << std::setfill('0');
+    auto* bytes = reinterpret_cast<const unsigned char*>(digest);
+    for (std::size_t i = 0; i < sizeof(digest); ++i) {
+        oss << std::setw(2) << static_cast<unsigned int>(bytes[i]);
+    }
+    return oss.str();
+}
+
+auto bytesToHex(const std::vector<uint8_t>& data) -> std::string {
+    std::ostringstream oss;
+    oss << std::hex << std::setfill('0');
+    for (auto byte : data) {
+        oss << std::setw(2) << static_cast<unsigned int>(byte);
+    }
+    return oss.str();
+}
+
+auto computeDigestResponse(const std::string& username,
+                           const std::string& realm,
+                           const std::string& secret,
+                           const std::string& method,
+                           const std::string& uri,
+                           const std::string& nonce,
+                           const std::string& nc,
+                           const std::string& cnonce,
+                           const std::string& qop) -> std::string {
+    auto ha1 = md5Hex(username + ":" + realm + ":" + secret);
+    auto ha2 = md5Hex(method + ":" + uri);
+    return md5Hex(ha1 + ":" + nonce + ":" + nc + ":" + cnonce + ":" + qop + ":" + ha2);
+}
+
+} // namespace
 
 TEST(AuthManagerTest, ParseAuthorizationWithQopFields) {
     auto parsed = AuthManager::parseAuthorization(
@@ -27,12 +73,24 @@ TEST(AuthManagerTest, VerifyAkaDigestResponseSuccess) {
         .xres = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x11},
     };
 
+    auto nonce = "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=";
+    auto response = computeDigestResponse(
+        "460112024122023@ims.mnc011.mcc460.3gppnetwork.org",
+        "ims.mnc011.mcc460.3gppnetwork.org",
+        bytesToHex(av.xres),
+        "REGISTER",
+        "sip:ims.mnc011.mcc460.3gppnetwork.org",
+        nonce,
+        "00000001",
+        "deadbeef",
+        "auth");
+
     auto header =
         "Digest username=\"460112024122023@ims.mnc011.mcc460.3gppnetwork.org\", "
         "realm=\"ims.mnc011.mcc460.3gppnetwork.org\", "
-        "nonce=\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=\", "
+        "nonce=\"" + std::string(nonce) + "\", "
         "uri=\"sip:ims.mnc011.mcc460.3gppnetwork.org\", "
-        "response=\"425f6e5096624975af0e7695ba7712a8\", "
+        "response=\"" + response + "\", "
         "algorithm=AKAv1-MD5, qop=auth, nc=00000001, cnonce=\"deadbeef\"";
 
     EXPECT_TRUE(AuthManager::verifyResponse(header, av, "REGISTER", "Digest-AKAv1-MD5"));
@@ -68,11 +126,67 @@ TEST(AuthManagerTest, BuildMd5ChallengeAndVerifyResponseSuccess) {
     auto challenge = AuthManager::buildChallenge(av, "ims.example.com", "Digest-MD5");
     EXPECT_NE(challenge.find("algorithm=MD5"), std::string::npos);
 
+    auto nonce = "MDEyMzQ1Njc4OWFiY2RlZg==";
+    auto response = computeDigestResponse(
+        "testuser",
+        "ims.example.com",
+        "testpass",
+        "REGISTER",
+        "sip:ims.example.com",
+        nonce,
+        "00000001",
+        "deadbeef",
+        "auth");
+
     auto header =
         "Digest username=\"testuser\", realm=\"ims.example.com\", "
-        "nonce=\"MDEyMzQ1Njc4OWFiY2RlZg==\", uri=\"sip:ims.example.com\", "
-        "response=\"30650641eb4e50281847de3313c07dc8\", "
+        "nonce=\"" + std::string(nonce) + "\", uri=\"sip:ims.example.com\", "
+        "response=\"" + response + "\", "
         "algorithm=MD5, qop=auth, nc=00000001, cnonce=\"deadbeef\"";
 
     EXPECT_TRUE(AuthManager::verifyResponse(header, av, "REGISTER", "Digest-MD5"));
+}
+
+TEST(AuthManagerTest, VerifyDigestPasswordResponseSuccess) {
+    auto response = computeDigestResponse(
+        "testuser",
+        "ims.example.com",
+        "testpass",
+        "REGISTER",
+        "sip:ims.example.com",
+        "nonce-123",
+        "00000001",
+        "deadbeef",
+        "auth");
+
+    auto header =
+        "Digest username=\"testuser\", realm=\"ims.example.com\", "
+        "nonce=\"nonce-123\", uri=\"sip:ims.example.com\", "
+        "response=\"" + response + "\", "
+        "algorithm=MD5, qop=auth, nc=00000001, cnonce=\"deadbeef\"";
+
+    EXPECT_TRUE(AuthManager::verifyDigestPassword(
+        header, "testpass", "REGISTER", "nonce-123"));
+}
+
+TEST(AuthManagerTest, VerifyDigestPasswordRejectsWrongPassword) {
+    auto response = computeDigestResponse(
+        "testuser",
+        "ims.example.com",
+        "testpass",
+        "REGISTER",
+        "sip:ims.example.com",
+        "nonce-123",
+        "00000001",
+        "deadbeef",
+        "auth");
+
+    auto header =
+        "Digest username=\"testuser\", realm=\"ims.example.com\", "
+        "nonce=\"nonce-123\", uri=\"sip:ims.example.com\", "
+        "response=\"" + response + "\", "
+        "algorithm=MD5, qop=auth, nc=00000001, cnonce=\"deadbeef\"";
+
+    EXPECT_FALSE(AuthManager::verifyDigestPassword(
+        header, "wrongpass", "REGISTER", "nonce-123"));
 }

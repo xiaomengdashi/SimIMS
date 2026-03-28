@@ -86,7 +86,7 @@ void PcscfService::onInvite(std::shared_ptr<ims::sip::ServerTransaction> txn,
         }
     }
 
-    forwardStatefulToIcscf(std::move(txn), request, true);
+    forwardStatefulToIcscf(std::move(txn), request, true, true);
 }
 
 void PcscfService::onBye(std::shared_ptr<ims::sip::ServerTransaction> txn,
@@ -154,9 +154,63 @@ void PcscfService::onSubscribe(std::shared_ptr<ims::sip::ServerTransaction> txn,
     forwardStatefulToIcscf(std::move(txn), request, true);
 }
 
+void PcscfService::onInviteResponse(ims::sip::SipMessage& response) {
+    if (!response.isResponse()) {
+        return;
+    }
+    if (response.cseqMethod() != "INVITE") {
+        return;
+    }
+
+    const int status = response.statusCode();
+    if (status != 183 && (status < 200 || status >= 300)) {
+        return;
+    }
+
+    auto sdp = response.body();
+    if (!sdp || !rtpengine_) {
+        return;
+    }
+
+    const auto call_id = response.callId();
+    auto session_state = media_sessions_.getSession(call_id);
+    if (!session_state) {
+        IMS_LOG_DEBUG("No media session found while handling INVITE response call={}", call_id);
+        return;
+    }
+
+    auto to_tag = response.toTag();
+    if (!to_tag.empty()) {
+        media_sessions_.updateToTag(call_id, to_tag);
+        session_state->session.to_tag = std::move(to_tag);
+    }
+
+    ims::media::RtpengineFlags flags{
+        .direction_from = "internal",
+        .direction_to = "internal",
+        .ice_remove = true,
+    };
+
+    auto answer_result = rtpengine_->answer(session_state->session, *sdp, flags);
+    if (!answer_result) {
+        IMS_LOG_WARN("rtpengine answer failed for call={}: {}", call_id, answer_result.error().message);
+        return;
+    }
+
+    media_sessions_.updateCalleeSdp(call_id, *sdp);
+    if (!answer_result->sdp.empty()) {
+        response.setBody(answer_result->sdp, "application/sdp");
+        IMS_LOG_DEBUG("SDP answer rewritten by rtpengine for call={}", call_id);
+        return;
+    }
+
+    IMS_LOG_WARN("rtpengine answer returned empty SDP for call={}, keeping original SDP", call_id);
+}
+
 void PcscfService::forwardStatefulToIcscf(std::shared_ptr<ims::sip::ServerTransaction> txn,
                                           ims::sip::SipMessage& request,
-                                          bool add_record_route)
+                                          bool add_record_route,
+                                          bool process_invite_response_media)
 {
     ims::sip::Endpoint dest{
         .address = icscf_addr_,
@@ -164,9 +218,16 @@ void PcscfService::forwardStatefulToIcscf(std::shared_ptr<ims::sip::ServerTransa
         .transport = "udp"
     };
 
-    auto result = proxy_.forwardStateful(request, dest, txn, *sip_stack_, {
+    ims::sip::ForwardOptions options{
         .add_record_route = add_record_route,
-    });
+    };
+    if (process_invite_response_media) {
+        options.on_response = [this](ims::sip::SipMessage& response) {
+            onInviteResponse(response);
+        };
+    }
+
+    auto result = proxy_.forwardStateful(request, dest, txn, *sip_stack_, options);
     if (!result) {
         IMS_LOG_ERROR("Failed to send request to I-CSCF: {}", result.error().message);
     }

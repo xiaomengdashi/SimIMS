@@ -50,9 +50,11 @@ auto determineRegisterExpires(const ims::sip::SipMessage& request) -> uint32_t {
 } // namespace
 
 Registrar::Registrar(std::shared_ptr<ims::registration::IRegistrationStore> store,
+                     std::vector<std::shared_ptr<IAuthProvider>> auth_providers,
                      std::shared_ptr<ims::diameter::IHssClient> hss,
                      const std::string& domain)
     : store_(std::move(store))
+    , auth_providers_(std::move(auth_providers))
     , hss_(std::move(hss))
     , domain_(domain)
 {
@@ -84,35 +86,22 @@ void Registrar::handleRegister(ims::sip::SipMessage& request,
 void Registrar::sendChallenge(ims::sip::SipMessage& request,
                                std::shared_ptr<ims::sip::ServerTransaction> txn)
 {
-    auto impi = extractImpi(request);
-    auto impu = extractImpu(request);
-    auto call_id = request.callId();
-
-    // Fetch auth vector from HSS via MAR
-    ims::diameter::MarParams mar{
-        .impi = impi,
-        .impu = impu,
-        .sip_auth_scheme = "Digest-AKAv1-MD5",
-        .server_name = std::format("sip:scscf.{}", domain_),
-    };
-
-    auto maa = hss_->multimediaAuth(mar);
-    if (!maa) {
-        IMS_LOG_ERROR("MAR failed for {}: {}", impi, maa.error().message);
-        auto resp = ims::sip::createResponse(request, 500, "Internal Server Error");
+    auto provider = selectProviderForInitialRegister(request);
+    if (!provider) {
+        IMS_LOG_ERROR("Challenge creation failed for {}: no auth provider available",
+                      extractImpi(request));
+        auto resp = ims::sip::createResponse(request, 501, "Not Implemented");
         if (resp) txn->sendResponse(std::move(*resp));
         return;
     }
 
-    // Store auth vector for verification on next REGISTER
-    {
-        std::lock_guard lock(auth_mutex_);
-        pending_auth_[call_id] = PendingAuth{
-            .vector = maa->auth_vector,
-            .impi = impi,
-            .impu = impu,
-            .scheme = maa->sip_auth_scheme,
-        };
+    auto challenge = provider->createChallenge(request);
+    if (!challenge) {
+        IMS_LOG_ERROR("Challenge creation failed for {}: {}",
+                      extractImpi(request), challenge.error().message);
+        auto resp = ims::sip::createResponse(request, 501, "Not Implemented");
+        if (resp) txn->sendResponse(std::move(*resp));
+        return;
     }
 
     // Build 401 response with WWW-Authenticate
@@ -122,12 +111,11 @@ void Registrar::sendChallenge(ims::sip::SipMessage& request,
         return;
     }
 
-    auto challenge = AuthManager::buildChallenge(maa->auth_vector, domain_, maa->sip_auth_scheme);
-    resp->addHeader("WWW-Authenticate", challenge);
+    resp->addHeader("WWW-Authenticate", challenge->www_authenticate);
     addSecurityAgreementHeaders(request, *resp, false);
     resp->addHeader("Date", formatGmtDate());
 
-    IMS_LOG_DEBUG("Sending 401 challenge to {}", impi);
+    IMS_LOG_DEBUG("Sending 401 challenge to {}", challenge->impi);
     txn->sendResponse(std::move(*resp));
 }
 
@@ -284,51 +272,41 @@ void Registrar::verifyAndRegister(ims::sip::SipMessage& request,
                                    std::shared_ptr<ims::sip::ServerTransaction> txn)
 {
     auto call_id = request.callId();
-    auto auth_header = request.getHeader("Authorization");
-
-    if (!auth_header) {
-        IMS_LOG_WARN("Missing Authorization header in second REGISTER");
+    auto provider = selectProviderForAuthorization(request);
+    if (!provider) {
+        IMS_LOG_WARN("No auth provider can verify Authorization for Call-ID={}", call_id);
         auto resp = ims::sip::createResponse(request, 400, "Bad Request");
         if (resp) txn->sendResponse(std::move(*resp));
         return;
     }
 
-    // Look up pending auth
-    PendingAuth pending;
-    {
-        std::lock_guard lock(auth_mutex_);
-        auto it = pending_auth_.find(call_id);
-        if (it == pending_auth_.end()) {
-            IMS_LOG_WARN("No pending auth for Call-ID={}", call_id);
-            // Re-challenge
+    auto verification = provider->verifyAuthorization(request);
+    if (!verification) {
+        IMS_LOG_WARN("Auth verification failed for Call-ID={} reason={}",
+                     call_id, verification.error().message);
+        if (verification.error().message == "no pending auth state") {
             sendChallenge(request, txn);
             return;
         }
-        pending = it->second;
-        pending_auth_.erase(it);
-    }
 
-    // Verify the response
-    if (!AuthManager::verifyResponse(*auth_header, pending.vector, request.method(), pending.scheme)) {
-        IMS_LOG_WARN("Auth verification failed for {}", pending.impi);
         auto resp = ims::sip::createResponse(request, 403, "Forbidden");
         if (resp) txn->sendResponse(std::move(*resp));
         return;
     }
 
-    IMS_LOG_INFO("Auth verified for {}", pending.impi);
+    IMS_LOG_INFO("Auth verified for {}", verification->impi);
 
     // Inform HSS via SAR
     ims::diameter::SarParams sar{
-        .impi = pending.impi,
-        .impu = pending.impu,
+        .impi = verification->impi,
+        .impu = verification->impu,
         .server_name = std::format("sip:scscf.{}", domain_),
         .assignment_type = ims::diameter::SarParams::AssignmentType::kRegistration,
     };
 
     auto saa = hss_->serverAssignment(sar);
     if (!saa) {
-        IMS_LOG_ERROR("SAR failed for {}: {}", pending.impi, saa.error().message);
+        IMS_LOG_ERROR("SAR failed for {}: {}", verification->impi, saa.error().message);
         auto resp = ims::sip::createResponse(request, 500, "Internal Server Error");
         if (resp) txn->sendResponse(std::move(*resp));
         return;
@@ -345,8 +323,8 @@ void Registrar::verifyAndRegister(ims::sip::SipMessage& request,
     auto reg_id = request.contact_param("reg-id").value_or("");
 
     ims::registration::RegistrationBinding binding{
-        .impu = pending.impu,
-        .impi = pending.impi,
+        .impu = verification->impu,
+        .impi = verification->impi,
         .scscf_uri = std::format("sip:scscf.{}", domain_),
         .contacts = {{
             .contact_uri = contact.value_or(""),
@@ -362,7 +340,7 @@ void Registrar::verifyAndRegister(ims::sip::SipMessage& request,
     };
 
     std::unordered_set<std::string> all_impus;
-    all_impus.insert(pending.impu);
+    all_impus.insert(verification->impu);
     for (const auto& associated : saa->user_profile.associated_impus) {
         all_impus.insert(associated);
     }
@@ -378,10 +356,10 @@ void Registrar::verifyAndRegister(ims::sip::SipMessage& request,
         }
     }
 
-    IMS_LOG_INFO("Registration complete for {} (expires={}s)", pending.impu, expires);
+    IMS_LOG_INFO("Registration complete for {} (expires={}s)", verification->impu, expires);
     auto associated_impus = saa->user_profile.associated_impus;
     if (associated_impus.empty()) {
-        associated_impus.push_back(pending.impu);
+        associated_impus.push_back(verification->impu);
     }
     sendRegisterOk(request, txn, expires, contact, associated_impus);
 }
@@ -511,6 +489,24 @@ bool Registrar::hasAuthorization(const ims::sip::SipMessage& msg) const {
 
     // Some UE sends placeholder Authorization in initial REGISTER with empty nonce/response.
     return !params->nonce.empty() && !params->response.empty();
+}
+
+auto Registrar::selectProviderForInitialRegister(const ims::sip::SipMessage& request) const
+    -> std::shared_ptr<IAuthProvider> {
+    auto it = std::find_if(auth_providers_.begin(), auth_providers_.end(),
+                           [&](const auto& provider) {
+                               return provider && provider->canHandleInitialRegister(request);
+                           });
+    return it == auth_providers_.end() ? nullptr : *it;
+}
+
+auto Registrar::selectProviderForAuthorization(const ims::sip::SipMessage& request) const
+    -> std::shared_ptr<IAuthProvider> {
+    auto it = std::find_if(auth_providers_.begin(), auth_providers_.end(),
+                           [&](const auto& provider) {
+                               return provider && provider->canHandleAuthorization(request);
+                           });
+    return it == auth_providers_.end() ? nullptr : *it;
 }
 
 } // namespace ims::scscf

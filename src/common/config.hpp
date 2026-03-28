@@ -30,7 +30,6 @@ struct HssSettings {
 struct PcscfConfig {
     std::string listen_addr = "0.0.0.0";
     uint16_t listen_port = 5060;
-    RtpengineSettings rtpengine;
     PcfSettings pcf;
 };
 
@@ -54,6 +53,8 @@ struct ScscfConfig {
     uint16_t listen_port = 5060;
     HssSettings hss;
     std::string domain = "ims.local";
+    std::string auth_mode = "ims_only";  // ims_only, digest_only, hybrid_fallback
+    uint32_t registration_cleanup_interval_ms = 30000;
     ExosipConfig exosip;
 };
 
