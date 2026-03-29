@@ -102,9 +102,6 @@ void SessionRouter::handleInvite(const ims::sip::SipMessage& request,
         }
         callee_impu = binding->impu;
 
-        // For dialog-forming INVITE, retarget to the registered contact.
-        fwd_request->setRequestUri(ims::sip::extract_uri_from_name_addr(contact_uri));
-
         auto resolved_dest = resolveBindingDestination(*binding);
         if (!resolved_dest) {
             IMS_LOG_WARN("Failed to resolve INVITE destination for {}: {}",

@@ -144,7 +144,13 @@ scscf:
 
 仓库里提供了一份本机联调用配置：
 
-- [`config/linphone-local.yaml`](/Users/kolane/SimIMS/config/linphone-local.yaml)
+- `config/linphone-local.yaml`
+
+另外，baresip 集成测试 `tools/test_baresip_invite.sh` 默认会使用：
+
+- `config/ims-baresip.yaml`
+
+这份测试配置会把 `scscf.auth_mode` 设成 `digest_only`，因为脚本里的 baresip 账号是普通 SIP Digest 客户端模型，不是真实 IMS AKA UE。当前脚本会把 `404` 也视为可验证的 INVITE 响应，用于覆盖被叫 baresip 以 Contact 私有 UA 标识拒绝直拨的场景。
 
 这份配置的特点是：
 

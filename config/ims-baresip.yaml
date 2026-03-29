@@ -1,0 +1,65 @@
+# IMS config for baresip integration tests.
+# Uses Digest authentication because baresip in these tests behaves as a regular SIP client.
+
+global:
+  log_level: debug
+  node_name: ims-baresip-test
+
+pcscf:
+  listen_addr: 0.0.0.0
+  listen_port: 5060
+  pcf:
+    host: 127.0.0.1
+    port: 7777
+
+icscf:
+  listen_addr: 0.0.0.0
+  listen_port: 5061
+  hss:
+    host: 127.0.0.1
+    port: 3868
+    realm: ims.mnc011.mcc460.3gppnetwork.org
+
+scscf:
+  listen_addr: 0.0.0.0
+  listen_port: 5062
+  auth_mode: digest_only
+  registration_cleanup_interval_ms: 30000
+  hss:
+    host: 127.0.0.1
+    port: 3868
+    realm: ims.mnc011.mcc460.3gppnetwork.org
+  domain: ims.mnc011.mcc460.3gppnetwork.org
+  exosip:
+    enabled: true
+    listen_addr: 0.0.0.0
+    listen_port: 5072
+    transport: udp
+    user_agent: SimIMS-eXosip2
+    event_poll_ms: 100
+
+hss_adapter:
+  type: diameter
+  diameter_host: hss.ims.mnc011.mcc460.3gppnetwork.org
+  diameter_port: 3868
+  diameter_realm: ims.mnc011.mcc460.3gppnetwork.org
+  nudm_url: http://127.0.0.1:8080/nudm-uecm/v1
+  subscribers:
+    - imsi: "460112024122023"
+      tel: "+8613824122023"
+      password: "testpass"
+      realm: "ims.mnc011.mcc460.3gppnetwork.org"
+    - imsi: "460112024122024"
+      tel: "+8613824122024"
+      password: "testpass"
+      realm: "ims.mnc011.mcc460.3gppnetwork.org"
+
+media:
+  rtpengine_host: 127.0.0.1
+  rtpengine_port: 22222
+
+dns:
+  servers:
+    - 127.0.0.1
+    - 8.8.8.8
+  timeout_ms: 3000

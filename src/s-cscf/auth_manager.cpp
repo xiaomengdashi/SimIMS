@@ -40,9 +40,10 @@ auto md5Hex(const std::string& input) -> std::string {
 
     std::ostringstream oss;
     oss << std::hex << std::setfill('0');
-    auto* bytes = reinterpret_cast<const unsigned char*>(digest);
-    for (std::size_t i = 0; i < sizeof(digest); ++i) {
-        oss << std::setw(2) << static_cast<unsigned int>(bytes[i]);
+    for (auto word : digest) {
+        for (int shift = 24; shift >= 0; shift -= 8) {
+            oss << std::setw(2) << ((word >> shift) & 0xFF);
+        }
     }
     return oss.str();
 }

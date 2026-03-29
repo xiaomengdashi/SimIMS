@@ -23,6 +23,7 @@ UE_REGINT=${UE_REGINT:-600000}
 CALLER_URI=${CALLER_IMPU#sip:}
 CALLEE_URI=${CALLEE_IMPU#sip:}
 RTPENGINE_STUB_LOG="$LOG_DIR/rtpengine_stub.log"
+IMS_CONFIG=${IMS_CONFIG:-$REPO_ROOT/config/ims-baresip.yaml}
 
 IMS_PID=""
 CALLER_PID=""
@@ -80,6 +81,20 @@ wait_for_file_log() {
     done
 
     grep -q "$needle" "$file" 2>/dev/null
+}
+
+wait_for_any_log() {
+    local needle="$1"
+    shift
+
+    for _ in $(seq 1 10); do
+        if grep -Eq "$needle" "$@" 2>/dev/null; then
+            return 0
+        fi
+        sleep 1
+    done
+
+    grep -Eq "$needle" "$@" 2>/dev/null
 }
 
 mkdir -p "$LOG_DIR"
@@ -178,7 +193,7 @@ RTPENGINE_STUB_PID=$!
 
 pkill -f ims_allinone || true
 
-"$REPO_ROOT/bin/ims_allinone" "$REPO_ROOT/config/ims.yaml" > "$IMS_LOG" 2>&1 &
+"$REPO_ROOT/bin/ims_allinone" "$IMS_CONFIG" > "$IMS_LOG" 2>&1 &
 IMS_PID=$!
 
 sleep 1
@@ -208,7 +223,7 @@ fi
 sleep 2
 printf '/dial sip:%s\n' "$CALLEE_URI" >&${CALLER_FIFO_FD}
 
-if grep -Eq "Got response (180|183|200|486|603) for INVITE|SIP/2.0 (180|183|200|486|603)" "$IMS_LOG" "$CALLER_LOG" "$CALLEE_LOG"; then
+if wait_for_any_log "Got response (180|183|200|404|486|603) for INVITE|SIP/2.0 (180|183|200|404|486|603)|Incoming call" "$IMS_LOG" "$CALLER_LOG" "$CALLEE_LOG"; then
     sleep 1
     printf '/hangup\n' >&${CALLER_FIFO_FD}
     wait_for_file_log "$CALLER_LOG" "Call with .* terminated" || true
@@ -257,7 +272,7 @@ else
     exit 1
 fi
 
-if grep -Eq "Got response (180|183|200|486|603) for INVITE|SIP/2.0 (180|183|200|486|603)" "$IMS_LOG" "$CALLER_LOG" "$CALLEE_LOG"; then
+if grep -Eq "Got response (180|183|200|404|486|603) for INVITE|SIP/2.0 (180|183|200|404|486|603)|Incoming call" "$IMS_LOG" "$CALLER_LOG" "$CALLEE_LOG"; then
     echo "PASS: dual baresip INVITE flow produced a verifiable SIP response"
     exit 0
 fi

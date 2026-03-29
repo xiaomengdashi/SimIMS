@@ -1,3 +1,6 @@
+#include <any>
+#include <sstream>
+
 #define private public
 #include "p-cscf/pcscf_service.hpp"
 #undef private
