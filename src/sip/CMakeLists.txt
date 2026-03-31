@@ -4,7 +4,6 @@ add_library(ims_sip
     stack.cpp
     transaction.cpp
     transport.cpp
-    dialog.cpp
     proxy_core.cpp
     memory_store.cpp
     exosip_context.cpp

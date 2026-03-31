@@ -25,6 +25,11 @@ CALLEE_URI=${CALLEE_IMPU#sip:}
 RTPENGINE_STUB_LOG="$LOG_DIR/rtpengine_stub.log"
 IMS_CONFIG=${IMS_CONFIG:-$REPO_ROOT/config/ims-baresip.yaml}
 
+if ! command -v baresip >/dev/null 2>&1; then
+    echo "SKIP: baresip not found in PATH" >&2
+    exit 77
+fi
+
 IMS_PID=""
 CALLER_PID=""
 CALLEE_PID=""

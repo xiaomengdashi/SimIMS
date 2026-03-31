@@ -65,10 +65,6 @@ auto SipStack::transactionLayer() -> TransactionLayer& {
     return *txn_layer_;
 }
 
-auto SipStack::dialogManager() -> DialogManager& {
-    return dialog_mgr_;
-}
-
 auto SipStack::localAddress() const -> std::string {
     return transport_->localEndpoint().address;
 }

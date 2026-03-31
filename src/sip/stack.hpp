@@ -3,7 +3,6 @@
 #include "message.hpp"
 #include "transport.hpp"
 #include "transaction.hpp"
-#include "dialog.hpp"
 #include "common/types.hpp"
 
 #include <boost/asio/io_context.hpp>
@@ -32,7 +31,6 @@ public:
 
     auto transport() -> std::shared_ptr<ITransport>;
     auto transactionLayer() -> TransactionLayer&;
-    auto dialogManager() -> DialogManager&;
 
     auto localAddress() const -> std::string;
     auto localPort() const -> Port;
@@ -43,7 +41,6 @@ private:
     boost::asio::io_context& io_;
     std::shared_ptr<ITransport> transport_;
     std::unique_ptr<TransactionLayer> txn_layer_;
-    DialogManager dialog_mgr_;
     std::unordered_map<std::string, RequestHandler> method_handlers_;
     RequestHandler default_handler_;
 };

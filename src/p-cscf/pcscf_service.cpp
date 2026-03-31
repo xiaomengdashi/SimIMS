@@ -1,11 +1,14 @@
 #include "pcscf_service.hpp"
 #include "common/logger.hpp"
+#include "sip/uri_utils.hpp"
 
 #include <algorithm>
 #include <cctype>
 #include <format>
+#include <optional>
 #include <random>
 #include <sstream>
+#include <string>
 #include <osipparser2/osip_message.h>
 #include <osipparser2/osip_parser.h>
 
@@ -275,39 +278,70 @@ void PcscfService::onInviteResponse(ims::sip::SipMessage& response) {
 
 auto PcscfService::isCoreFacingRequest(const ims::sip::ServerTransaction& txn) const -> bool {
     auto source = txn.source();
-    return to_lower(source.address) == to_lower(icscf_addr_) && source.port == icscf_port_;
+    const auto source_addr = to_lower(source.address);
+    const auto core_addr = to_lower(icscf_addr_);
+
+    const bool core_addr_matches =
+        source_addr == core_addr ||
+        ((core_addr == "0.0.0.0" || core_addr == "::") &&
+         (source_addr == "127.0.0.1" || source_addr == "::1"));
+    if (!core_addr_matches) {
+        return false;
+    }
+
+    const auto scscf_port = static_cast<ims::Port>(icscf_port_ + 1);
+    return source.port == icscf_port_ || source.port == scscf_port;
 }
 
 auto PcscfService::resolveUeDestination(const ims::sip::SipMessage& request) const
     -> std::optional<ims::sip::Endpoint> {
-    osip_via_t* bottom_via = nullptr;
-    auto idx = request.viaCount() - 1;
-    if (idx < 0 || osip_message_get_via(request.raw(), idx, &bottom_via) != 0 || !bottom_via || !bottom_via->host) {
-        return std::nullopt;
-    }
-
-    ims::Port port = 5060;
-    osip_generic_param_t* rport = nullptr;
-    osip_via_param_get_byname(bottom_via, const_cast<char*>("rport"), &rport);
-    if (rport && rport->gvalue && std::string(rport->gvalue) != "") {
-        port = static_cast<ims::Port>(std::atoi(rport->gvalue));
-    } else if (bottom_via->port) {
-        port = static_cast<ims::Port>(std::atoi(bottom_via->port));
-    }
-
-    std::string transport = "udp";
-    if (bottom_via->protocol) {
-        auto protocol = to_lower(bottom_via->protocol);
-        if (protocol == "tcp") {
-            transport = "tcp";
+    auto contact_uri = request.contact_uri();
+    if (contact_uri) {
+        auto parsed_contact = ims::sip::parse_endpoint_from_uri(*contact_uri);
+        if (parsed_contact) {
+            if (parsed_contact->transport.empty()) {
+                parsed_contact->transport = "udp";
+            }
+            return parsed_contact;
         }
     }
 
-    return ims::sip::Endpoint{
-        .address = bottom_via->host,
-        .port = port,
-        .transport = transport,
-    };
+    osip_via_t* bottom_via = nullptr;
+    auto idx = request.viaCount() - 1;
+    if (idx >= 0 && osip_message_get_via(request.raw(), idx, &bottom_via) == 0 && bottom_via && bottom_via->host) {
+        ims::Port port = 5060;
+        osip_generic_param_t* rport = nullptr;
+        osip_via_param_get_byname(bottom_via, const_cast<char*>("rport"), &rport);
+        if (rport && rport->gvalue && std::string(rport->gvalue) != "") {
+            port = static_cast<ims::Port>(std::atoi(rport->gvalue));
+        } else if (bottom_via->port) {
+            port = static_cast<ims::Port>(std::atoi(bottom_via->port));
+        }
+
+        std::string transport = "udp";
+        if (bottom_via->protocol) {
+            auto protocol = to_lower(bottom_via->protocol);
+            if (protocol == "tcp") {
+                transport = "tcp";
+            }
+        }
+
+        return ims::sip::Endpoint{
+            .address = bottom_via->host,
+            .port = port,
+            .transport = transport,
+        };
+    }
+
+    auto parsed_request_uri = ims::sip::parse_endpoint_from_uri(request.requestUri());
+    if (!parsed_request_uri) {
+        return std::nullopt;
+    }
+
+    if (parsed_request_uri->transport.empty()) {
+        parsed_request_uri->transport = "udp";
+    }
+    return parsed_request_uri;
 }
 
 auto PcscfService::resolveCoreDestination(const ims::sip::SipMessage& request) const -> ims::sip::Endpoint {
@@ -412,7 +446,14 @@ void PcscfService::forwardStatefulToUe(std::shared_ptr<ims::sip::ServerTransacti
     auto token = createTopologyToken();
     rememberTopologyRoute(token, resolveCoreDestination(request));
 
-    sanitizeForUeEgress(request);
+    auto upstream_via = request.topVia();
+    request.removeHeader("Route");
+    while (request.viaCount() > 0) {
+        request.removeTopVia();
+    }
+    if (!upstream_via.empty()) {
+        request.addVia(upstream_via);
+    }
     if (add_record_route) {
         addTopologyRecordRoute(request, token);
     }

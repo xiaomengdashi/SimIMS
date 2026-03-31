@@ -72,6 +72,7 @@ add_test(
 )
 set_tests_properties(BaresipInviteIntegrationTest PROPERTIES
     LABELS integration
+    SKIP_RETURN_CODE 77
 )
 
 # Install targets
