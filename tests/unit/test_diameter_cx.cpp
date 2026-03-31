@@ -148,6 +148,7 @@ TEST(StubHssClientTest, LoadsSubscriberAndReturnsAliasProfiles) {
         .server_name = "sip:scscf.ims.operator.com",
     });
     ASSERT_TRUE(mar.has_value()) << mar.error().message;
+    EXPECT_EQ(mar->sip_auth_scheme, "Digest-AKAv1-MD5");
     EXPECT_EQ(std::string(mar->auth_vector.xres.begin(), mar->auth_vector.xres.end()), "testpass-a");
 
     auto sar = hss.serverAssignment({
@@ -171,4 +172,27 @@ TEST(StubHssClientTest, LoadsSubscriberAndReturnsAliasProfiles) {
 
     auto lir_imsi = hss.locationInfo({.impu = "sip:460112024122023@ims.operator.com"});
     ASSERT_TRUE(lir_imsi.has_value()) << lir_imsi.error().message;
+}
+
+TEST(StubHssClientTest, PreservesRequestedSipAuthSchemeInMarResponse) {
+    HssAdapterConfig config;
+    config.subscribers = {
+        HssSubscriberConfig{
+            .imsi = "460112024122023",
+            .tel = "+8613824122023",
+            .password = "testpass-a",
+            .realm = "ims.operator.com",
+        },
+    };
+
+    StubHssClient hss(config);
+
+    auto mar = hss.multimediaAuth({
+        .impi = "460112024122023@ims.operator.com",
+        .impu = "sip:460112024122023@ims.operator.com",
+        .sip_auth_scheme = "Digest-AKAv1-MD5",
+        .server_name = "sip:scscf.ims.operator.com",
+    });
+    ASSERT_TRUE(mar.has_value()) << mar.error().message;
+    EXPECT_EQ(mar->sip_auth_scheme, "Digest-AKAv1-MD5");
 }

@@ -280,11 +280,18 @@ auto PcscfService::isCoreFacingRequest(const ims::sip::ServerTransaction& txn) c
     auto source = txn.source();
     const auto source_addr = to_lower(source.address);
     const auto core_addr = to_lower(icscf_addr_);
+    const auto advertised_addr = to_lower(proxy_public_addr_);
+    const auto listen_addr = to_lower(config_.listen_addr);
 
+    const bool is_loopback_source = source_addr == "127.0.0.1" || source_addr == "::1";
     const bool core_addr_matches =
         source_addr == core_addr ||
-        ((core_addr == "0.0.0.0" || core_addr == "::") &&
-         (source_addr == "127.0.0.1" || source_addr == "::1"));
+        source_addr == advertised_addr ||
+        (!listen_addr.empty() && listen_addr != "0.0.0.0" && listen_addr != "::" &&
+         source_addr == listen_addr) ||
+        (((core_addr == "0.0.0.0" || core_addr == "::") ||
+          (listen_addr == "0.0.0.0" || listen_addr == "::")) &&
+         is_loopback_source);
     if (!core_addr_matches) {
         return false;
     }
@@ -295,6 +302,15 @@ auto PcscfService::isCoreFacingRequest(const ims::sip::ServerTransaction& txn) c
 
 auto PcscfService::resolveUeDestination(const ims::sip::SipMessage& request) const
     -> std::optional<ims::sip::Endpoint> {
+    auto parsed_request_uri = ims::sip::parse_endpoint_from_uri(request.requestUri());
+    if (parsed_request_uri && !parsed_request_uri->address.empty() &&
+        parsed_request_uri->address != "ims.local") {
+        if (parsed_request_uri->transport.empty()) {
+            parsed_request_uri->transport = "udp";
+        }
+        return parsed_request_uri;
+    }
+
     auto contact_uri = request.contact_uri();
     if (contact_uri) {
         auto parsed_contact = ims::sip::parse_endpoint_from_uri(*contact_uri);
@@ -333,15 +349,7 @@ auto PcscfService::resolveUeDestination(const ims::sip::SipMessage& request) con
         };
     }
 
-    auto parsed_request_uri = ims::sip::parse_endpoint_from_uri(request.requestUri());
-    if (!parsed_request_uri) {
-        return std::nullopt;
-    }
-
-    if (parsed_request_uri->transport.empty()) {
-        parsed_request_uri->transport = "udp";
-    }
-    return parsed_request_uri;
+    return std::nullopt;
 }
 
 auto PcscfService::resolveCoreDestination(const ims::sip::SipMessage& request) const -> ims::sip::Endpoint {
@@ -404,8 +412,6 @@ void PcscfService::sanitizeForUeEgress(ims::sip::SipMessage& request) {
         request.removeTopVia();
         via_count = request.viaCount();
     }
-
-    request.removeHeader("Route");
 }
 
 void PcscfService::forwardStatefulToIcscf(std::shared_ptr<ims::sip::ServerTransaction> txn,
@@ -446,14 +452,7 @@ void PcscfService::forwardStatefulToUe(std::shared_ptr<ims::sip::ServerTransacti
     auto token = createTopologyToken();
     rememberTopologyRoute(token, resolveCoreDestination(request));
 
-    auto upstream_via = request.topVia();
     request.removeHeader("Route");
-    while (request.viaCount() > 0) {
-        request.removeTopVia();
-    }
-    if (!upstream_via.empty()) {
-        request.addVia(upstream_via);
-    }
     if (add_record_route) {
         addTopologyRecordRoute(request, token);
     }

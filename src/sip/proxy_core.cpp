@@ -127,7 +127,9 @@ auto ProxyCore::forwardResponseUpstream(const SipMessage& response,
     if (!upstream) {
         return std::unexpected(upstream.error());
     }
-    upstream->removeTopVia();
+    if (upstream->viaCount() > 1) {
+        upstream->removeTopVia();
+    }
     IMS_LOG_DEBUG("Forwarding response upstream after removeTopVia via_count={} top_via={}",
                   upstream->viaCount(), upstream->topVia());
     return txn->sendResponse(std::move(*upstream));

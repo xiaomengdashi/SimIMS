@@ -101,6 +101,10 @@ void SessionRouter::handleInvite(const ims::sip::SipMessage& request,
             path = contacts[0]->path;
         }
         callee_impu = binding->impu;
+        auto target_uri = ims::sip::extract_uri_from_name_addr(contact_uri);
+        if (!target_uri.empty()) {
+            fwd_request->setRequestUri(target_uri);
+        }
 
         auto resolved_dest = resolveBindingDestination(*binding);
         if (!resolved_dest) {

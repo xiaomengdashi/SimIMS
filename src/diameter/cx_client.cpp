@@ -99,7 +99,7 @@ auto StubHssClient::multimediaAuth(const MarParams& params) -> Result<MaaResult>
 
     return MaaResult{
         .result_code = kDiameterSuccess,
-        .sip_auth_scheme = "Digest-MD5",
+        .sip_auth_scheme = params.sip_auth_scheme,
         .auth_vector = std::move(av),
     };
 }

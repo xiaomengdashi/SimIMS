@@ -260,6 +260,45 @@ TEST_F(ProxyCoreTest, ForwardResponseUpstreamRemovesTopVia) {
     EXPECT_EQ(transport->destinations[0].address, "198.51.100.10");
 }
 
+TEST_F(ProxyCoreTest, ForwardResponseUpstreamPreservesFinalViaForEdgeUac) {
+    auto response = SipMessage::parse(
+        "SIP/2.0 200 OK\r\n"
+        "Via: SIP/2.0/UDP ue.example.com:5090;received=198.51.100.10;rport=5090;branch=z9hG4bK-ue\r\n"
+        "To: <sip:user@ims.example.com>;tag=to-tag\r\n"
+        "From: <sip:user@ims.example.com>;tag=from-tag\r\n"
+        "Call-ID: edge-response-call-id\r\n"
+        "CSeq: 1 INVITE\r\n"
+        "Content-Length: 0\r\n"
+        "\r\n");
+    ASSERT_TRUE(response.has_value()) << response.error().message;
+
+    auto request = SipMessage::parse(
+        "INVITE sip:user@ims.example.com SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP ue.example.com:5090;branch=z9hG4bK-ue\r\n"
+        "From: <sip:caller@ims.example.com>;tag=from-tag\r\n"
+        "To: <sip:user@ims.example.com>\r\n"
+        "Call-ID: edge-response-call-id\r\n"
+        "CSeq: 1 INVITE\r\n"
+        "Content-Length: 0\r\n"
+        "\r\n");
+    ASSERT_TRUE(request.has_value()) << request.error().message;
+
+    auto transport = std::make_shared<CapturingTransport>();
+    boost::asio::io_context io;
+    auto txn = std::make_shared<ServerTransaction>(std::move(*request), transport,
+                                                   Endpoint{.address = "198.51.100.10", .port = 5090, .transport = "udp"},
+                                                   io);
+
+    ProxyCore proxy("proxy.local", 5060);
+    auto forwarded = proxy.forwardResponseUpstream(*response, txn);
+    ASSERT_TRUE(forwarded.has_value()) << forwarded.error().message;
+    ASSERT_EQ(transport->send_count, 1);
+    ASSERT_EQ(transport->destinations.size(), 1u);
+    EXPECT_EQ(transport->destinations[0].address, "198.51.100.10");
+    EXPECT_EQ(transport->destinations[0].port, 5090);
+    EXPECT_EQ(response->viaCount(), 1);
+}
+
 TEST_F(ProxyCoreTest, PrepareRequestForForwardDecrementsMaxForwardsAndAddsVia) {
     auto result = SipMessage::parse(kRegisterMsg);
     ASSERT_TRUE(result.has_value()) << result.error().message;

@@ -239,6 +239,9 @@ void ClientTransaction::processResponse(SipMessage response) {
     int code = response.statusCode();
     IMS_LOG_DEBUG("Client txn received {} response, branch={}", code, branch_);
 
+    const bool is_invite = request_.cseqMethod() == "INVITE";
+    const bool is_invite_2xx = is_invite && code >= 200 && code < 300;
+
     if (code >= 100 && code < 200) {
         state_ = TransactionState::kProceeding;
         // Stop retransmission timer for provisional responses
@@ -246,14 +249,16 @@ void ClientTransaction::processResponse(SipMessage response) {
     } else if (code >= 200) {
         state_ = TransactionState::kCompleted;
         timer_a_.cancel();
-        timer_b_.cancel();
+        if (!is_invite_2xx) {
+            timer_b_.cancel();
+        }
     }
 
     if (on_response_) {
         on_response_(response);
     }
 
-    if (code >= 200) {
+    if (code >= 200 && !is_invite_2xx) {
         state_ = TransactionState::kTerminated;
     }
 }
@@ -306,7 +311,9 @@ auto TransactionLayer::sendRequest(SipMessage request, const Endpoint& dest,
         if (cb) {
             cb(response);
         }
-        if (response.statusCode() >= 200) {
+        const bool is_invite_2xx = response.cseqMethod() == "INVITE" &&
+                                   response.statusCode() >= 200 && response.statusCode() < 300;
+        if (response.statusCode() >= 200 && !is_invite_2xx) {
             std::lock_guard lock(mutex_);
             client_txns_.erase(key);
         }

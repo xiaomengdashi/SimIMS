@@ -252,6 +252,35 @@ TEST_F(PcscfServiceTest, CoreFacingRequestAcceptsWildcardConfiguredCoreAddress) 
     EXPECT_TRUE(wildcard_service->isCoreFacingRequest(*txn));
 }
 
+TEST_F(PcscfServiceTest, CoreFacingRequestAcceptsAdvertisedAddressOnScscfPort) {
+    ims::PcscfConfig cfg;
+    cfg.listen_addr = "0.0.0.0";
+    cfg.listen_port = 0;
+    cfg.advertised_addr = "192.168.31.40";
+
+    auto service = std::make_unique<ims::pcscf::PcscfService>(
+        cfg, io_, pcf_, rtpengine_, "127.0.0.1", 5061);
+
+    auto req = ims::sip::SipMessage::parse(
+        "INVITE sip:alice@ims.local SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP 192.168.31.40:5062;branch=z9hG4bKcore3;rport\r\n"
+        "From: <sip:bob@ims.local>;tag=f1\r\n"
+        "To: <sip:alice@ims.local>\r\n"
+        "Call-ID: core-facing-test-advertised\r\n"
+        "CSeq: 1 INVITE\r\n"
+        "Content-Length: 0\r\n\r\n");
+    ASSERT_TRUE(req.has_value()) << req.error().message;
+
+    auto transport = std::make_shared<StrictMock<ims::test::MockTransport>>();
+    auto txn = std::make_shared<ims::sip::ServerTransaction>(
+        std::move(*req),
+        transport,
+        ims::sip::Endpoint{.address = "192.168.31.40", .port = 5062, .transport = "udp"},
+        io_);
+
+    EXPECT_TRUE(service->isCoreFacingRequest(*txn));
+}
+
 TEST_F(PcscfServiceTest, ResolveUeDestinationFallsBackToRequestUriWhenViaMissing) {
     auto req = ims::sip::SipMessage::parse(
         "INVITE sip:alice@10.1.20.6:39545 SIP/2.0\r\n"
@@ -287,22 +316,45 @@ TEST_F(PcscfServiceTest, ResolveUeDestinationFallsBackToContactWhenViaAndRequest
     EXPECT_EQ(ue->transport, "udp");
 }
 
-TEST_F(PcscfServiceTest, ResolveUeDestinationPrefersContactOverVia) {
+TEST_F(PcscfServiceTest, ResolveUeDestinationPrefersRequestUriOverContactAndVia) {
     auto req = ims::sip::SipMessage::parse(
-        "INVITE sip:alice@ims.local SIP/2.0\r\n"
+        "INVITE sip:alice@10.1.20.8:40600 SIP/2.0\r\n"
         "Via: SIP/2.0/UDP 10.1.20.7:5099;branch=z9hG4bKcore-to-ue;rport\r\n"
         "From: <sip:bob@ims.local>;tag=f1\r\n"
         "To: <sip:alice@ims.local>\r\n"
         "Contact: <sip:alice@10.1.20.6:39545>\r\n"
-        "Call-ID: ue-dest-contact-priority\r\n"
+        "Call-ID: ue-dest-ruri-priority\r\n"
         "CSeq: 1 INVITE\r\n"
         "Content-Length: 0\r\n\r\n");
     ASSERT_TRUE(req.has_value()) << req.error().message;
 
     auto ue = service_->resolveUeDestination(*req);
     ASSERT_TRUE(ue.has_value());
-    EXPECT_EQ(ue->address, "10.1.20.6");
-    EXPECT_EQ(ue->port, 39545);
+    EXPECT_EQ(ue->address, "10.1.20.8");
+    EXPECT_EQ(ue->port, 40600);
+}
+
+TEST_F(PcscfServiceTest, SanitizeForUeEgressPreservesRouteButCollapsesViaChain) {
+    auto req = ims::sip::SipMessage::parse(
+        "ACK sip:alice@10.1.20.6:39545 SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKtop\r\n"
+        "Via: SIP/2.0/UDP 192.168.31.40:5062;branch=z9hG4bKmid\r\n"
+        "Via: SIP/2.0/UDP 192.168.31.48:61836;rport;branch=z9hG4bKbottom\r\n"
+        "Route: <sip:192.168.31.40:5060;lr;th=th123>\r\n"
+        "From: <sip:bob@ims.local>;tag=caller\r\n"
+        "To: <sip:alice@ims.local>;tag=callee\r\n"
+        "Call-ID: ack-ue-egress\r\n"
+        "CSeq: 1 ACK\r\n"
+        "Content-Length: 0\r\n\r\n");
+    ASSERT_TRUE(req.has_value()) << req.error().message;
+
+    service_->sanitizeForUeEgress(*req);
+
+    EXPECT_EQ(req->viaCount(), 1);
+    EXPECT_NE(req->topVia().find("192.168.31.48:61836"), std::string::npos);
+    auto routes = req->routes();
+    ASSERT_EQ(routes.size(), 1u);
+    EXPECT_NE(routes.front().find("th=th123"), std::string::npos);
 }
 
 } // namespace
