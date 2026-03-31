@@ -139,4 +139,64 @@ TEST_F(PcscfServiceTest, Invite183WithoutTrackedSessionDoesNotCallRtpengineAnswe
     service_->onInviteResponse(response);
 }
 
+TEST_F(PcscfServiceTest, ExtractTopologyTokenFromTopRoute) {
+    auto parsed = ims::sip::SipMessage::parse(
+        "BYE sip:alice@ims.local SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP 10.0.0.9:5099;branch=z9hG4bKabc;rport\r\n"
+        "Route: <sip:10.0.0.1:5060;lr;th=th001122>\r\n"
+        "From: <sip:bob@ims.local>;tag=f1\r\n"
+        "To: <sip:alice@ims.local>;tag=t1\r\n"
+        "Call-ID: token-test\r\n"
+        "CSeq: 2 BYE\r\n"
+        "Content-Length: 0\r\n\r\n");
+    ASSERT_TRUE(parsed.has_value()) << parsed.error().message;
+
+    auto token = service_->extractTopologyToken(*parsed);
+    ASSERT_TRUE(token.has_value());
+    EXPECT_EQ(*token, "th001122");
+}
+
+TEST_F(PcscfServiceTest, ResolveCoreDestinationUsesStoredTopologyToken) {
+    ims::sip::Endpoint expected{
+        .address = "10.10.10.10",
+        .port = 6060,
+        .transport = "udp",
+    };
+    service_->rememberTopologyRoute("thsaved", expected);
+
+    auto parsed = ims::sip::SipMessage::parse(
+        "BYE sip:alice@ims.local SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP 10.0.0.9:5099;branch=z9hG4bKabc;rport\r\n"
+        "Route: <sip:127.0.0.1:5060;lr;th=thsaved>\r\n"
+        "From: <sip:bob@ims.local>;tag=f1\r\n"
+        "To: <sip:alice@ims.local>;tag=t1\r\n"
+        "Call-ID: token-test2\r\n"
+        "CSeq: 3 BYE\r\n"
+        "Content-Length: 0\r\n\r\n");
+    ASSERT_TRUE(parsed.has_value()) << parsed.error().message;
+
+    auto resolved = service_->resolveCoreDestination(*parsed);
+    EXPECT_EQ(resolved.address, expected.address);
+    EXPECT_EQ(resolved.port, expected.port);
+    EXPECT_EQ(resolved.transport, expected.transport);
+}
+
+TEST_F(PcscfServiceTest, AddTopologyRecordRouteCarriesToken) {
+    auto parsed = ims::sip::SipMessage::parse(
+        "INVITE sip:alice@ims.local SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP 10.0.0.9:5099;branch=z9hG4bKabc;rport\r\n"
+        "From: <sip:bob@ims.local>;tag=f1\r\n"
+        "To: <sip:alice@ims.local>\r\n"
+        "Call-ID: rr-token-test\r\n"
+        "CSeq: 1 INVITE\r\n"
+        "Content-Length: 0\r\n\r\n");
+    ASSERT_TRUE(parsed.has_value()) << parsed.error().message;
+
+    service_->addTopologyRecordRoute(*parsed, "thabc123");
+
+    auto rr = parsed->getHeaders("Record-Route");
+    ASSERT_EQ(rr.size(), 1u);
+    EXPECT_NE(rr[0].find(";th=thabc123"), std::string::npos);
+}
+
 } // namespace

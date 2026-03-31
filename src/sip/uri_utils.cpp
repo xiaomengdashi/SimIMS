@@ -4,6 +4,7 @@
 #include <cctype>
 #include <format>
 #include <sstream>
+#include <string_view>
 
 #include <osipparser2/osip_parser.h>
 #include <osipparser2/osip_message.h>
@@ -158,6 +159,55 @@ auto parse_endpoint_from_uri(const std::string& sip_uri) -> std::optional<Endpoi
         .port = port,
         .transport = transport,
     };
+}
+
+auto route_points_to_endpoint(const std::string& route_value,
+                              const Endpoint& endpoint,
+                              std::string_view fallback_transport) -> bool {
+    auto route_endpoint = parse_endpoint_from_uri(route_value);
+    if (!route_endpoint) {
+        return false;
+    }
+
+    auto lower = [](std::string value) {
+        std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
+            return static_cast<char>(std::tolower(ch));
+        });
+        return value;
+    };
+
+    auto normalized_route_host = lower(route_endpoint->address);
+    auto normalized_host = lower(endpoint.address);
+    if (normalized_route_host != normalized_host) {
+        return false;
+    }
+
+    auto normalized_transport = endpoint.transport.empty()
+        ? std::string(fallback_transport)
+        : endpoint.transport;
+    normalized_transport = lower(normalized_transport);
+
+    auto normalized_route_transport = route_endpoint->transport.empty()
+        ? std::string(fallback_transport)
+        : route_endpoint->transport;
+    normalized_route_transport = lower(normalized_route_transport);
+
+    if (normalized_transport != normalized_route_transport) {
+        return false;
+    }
+
+    auto default_port_for = [](std::string_view transport) -> Port {
+        return 5060;
+    };
+
+    auto route_port = route_endpoint->port == 0
+        ? default_port_for(normalized_route_transport)
+        : route_endpoint->port;
+    auto endpoint_port = endpoint.port == 0
+        ? default_port_for(normalized_transport)
+        : endpoint.port;
+
+    return route_port == endpoint_port;
 }
 
 auto parse_digest_authorization(const std::string& header) -> Result<DigestAuthFields> {

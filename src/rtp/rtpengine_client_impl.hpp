@@ -3,6 +3,7 @@
 #include "rtp/rtpengine_client.hpp"
 #include "bencode.hpp"
 
+#include <utility>
 #include <boost/asio.hpp>
 #include <atomic>
 #include <string>

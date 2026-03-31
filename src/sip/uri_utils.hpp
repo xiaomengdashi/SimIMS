@@ -5,6 +5,7 @@
 
 #include <optional>
 #include <string>
+#include <string_view>
 
 namespace ims::sip {
 
@@ -23,6 +24,9 @@ struct DigestAuthFields {
 auto extract_uri_from_name_addr(const std::string& value) -> std::string;
 auto normalize_impu_uri(const std::string& value) -> std::string;
 auto parse_endpoint_from_uri(const std::string& sip_uri) -> std::optional<Endpoint>;
+auto route_points_to_endpoint(const std::string& route_value,
+                              const Endpoint& endpoint,
+                              std::string_view fallback_transport = "udp") -> bool;
 auto parse_digest_authorization(const std::string& header) -> Result<DigestAuthFields>;
 
 } // namespace ims::sip

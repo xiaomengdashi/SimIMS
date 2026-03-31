@@ -16,6 +16,9 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/bin)
 find_package(Boost REQUIRED COMPONENTS system)
 find_package(spdlog REQUIRED)
 find_package(yaml-cpp REQUIRED)
+if(NOT TARGET yaml-cpp::yaml-cpp AND TARGET yaml-cpp)
+    add_library(yaml-cpp::yaml-cpp ALIAS yaml-cpp)
+endif()
 find_package(GTest REQUIRED)
 
 # pkg-config based dependencies

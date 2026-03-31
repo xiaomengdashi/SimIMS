@@ -11,6 +11,16 @@ namespace ims::icscf {
 
 namespace {
 
+auto resolve_proxy_advertised_address(const ims::IcscfConfig& config) -> std::string {
+    if (!config.advertised_addr.empty()) {
+        return config.advertised_addr;
+    }
+    if (!config.listen_addr.empty() && config.listen_addr != "0.0.0.0") {
+        return config.listen_addr;
+    }
+    return "127.0.0.1";
+}
+
 } // namespace
 
 IcscfService::IcscfService(const ims::IcscfConfig& config,
@@ -20,7 +30,7 @@ IcscfService::IcscfService(const ims::IcscfConfig& config,
     , sip_stack_(std::make_unique<ims::sip::SipStack>(
           io, config.listen_addr, config.listen_port))
     , selector_(std::make_unique<ScscfSelector>(std::move(hss)))
-    , proxy_(config.listen_addr, config.listen_port)
+    , proxy_(resolve_proxy_advertised_address(config), config.listen_port)
 {
 }
 
@@ -136,7 +146,7 @@ void IcscfService::onInvite(std::shared_ptr<ims::sip::ServerTransaction> txn,
         if (resp) txn->sendResponse(std::move(*resp));
         return;
     }
-    forwardStateful(std::move(txn), request, *endpoint, true);
+    forwardStateful(std::move(txn), request, *endpoint, false);
 }
 
 void IcscfService::onSubscribe(std::shared_ptr<ims::sip::ServerTransaction> txn,
@@ -161,7 +171,7 @@ void IcscfService::onSubscribe(std::shared_ptr<ims::sip::ServerTransaction> txn,
         if (resp) txn->sendResponse(std::move(*resp));
         return;
     }
-    forwardStateful(std::move(txn), request, *endpoint, true);
+    forwardStateful(std::move(txn), request, *endpoint, false);
 }
 
 void IcscfService::forwardStateful(std::shared_ptr<ims::sip::ServerTransaction> txn,

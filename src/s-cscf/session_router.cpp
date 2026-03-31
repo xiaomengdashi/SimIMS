@@ -117,8 +117,7 @@ void SessionRouter::handleInvite(const ims::sip::SipMessage& request,
     proxy_.processRouteHeaders(*fwd_request);
 
     if (!in_dialog) {
-        // Keep ourselves on the route set only for dialog-forming requests.
-        proxy_.addRecordRoute(*fwd_request);
+        // Topology exposure reduction: S-CSCF does not add Record-Route towards UE side.
     }
 
     auto prep = proxy_.prepareRequestForForward(*fwd_request, dest.transport);

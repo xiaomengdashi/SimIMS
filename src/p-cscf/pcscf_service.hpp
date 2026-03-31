@@ -8,6 +8,9 @@
 #include "rtp/media_session.hpp"
 
 #include <memory>
+#include <mutex>
+#include <optional>
+#include <unordered_map>
 
 namespace ims::pcscf {
 
@@ -30,6 +33,15 @@ public:
     void stop();
 
 private:
+    auto isCoreFacingRequest(const ims::sip::ServerTransaction& txn) const -> bool;
+    auto resolveUeDestination(const ims::sip::SipMessage& request) const -> std::optional<ims::sip::Endpoint>;
+    auto resolveCoreDestination(const ims::sip::SipMessage& request) const -> ims::sip::Endpoint;
+    auto extractTopologyToken(const ims::sip::SipMessage& request) const -> std::optional<std::string>;
+    auto createTopologyToken() -> std::string;
+    void rememberTopologyRoute(const std::string& token, const ims::sip::Endpoint& endpoint);
+    void addTopologyRecordRoute(ims::sip::SipMessage& request, const std::string& token) const;
+    void sanitizeForUeEgress(ims::sip::SipMessage& request);
+
     void onRegister(std::shared_ptr<ims::sip::ServerTransaction> txn,
                     ims::sip::SipMessage& request);
     void onInvite(std::shared_ptr<ims::sip::ServerTransaction> txn,
@@ -49,8 +61,13 @@ private:
                                 ims::sip::SipMessage& request,
                                 bool add_record_route = false,
                                 bool process_invite_response_media = false);
+    void forwardStatefulToUe(std::shared_ptr<ims::sip::ServerTransaction> txn,
+                             ims::sip::SipMessage& request,
+                             bool add_record_route = true);
     void forwardStatelessToIcscf(ims::sip::SipMessage& request,
                                  bool add_record_route = false);
+    void forwardStatelessToUe(ims::sip::SipMessage& request,
+                              bool add_record_route = true);
 
     ims::PcscfConfig config_;
     std::unique_ptr<ims::sip::SipStack> sip_stack_;
@@ -61,6 +78,10 @@ private:
 
     std::string icscf_addr_;
     ims::Port icscf_port_;
+    std::string proxy_public_addr_;
+
+    mutable std::mutex topology_mutex_;
+    std::unordered_map<std::string, ims::sip::Endpoint> topology_routes_;
 };
 
 } // namespace ims::pcscf

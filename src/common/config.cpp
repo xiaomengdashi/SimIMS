@@ -34,8 +34,9 @@ Result<ImsConfig> load_config(const std::string& path) {
 
     // P-CSCF section
     if (auto pcscf = root["pcscf"]) {
-        if (auto v = pcscf["listen_addr"])  config.pcscf.listen_addr = v.as<std::string>();
-        if (auto v = pcscf["listen_port"])  config.pcscf.listen_port = v.as<uint16_t>();
+        if (auto v = pcscf["listen_addr"])      config.pcscf.listen_addr = v.as<std::string>();
+        if (auto v = pcscf["listen_port"])      config.pcscf.listen_port = v.as<uint16_t>();
+        if (auto v = pcscf["advertised_addr"])  config.pcscf.advertised_addr = v.as<std::string>();
         if (auto pcf = pcscf["pcf"]) {
             if (auto v = pcf["host"])  config.pcscf.pcf.host = v.as<std::string>();
             if (auto v = pcf["port"])  config.pcscf.pcf.port = v.as<uint16_t>();
@@ -44,8 +45,9 @@ Result<ImsConfig> load_config(const std::string& path) {
 
     // I-CSCF section
     if (auto icscf = root["icscf"]) {
-        if (auto v = icscf["listen_addr"])  config.icscf.listen_addr = v.as<std::string>();
-        if (auto v = icscf["listen_port"])  config.icscf.listen_port = v.as<uint16_t>();
+        if (auto v = icscf["listen_addr"])      config.icscf.listen_addr = v.as<std::string>();
+        if (auto v = icscf["listen_port"])      config.icscf.listen_port = v.as<uint16_t>();
+        if (auto v = icscf["advertised_addr"])  config.icscf.advertised_addr = v.as<std::string>();
         if (auto hss = icscf["hss"]) {
             if (auto v = hss["host"])   config.icscf.hss.host = v.as<std::string>();
             if (auto v = hss["port"])   config.icscf.hss.port = v.as<uint16_t>();
@@ -55,10 +57,11 @@ Result<ImsConfig> load_config(const std::string& path) {
 
     // S-CSCF section
     if (auto scscf = root["scscf"]) {
-        if (auto v = scscf["listen_addr"])  config.scscf.listen_addr = v.as<std::string>();
-        if (auto v = scscf["listen_port"])  config.scscf.listen_port = v.as<uint16_t>();
-        if (auto v = scscf["domain"])       config.scscf.domain = v.as<std::string>();
-        if (auto v = scscf["auth_mode"])    config.scscf.auth_mode = v.as<std::string>();
+        if (auto v = scscf["listen_addr"])      config.scscf.listen_addr = v.as<std::string>();
+        if (auto v = scscf["listen_port"])      config.scscf.listen_port = v.as<uint16_t>();
+        if (auto v = scscf["advertised_addr"])  config.scscf.advertised_addr = v.as<std::string>();
+        if (auto v = scscf["domain"])           config.scscf.domain = v.as<std::string>();
+        if (auto v = scscf["auth_mode"])        config.scscf.auth_mode = v.as<std::string>();
         if (auto v = scscf["registration_cleanup_interval_ms"]) {
             config.scscf.registration_cleanup_interval_ms = v.as<uint32_t>();
         }

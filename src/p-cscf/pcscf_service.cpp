@@ -1,9 +1,45 @@
 #include "pcscf_service.hpp"
 #include "common/logger.hpp"
 
+#include <algorithm>
+#include <cctype>
 #include <format>
+#include <random>
+#include <sstream>
+#include <osipparser2/osip_message.h>
+#include <osipparser2/osip_parser.h>
 
 namespace ims::pcscf {
+
+namespace {
+
+auto to_lower(std::string value) -> std::string {
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    return value;
+}
+
+auto resolve_proxy_advertised_address(const ims::PcscfConfig& config) -> std::string {
+    if (!config.advertised_addr.empty()) {
+        return config.advertised_addr;
+    }
+    if (!config.listen_addr.empty() && config.listen_addr != "0.0.0.0") {
+        return config.listen_addr;
+    }
+    return "127.0.0.1";
+}
+
+auto random_hex(int length) -> std::string {
+    static thread_local std::mt19937 rng{std::random_device{}()};
+    std::uniform_int_distribution<int> dist(0, 15);
+    std::ostringstream oss;
+    for (int i = 0; i < length; ++i) {
+        oss << std::hex << dist(rng);
+    }
+    return oss.str();
+}
+
+} // namespace
 
 PcscfService::PcscfService(const ims::PcscfConfig& config,
                            boost::asio::io_context& io,
@@ -14,11 +50,12 @@ PcscfService::PcscfService(const ims::PcscfConfig& config,
     : config_(config)
     , sip_stack_(std::make_unique<ims::sip::SipStack>(
           io, config.listen_addr, config.listen_port))
-    , proxy_(config.listen_addr, config.listen_port)
+    , proxy_(resolve_proxy_advertised_address(config), config.listen_port)
     , pcf_(std::move(pcf))
     , rtpengine_(std::move(rtpengine))
     , icscf_addr_(icscf_addr)
     , icscf_port_(icscf_port)
+    , proxy_public_addr_(resolve_proxy_advertised_address(config))
 {
 }
 
@@ -55,6 +92,11 @@ void PcscfService::onInvite(std::shared_ptr<ims::sip::ServerTransaction> txn,
                               ims::sip::SipMessage& request)
 {
     IMS_LOG_DEBUG("P-CSCF received INVITE");
+
+    if (isCoreFacingRequest(*txn)) {
+        forwardStatefulToUe(std::move(txn), request, true);
+        return;
+    }
 
     auto call_id = request.callId();
     auto from_tag = request.fromTag();
@@ -95,6 +137,11 @@ void PcscfService::onBye(std::shared_ptr<ims::sip::ServerTransaction> txn,
     auto call_id = request.callId();
     IMS_LOG_DEBUG("P-CSCF received BYE for call={}", call_id);
 
+    if (isCoreFacingRequest(*txn)) {
+        forwardStatefulToUe(std::move(txn), request);
+        return;
+    }
+
     // Clean up rtpengine session
     auto session_state = media_sessions_.getSession(call_id);
     if (session_state && rtpengine_) {
@@ -116,11 +163,15 @@ void PcscfService::onBye(std::shared_ptr<ims::sip::ServerTransaction> txn,
     forwardStatefulToIcscf(std::move(txn), request);
 }
 
-void PcscfService::onAck(std::shared_ptr<ims::sip::ServerTransaction> /*txn*/,
+void PcscfService::onAck(std::shared_ptr<ims::sip::ServerTransaction> txn,
                           ims::sip::SipMessage& request)
 {
     IMS_LOG_DEBUG("P-CSCF received ACK for call={}", request.callId());
     // ACK has no response; forward statelessly.
+    if (isCoreFacingRequest(*txn)) {
+        forwardStatelessToUe(request);
+        return;
+    }
     forwardStatelessToIcscf(request);
 }
 
@@ -129,6 +180,11 @@ void PcscfService::onCancel(std::shared_ptr<ims::sip::ServerTransaction> txn,
 {
     auto call_id = request.callId();
     IMS_LOG_DEBUG("P-CSCF received CANCEL for call={}", call_id);
+
+    if (isCoreFacingRequest(*txn)) {
+        forwardStatefulToUe(std::move(txn), request);
+        return;
+    }
 
     // Clean up media session
     auto session_state = media_sessions_.getSession(call_id);
@@ -144,6 +200,10 @@ void PcscfService::onPrack(std::shared_ptr<ims::sip::ServerTransaction> txn,
                             ims::sip::SipMessage& request)
 {
     IMS_LOG_DEBUG("P-CSCF received PRACK for call={}", request.callId());
+    if (isCoreFacingRequest(*txn)) {
+        forwardStatefulToUe(std::move(txn), request);
+        return;
+    }
     forwardStatefulToIcscf(std::move(txn), request);
 }
 
@@ -151,6 +211,10 @@ void PcscfService::onSubscribe(std::shared_ptr<ims::sip::ServerTransaction> txn,
                                 ims::sip::SipMessage& request)
 {
     IMS_LOG_DEBUG("P-CSCF received SUBSCRIBE for {}", request.requestUri());
+    if (isCoreFacingRequest(*txn)) {
+        forwardStatefulToUe(std::move(txn), request, true);
+        return;
+    }
     forwardStatefulToIcscf(std::move(txn), request, true);
 }
 
@@ -161,6 +225,8 @@ void PcscfService::onInviteResponse(ims::sip::SipMessage& response) {
     if (response.cseqMethod() != "INVITE") {
         return;
     }
+
+    sanitizeForUeEgress(response);
 
     const int status = response.statusCode();
     if (status != 183 && (status < 200 || status >= 300)) {
@@ -207,16 +273,113 @@ void PcscfService::onInviteResponse(ims::sip::SipMessage& response) {
     IMS_LOG_WARN("rtpengine answer returned empty SDP for call={}, keeping original SDP", call_id);
 }
 
+auto PcscfService::isCoreFacingRequest(const ims::sip::ServerTransaction& txn) const -> bool {
+    auto source = txn.source();
+    return to_lower(source.address) == to_lower(icscf_addr_) && source.port == icscf_port_;
+}
+
+auto PcscfService::resolveUeDestination(const ims::sip::SipMessage& request) const
+    -> std::optional<ims::sip::Endpoint> {
+    osip_via_t* bottom_via = nullptr;
+    auto idx = request.viaCount() - 1;
+    if (idx < 0 || osip_message_get_via(request.raw(), idx, &bottom_via) != 0 || !bottom_via || !bottom_via->host) {
+        return std::nullopt;
+    }
+
+    ims::Port port = 5060;
+    osip_generic_param_t* rport = nullptr;
+    osip_via_param_get_byname(bottom_via, const_cast<char*>("rport"), &rport);
+    if (rport && rport->gvalue && std::string(rport->gvalue) != "") {
+        port = static_cast<ims::Port>(std::atoi(rport->gvalue));
+    } else if (bottom_via->port) {
+        port = static_cast<ims::Port>(std::atoi(bottom_via->port));
+    }
+
+    std::string transport = "udp";
+    if (bottom_via->protocol) {
+        auto protocol = to_lower(bottom_via->protocol);
+        if (protocol == "tcp") {
+            transport = "tcp";
+        }
+    }
+
+    return ims::sip::Endpoint{
+        .address = bottom_via->host,
+        .port = port,
+        .transport = transport,
+    };
+}
+
+auto PcscfService::resolveCoreDestination(const ims::sip::SipMessage& request) const -> ims::sip::Endpoint {
+    if (auto token = extractTopologyToken(request)) {
+        std::lock_guard<std::mutex> lock(topology_mutex_);
+        auto it = topology_routes_.find(*token);
+        if (it != topology_routes_.end()) {
+            return it->second;
+        }
+    }
+    return ims::sip::Endpoint{
+        .address = icscf_addr_,
+        .port = icscf_port_,
+        .transport = "udp",
+    };
+}
+
+auto PcscfService::extractTopologyToken(const ims::sip::SipMessage& request) const -> std::optional<std::string> {
+    auto routes = request.routes();
+    if (routes.empty()) {
+        return std::nullopt;
+    }
+
+    const auto& top = routes.front();
+    auto key_pos = top.find("th=");
+    if (key_pos == std::string::npos) {
+        return std::nullopt;
+    }
+
+    key_pos += 3;
+    auto end_pos = top.find_first_of(";>", key_pos);
+    if (end_pos == std::string::npos) {
+        end_pos = top.size();
+    }
+    if (end_pos <= key_pos) {
+        return std::nullopt;
+    }
+
+    return top.substr(key_pos, end_pos - key_pos);
+}
+
+auto PcscfService::createTopologyToken() -> std::string {
+    return "th" + random_hex(20);
+}
+
+void PcscfService::rememberTopologyRoute(const std::string& token, const ims::sip::Endpoint& endpoint) {
+    std::lock_guard<std::mutex> lock(topology_mutex_);
+    topology_routes_[token] = endpoint;
+}
+
+void PcscfService::addTopologyRecordRoute(ims::sip::SipMessage& request, const std::string& token) const {
+    request.removeHeader("Record-Route");
+    auto rr = std::format("<sip:{}:{};lr;th={}>", proxy_public_addr_, config_.listen_port, token);
+    request.addRecordRoute(rr);
+}
+
+void PcscfService::sanitizeForUeEgress(ims::sip::SipMessage& request) {
+    auto via_count = request.viaCount();
+    while (via_count > 1) {
+        request.removeTopVia();
+        via_count = request.viaCount();
+    }
+
+    request.removeHeader("Route");
+}
+
 void PcscfService::forwardStatefulToIcscf(std::shared_ptr<ims::sip::ServerTransaction> txn,
                                           ims::sip::SipMessage& request,
                                           bool add_record_route,
                                           bool process_invite_response_media)
 {
-    ims::sip::Endpoint dest{
-        .address = icscf_addr_,
-        .port = icscf_port_,
-        .transport = "udp"
-    };
+    auto dest = resolveCoreDestination(request);
 
     ims::sip::ForwardOptions options{
         .add_record_route = add_record_route,
@@ -233,6 +396,39 @@ void PcscfService::forwardStatefulToIcscf(std::shared_ptr<ims::sip::ServerTransa
     }
 }
 
+void PcscfService::forwardStatefulToUe(std::shared_ptr<ims::sip::ServerTransaction> txn,
+                                       ims::sip::SipMessage& request,
+                                       bool add_record_route) {
+    auto ue = resolveUeDestination(request);
+    if (!ue) {
+        IMS_LOG_WARN("Failed to resolve UE destination from Via chain");
+        auto resp = ims::sip::createResponse(request, 500, "Internal Server Error");
+        if (resp) {
+            txn->sendResponse(std::move(*resp));
+        }
+        return;
+    }
+
+    auto token = createTopologyToken();
+    rememberTopologyRoute(token, resolveCoreDestination(request));
+
+    sanitizeForUeEgress(request);
+    if (add_record_route) {
+        addTopologyRecordRoute(request, token);
+    }
+
+    ims::sip::ForwardOptions options{
+        .add_record_route = false,
+        .process_route_headers = false,
+        .detect_loop = false,
+    };
+
+    auto result = proxy_.forwardStateful(request, *ue, txn, *sip_stack_, options);
+    if (!result) {
+        IMS_LOG_ERROR("Failed to send request to UE: {}", result.error().message);
+    }
+}
+
 void PcscfService::forwardStatelessToIcscf(ims::sip::SipMessage& request,
                                            bool add_record_route)
 {
@@ -246,15 +442,33 @@ void PcscfService::forwardStatelessToIcscf(ims::sip::SipMessage& request,
         proxy_.addRecordRoute(request);
     }
 
-    ims::sip::Endpoint dest{
-        .address = icscf_addr_,
-        .port = icscf_port_,
-        .transport = "udp"
-    };
+    auto dest = resolveCoreDestination(request);
 
     auto result = proxy_.forwardRequest(request, dest, sip_stack_->transport());
     if (!result) {
         IMS_LOG_ERROR("Failed to forward stateless request: {}", result.error().message);
+    }
+}
+
+void PcscfService::forwardStatelessToUe(ims::sip::SipMessage& request,
+                                        bool add_record_route) {
+    auto ue = resolveUeDestination(request);
+    if (!ue) {
+        IMS_LOG_WARN("Failed to resolve UE destination from Via chain");
+        return;
+    }
+
+    auto token = createTopologyToken();
+    rememberTopologyRoute(token, resolveCoreDestination(request));
+
+    sanitizeForUeEgress(request);
+    if (add_record_route) {
+        addTopologyRecordRoute(request, token);
+    }
+
+    auto result = proxy_.forwardRequest(request, *ue, sip_stack_->transport());
+    if (!result) {
+        IMS_LOG_ERROR("Failed to forward stateless request to UE: {}", result.error().message);
     }
 }
 

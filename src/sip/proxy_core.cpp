@@ -1,5 +1,6 @@
 #include "proxy_core.hpp"
 #include "stack.hpp"
+#include "uri_utils.hpp"
 #include "common/logger.hpp"
 #include <osipparser2/osip_parser.h>
 
@@ -192,6 +193,10 @@ auto ProxyCore::forwardStateful(SipMessage& request,
 }
 
 auto ProxyCore::buildPathHeader() const -> std::string {
+    if (local_address_.empty() || local_address_ == "0.0.0.0") {
+        IMS_LOG_WARN("Skip Path header: invalid proxy address {}", local_address_);
+        return {};
+    }
     return std::format("<sip:{}:{};lr>", local_address_, local_port_);
 }
 
@@ -229,10 +234,18 @@ auto ProxyCore::buildForwardedCancel(const SipMessage& incoming_cancel,
 }
 
 void ProxyCore::addPathHeader(SipMessage& msg) {
-    msg.addHeader("Path", buildPathHeader());
+    auto path = buildPathHeader();
+    if (path.empty()) {
+        return;
+    }
+    msg.addHeader("Path", path);
 }
 
 void ProxyCore::addRecordRoute(SipMessage& msg) {
+    if (local_address_.empty() || local_address_ == "0.0.0.0") {
+        IMS_LOG_WARN("Skip Record-Route: invalid proxy address {}", local_address_);
+        return;
+    }
     auto rr = std::format("<sip:{}:{};lr>", local_address_, local_port_);
     msg.addRecordRoute(rr);
     IMS_LOG_DEBUG("Added Record-Route: {}", rr);
@@ -242,13 +255,16 @@ bool ProxyCore::processRouteHeaders(SipMessage& msg) {
     auto route_list = msg.routes();
     if (route_list.empty()) return false;
 
-    // Check if the top Route matches our address
     const auto& top_route = route_list[0];
-    auto our_uri = std::format("sip:{}:{}", local_address_, local_port_);
+    Endpoint local_endpoint{
+        .address = local_address_,
+        .port = local_port_,
+        .transport = "udp",
+    };
 
-    if (top_route.find(our_uri) != std::string::npos) {
+    if (route_points_to_endpoint(top_route, local_endpoint)) {
         msg.removeTopRoute();
-        IMS_LOG_DEBUG("Removed top Route matching our address");
+        IMS_LOG_DEBUG("Removed top Route matching our endpoint");
         return true;
     }
 
