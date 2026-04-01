@@ -39,6 +39,12 @@ target_link_libraries(test_bencode PRIVATE ims_rtp GTest::gtest_main)
 ims_configure_test_target(test_bencode)
 gtest_discover_tests(test_bencode)
 
+# Milenage test
+add_executable(test_milenage test_milenage.cpp)
+target_link_libraries(test_milenage PRIVATE ims_crypt ims_common GTest::gtest_main)
+ims_configure_test_target(test_milenage)
+gtest_discover_tests(test_milenage)
+
 # Config test
 add_executable(test_config test_config.cpp)
 target_link_libraries(test_config PRIVATE ims_common GTest::gtest_main)

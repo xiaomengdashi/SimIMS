@@ -254,9 +254,6 @@ void Registrar::sendRegisterOk(ims::sip::SipMessage& request,
     resp->addHeader("Date", formatGmtDate());
     addSecurityAgreementHeaders(request, *resp, true);
 
-    auto service_route = std::format("<sip:scscf.{};lr>", domain_);
-    resp->addHeader("Service-Route", service_route);
-
     if (!associated_impus.empty()) {
         for (const auto& associated : associated_impus) {
             resp->addHeader("P-Associated-URI", std::format("<{}>", associated));

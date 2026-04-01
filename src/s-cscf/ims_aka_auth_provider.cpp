@@ -36,7 +36,9 @@ auto ImsAkaAuthProvider::canHandleAuthorization(const ims::sip::SipMessage& requ
         return false;
     }
 
-    return params->algorithm.empty() || params->algorithm == "AKAv1-MD5";
+    return params->algorithm.empty()
+        || params->algorithm == "AKAv1-MD5"
+        || params->algorithm == "Digest-AKAv1-MD5";
 }
 
 auto ImsAkaAuthProvider::createChallenge(const ims::sip::SipMessage& request) -> Result<AuthChallenge> {

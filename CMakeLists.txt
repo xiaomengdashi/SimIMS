@@ -20,6 +20,7 @@ if(NOT TARGET yaml-cpp::yaml-cpp AND TARGET yaml-cpp)
     add_library(yaml-cpp::yaml-cpp ALIAS yaml-cpp)
 endif()
 find_package(GTest REQUIRED)
+find_package(OpenSSL REQUIRED)
 
 # pkg-config based dependencies
 find_package(PkgConfig REQUIRED)
@@ -53,6 +54,7 @@ endif()
 
 # Add subdirectories
 add_subdirectory(src/common)
+add_subdirectory(src/crypt)
 add_subdirectory(src/sip)
 add_subdirectory(src/dns)
 add_subdirectory(src/diameter)

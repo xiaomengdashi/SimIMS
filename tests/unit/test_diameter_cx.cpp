@@ -1,6 +1,7 @@
 #include "diameter/ihss_client.hpp"
 #include "diameter/types.hpp"
 #include "diameter/cx_client.hpp"
+#include "diameter/aka_vector_builder.hpp"
 #include "common/config.hpp"
 #include "../mocks/mock_hss_client.hpp"
 #include <gtest/gtest.h>
@@ -136,6 +137,9 @@ TEST(StubHssClientTest, LoadsSubscriberAndReturnsAliasProfiles) {
             .tel = "+8613824122023",
             .password = "testpass-a",
             .realm = "ims.operator.com",
+            .k = "465b5ce8b199b49faa5f0a2ee238a6bc",
+            .opc = "cd63cb71954a9f4e48a5994e37a02baf",
+            .sqn = "000000000001",
         },
     };
 
@@ -149,7 +153,11 @@ TEST(StubHssClientTest, LoadsSubscriberAndReturnsAliasProfiles) {
     });
     ASSERT_TRUE(mar.has_value()) << mar.error().message;
     EXPECT_EQ(mar->sip_auth_scheme, "Digest-AKAv1-MD5");
-    EXPECT_EQ(std::string(mar->auth_vector.xres.begin(), mar->auth_vector.xres.end()), "testpass-a");
+    EXPECT_EQ(mar->auth_vector.rand.size(), 16u);
+    EXPECT_EQ(mar->auth_vector.autn.size(), 16u);
+    EXPECT_EQ(mar->auth_vector.xres.size(), 8u);
+    EXPECT_EQ(mar->auth_vector.ck.size(), 16u);
+    EXPECT_EQ(mar->auth_vector.ik.size(), 16u);
 
     auto sar = hss.serverAssignment({
         .impi = "460112024122023@ims.operator.com",
@@ -182,6 +190,9 @@ TEST(StubHssClientTest, PreservesRequestedSipAuthSchemeInMarResponse) {
             .tel = "+8613824122023",
             .password = "testpass-a",
             .realm = "ims.operator.com",
+            .k = "465b5ce8b199b49faa5f0a2ee238a6bc",
+            .opc = "cd63cb71954a9f4e48a5994e37a02baf",
+            .sqn = "000000000001",
         },
     };
 
@@ -195,4 +206,71 @@ TEST(StubHssClientTest, PreservesRequestedSipAuthSchemeInMarResponse) {
     });
     ASSERT_TRUE(mar.has_value()) << mar.error().message;
     EXPECT_EQ(mar->sip_auth_scheme, "Digest-AKAv1-MD5");
+}
+
+TEST(AkaVectorBuilderTest, RejectsMissingAkaMaterial) {
+    HssSubscriberConfig subscriber{
+        .imsi = "460112024122023",
+        .tel = "+8613824122023",
+        .realm = "ims.operator.com",
+    };
+    std::mt19937 rng{42};
+
+    auto result = build_aka_auth_vector(subscriber, rng);
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().code, ErrorCode::kConfigInvalidValue);
+}
+
+TEST(AkaVectorBuilderTest, BuildsVectorWhenOperatorCodeTypeIsOpc) {
+    HssSubscriberConfig subscriber{
+        .imsi = "460112024122023",
+        .tel = "+8613824122023",
+        .realm = "ims.operator.com",
+        .k = "465b5ce8b199b49faa5f0a2ee238a6bc",
+        .operator_code_type = "opc",
+        .opc = "cd63cb71954a9f4e48a5994e37a02baf",
+        .sqn = "000000000001",
+    };
+    std::mt19937 rng{42};
+
+    auto result = build_aka_auth_vector(subscriber, rng);
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+    EXPECT_EQ(result->rand.size(), 16u);
+    EXPECT_EQ(result->autn.size(), 16u);
+    EXPECT_EQ(result->xres.size(), 8u);
+}
+
+TEST(AkaVectorBuilderTest, BuildsVectorWhenOperatorCodeTypeIsOp) {
+    HssSubscriberConfig subscriber{
+        .imsi = "460112024122024",
+        .tel = "+8613824122024",
+        .realm = "ims.operator.com",
+        .k = "465b5ce8b199b49faa5f0a2ee238a6bc",
+        .operator_code_type = "op",
+        .op = "cdc202d5123e20f62b6d676ac72cb318",
+        .sqn = "000000000002",
+    };
+    std::mt19937 rng{42};
+
+    auto result = build_aka_auth_vector(subscriber, rng);
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+    EXPECT_EQ(result->rand.size(), 16u);
+    EXPECT_EQ(result->autn.size(), 16u);
+    EXPECT_EQ(result->xres.size(), 8u);
+}
+
+TEST(AkaVectorBuilderTest, RejectsMissingOpcForExplicitOpcType) {
+    HssSubscriberConfig subscriber{
+        .imsi = "460112024122023",
+        .tel = "+8613824122023",
+        .realm = "ims.operator.com",
+        .k = "465b5ce8b199b49faa5f0a2ee238a6bc",
+        .operator_code_type = "opc",
+        .sqn = "000000000001",
+    };
+    std::mt19937 rng{42};
+
+    auto result = build_aka_auth_vector(subscriber, rng);
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().code, ErrorCode::kConfigInvalidValue);
 }

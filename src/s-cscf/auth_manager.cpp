@@ -150,13 +150,16 @@ auto AuthManager::verifyResponse(const std::string& auth_header,
     if (scheme == "Digest-MD5") {
         expected_nonce = base64Encode(av.rand);
         secret.assign(av.xres.begin(), av.xres.end());
-    } else {
+    } else if (scheme == "AKAv1-MD5" || scheme == "Digest-AKAv1-MD5") {
         std::vector<uint8_t> nonce_data;
         nonce_data.reserve(av.rand.size() + av.autn.size());
         nonce_data.insert(nonce_data.end(), av.rand.begin(), av.rand.end());
         nonce_data.insert(nonce_data.end(), av.autn.begin(), av.autn.end());
         expected_nonce = base64Encode(nonce_data);
-        secret = bytesToHex(av.xres);
+        secret.assign(av.xres.begin(), av.xres.end());
+    } else {
+        IMS_LOG_WARN("Unsupported auth scheme: {}", scheme);
+        return false;
     }
 
     if (params.nonce != expected_nonce) {

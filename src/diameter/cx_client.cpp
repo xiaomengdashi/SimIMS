@@ -1,4 +1,5 @@
 #include "cx_client.hpp"
+#include "aka_vector_builder.hpp"
 #include "common/logger.hpp"
 #include "sip/uri_utils.hpp"
 
@@ -82,25 +83,16 @@ auto StubHssClient::multimediaAuth(const MarParams& params) -> Result<MaaResult>
     }
 
     static thread_local std::mt19937 rng{42};
-    std::uniform_int_distribution<uint8_t> dist(0, 255);
 
-    AuthVector av;
-    av.rand.resize(16);
-    av.autn.resize(16);
-    av.ck.resize(16);
-    av.ik.resize(16);
-
-    for (auto& b : av.rand) b = dist(rng);
-    for (auto& b : av.autn) b = dist(rng);
-    for (auto& b : av.ck) b = dist(rng);
-    for (auto& b : av.ik) b = dist(rng);
-
-    av.xres.assign(subscriber->config.password.begin(), subscriber->config.password.end());
+    auto av = build_aka_auth_vector(subscriber->config, rng);
+    if (!av) {
+        return std::unexpected(av.error());
+    }
 
     return MaaResult{
         .result_code = kDiameterSuccess,
         .sip_auth_scheme = params.sip_auth_scheme,
-        .auth_vector = std::move(av),
+        .auth_vector = std::move(*av),
     };
 }
 

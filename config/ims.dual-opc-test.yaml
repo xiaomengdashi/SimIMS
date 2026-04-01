@@ -1,8 +1,7 @@
-# IMS (IP Multimedia Subsystem) Configuration
-# This is a template configuration file. Adjust values for your deployment.
+# Temporary dual-OPc test config for SimVonrCli registration/call validation
 
 global:
-  log_level: debug         # trace, debug, info, warn, error, critical
+  log_level: debug
   node_name: ims-node-01
 
 pcscf:
@@ -26,7 +25,7 @@ scscf:
   listen_addr: 0.0.0.0
   listen_port: 5062
   advertised_addr: 192.168.31.40
-  auth_mode: ims_only      # ims_only=仅IMS AKA, digest_only=仅普通SIP Digest, hybrid_fallback=优先IMS失败后回退Digest
+  auth_mode: ims_only
   registration_cleanup_interval_ms: 30000
   hss:
     host: 127.0.0.1
@@ -42,20 +41,12 @@ scscf:
     event_poll_ms: 100
 
 hss_adapter:
-  type: diameter            # diameter or http2
+  type: diameter
   diameter_host: hss.ims.mnc011.mcc460.3gppnetwork.org
   diameter_port: 3868
   diameter_realm: ims.mnc011.mcc460.3gppnetwork.org
   nudm_url: http://127.0.0.1:8080/nudm-uecm/v1
   subscribers:
-    # 这些订户既可供 Stub HSS 的 IMS AKA 鉴权使用，也可在 digest_only/hybrid_fallback 模式下
-    # 作为普通 SIP 客户端的本地用户名/密码来源。
-    # AKA 需要额外配置 k + operator_code_type(opc/op) + 对应的 opc/op + sqn，amf 默认 8000。
-    # Digest 用户名可使用:
-    # - 460112024122023@ims.mnc011.mcc460.3gppnetwork.org
-    # - 460112024122023
-    # - +8613824122023
-    # - +8613824122023@ims.mnc011.mcc460.3gppnetwork.org
     - imsi: "460112024122023"
       tel: "+8613824122023"
       password: "testpass"
@@ -70,8 +61,8 @@ hss_adapter:
       password: "testpass"
       realm: "ims.mnc011.mcc460.3gppnetwork.org"
       k: "465b5ce8b199b49faa5f0a2ee238a6bc"
-      operator_code_type: "op"
-      op: "cdc202d5123e20f62b6d676ac72cb318"
+      operator_code_type: "opc"
+      opc: "cd63cb71954a9f4e48a5994e37a02baf"
       sqn: "000000000002"
       amf: "8000"
 
@@ -83,4 +74,4 @@ dns:
   servers:
     - 127.0.0.1
     - 8.8.8.8
-  timeout_ms: 3000         # milliseconds
+  timeout_ms: 3000

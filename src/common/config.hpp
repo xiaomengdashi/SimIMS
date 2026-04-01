@@ -66,6 +66,12 @@ struct HssSubscriberConfig {
     std::string tel;
     std::string password;
     std::string realm;
+    std::string k;
+    std::string operator_code_type;
+    std::string opc;
+    std::string op;
+    std::string sqn;
+    std::string amf = "8000";
 };
 
 struct HssAdapterConfig {

@@ -95,6 +95,35 @@ Result<ImsConfig> load_config(const std::string& path) {
                 if (auto v = item["tel"])       subscriber.tel = v.as<std::string>();
                 if (auto v = item["password"])  subscriber.password = v.as<std::string>();
                 if (auto v = item["realm"])     subscriber.realm = v.as<std::string>();
+                if (auto v = item["k"])                   subscriber.k = v.as<std::string>();
+                if (auto v = item["operator_code_type"])  subscriber.operator_code_type = v.as<std::string>();
+                if (auto v = item["opc"])                 subscriber.opc = v.as<std::string>();
+                if (auto v = item["op"])                  subscriber.op = v.as<std::string>();
+                if (auto v = item["sqn"])                 subscriber.sqn = v.as<std::string>();
+                if (auto v = item["amf"])                 subscriber.amf = v.as<std::string>();
+                if (subscriber.operator_code_type == "opc" && subscriber.opc.empty()) {
+                    return std::unexpected(ErrorInfo{
+                        ErrorCode::kConfigInvalidValue,
+                        "missing opc for operator_code_type=opc",
+                        subscriber.imsi
+                    });
+                }
+                if (subscriber.operator_code_type == "op" && subscriber.op.empty()) {
+                    return std::unexpected(ErrorInfo{
+                        ErrorCode::kConfigInvalidValue,
+                        "missing op for operator_code_type=op",
+                        subscriber.imsi
+                    });
+                }
+                if (!subscriber.operator_code_type.empty() &&
+                    subscriber.operator_code_type != "opc" &&
+                    subscriber.operator_code_type != "op") {
+                    return std::unexpected(ErrorInfo{
+                        ErrorCode::kConfigInvalidValue,
+                        "invalid operator_code_type",
+                        subscriber.operator_code_type
+                    });
+                }
                 config.hss_adapter.subscribers.push_back(std::move(subscriber));
             }
         }
