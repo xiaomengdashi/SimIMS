@@ -1,5 +1,6 @@
 add_library(ims_crypt
     milenage.cpp
+    milenage_adapter.cpp
 )
 
 target_include_directories(ims_crypt PUBLIC
@@ -8,5 +9,4 @@ target_include_directories(ims_crypt PUBLIC
 
 target_link_libraries(ims_crypt PUBLIC
     ims_common
-    OpenSSL::Crypto
 )

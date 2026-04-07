@@ -1,6 +1,6 @@
 #include "diameter/aka_vector_builder.hpp"
 
-#include "crypt/milenage.hpp"
+#include "crypt/milenage_adapter.hpp"
 
 #include <algorithm>
 #include <array>
