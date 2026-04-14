@@ -10,7 +10,7 @@
 
 
 "Echo Server" <sip:echo@creytiv.com>
-"kolane" <sip:kolane@.>;presence=p2p
+"ubuntu" <sip:ubuntu@.>;presence=p2p
 
 # Access rules
 #"Catch All" <sip:*@*>;access=block

@@ -1,0 +1,26 @@
+version: "3.8"
+
+services:
+  rtpengine:
+    image: docker_rtpengine:latest
+    container_name: rtpengine
+    restart: unless-stopped
+    network_mode: host
+    # Kernel forwarding: TABLE=0 (use kernel module, requires xt_RTPENGINE loaded)
+    #                   TABLE=-1 (disable kernel forwarding, use userspace only)
+    # 如果内核模块未加载，建议设置 TABLE=-1 避免错误日志
+    command: >
+      /usr/sbin/rtpengine
+      --interface=${RTPENGINE_PUBLIC_IP}
+      --listen-ng=${RTPENGINE_PUBLIC_IP}:${RTPENGINE_NG_PORT}
+      --table=${RTPENGINE_TABLE}
+      -f
+    environment:
+      - RTPENGINE_PUBLIC_IP=${RTPENGINE_PUBLIC_IP}
+      - RTPENGINE_TABLE=${RTPENGINE_TABLE}
+      - RTPENGINE_NG_PORT=${RTPENGINE_NG_PORT}
+    healthcheck:
+      test: ["CMD", "sh", "-c", "ss -ltn | grep ${RTPENGINE_NG_PORT}"]
+      interval: 10s
+      timeout: 5s
+      retries: 3

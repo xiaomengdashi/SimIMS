@@ -56,28 +56,21 @@ hss_adapter:
     # - 460112024122023
     # - +8613824122023
     # - +8613824122023@ims.mnc011.mcc460.3gppnetwork.org
-    - imsi: "460112024122023"
-      tel: "+8613824122023"
-      password: "testpass"
+    # KI 和 OPC 是 IMS AKA 鉴权所需的 16 字节十六进制密钥
+    - imsi: "460112292600007"
+      tel: "+8613822600007"
       realm: "ims.mnc011.mcc460.3gppnetwork.org"
-      k: "465b5ce8b199b49faa5f0a2ee238a6bc"
-      operator_code_type: "opc"
-      opc: "cd63cb71954a9f4e48a5994e37a02baf"
-      sqn: "000000000001"
-      amf: "8000"
-    - imsi: "460112024122024"
-      tel: "+8613824122024"
-      password: "testpass"
+      ki: "11111111111111111111111111111111"
+      opc: "11111111111111111111111111111111"
+    - imsi: "460112292600008"
+      tel: "+8613822600008"
       realm: "ims.mnc011.mcc460.3gppnetwork.org"
-      k: "465b5ce8b199b49faa5f0a2ee238a6bc"
-      operator_code_type: "op"
-      op: "cdc202d5123e20f62b6d676ac72cb318"
-      sqn: "000000000002"
-      amf: "8000"
+      ki: "11111111111111111111111111111111"
+      opc: "11111111111111111111111111111111"
 
 media:
-  rtpengine_host: 127.0.0.1
-  rtpengine_port: 22222
+  rtpengine_host: 192.168.31.40
+  rtpengine_port: 2223 
 
 dns:
   servers:
