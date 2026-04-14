@@ -4,6 +4,7 @@
 #include "sip/transaction.hpp"
 #include "sip/transport.hpp"
 
+#include <chrono>
 #include <expected>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
@@ -28,6 +29,12 @@ public:
                          std::shared_ptr<ims::sip::ServerTransaction> txn,
                          ims::sip::SipMessage& request) {
         service.onInvite(std::move(txn), request);
+    }
+
+    static void onPrack(ScscfService& service,
+                        std::shared_ptr<ims::sip::ServerTransaction> txn,
+                        ims::sip::SipMessage& request) {
+        service.onPrack(std::move(txn), request);
     }
 
     static void scheduleRegistrationCleanup(ScscfService& service) {
@@ -260,6 +267,33 @@ TEST_F(ScscfServiceTest, SendInitialNotifySkipsWhenContactMissing) {
     ims::scscf::ScscfServiceTestPeer::sendInitialNotify(*service, *parsed, "generated-to-tag");
 
     EXPECT_TRUE(notifier_ptr->contexts.empty());
+}
+
+TEST_F(ScscfServiceTest, OnPrackReturns481WhenNoSessionExists) {
+    auto prack = ims::sip::createRequest("PRACK", "sip:user@ims.example.com");
+    ASSERT_TRUE(prack.has_value()) << prack.error().message;
+
+    prack->setFromHeader("<sip:caller@ims.example.com>;tag=caller-tag");
+    prack->setToHeader("<sip:user@ims.example.com>;tag=callee-tag");
+    prack->setCallId("prack-call-id");
+    prack->setCSeq(2, "PRACK");
+    prack->addVia("SIP/2.0/UDP 127.0.0.1:5090;branch=z9hG4bK-prack-1");
+    prack->addHeader("RAck", "1 1 INVITE");
+
+    auto prack_for_txn = prack->clone();
+    ASSERT_TRUE(prack_for_txn.has_value()) << prack_for_txn.error().message;
+
+    auto transport = std::make_shared<CapturingTransport>();
+    ims::sip::Endpoint source{.address = "127.0.0.1", .port = 5090, .transport = "udp"};
+    auto txn = std::make_shared<ims::sip::ServerTransaction>(std::move(*prack_for_txn), transport, source, io);
+
+    ims::scscf::ScscfServiceTestPeer::onPrack(*service, txn, *prack);
+
+    ASSERT_EQ(transport->sent_messages.size(), 1u);
+    const auto& response = transport->sent_messages.front();
+    EXPECT_TRUE(response.isResponse());
+    EXPECT_EQ(response.statusCode(), 481);
+    EXPECT_EQ(response.reasonPhrase(), "Call/Transaction Does Not Exist");
 }
 
 TEST_F(ScscfServiceTest, StartSchedulesPeriodicRegistrationCleanup) {

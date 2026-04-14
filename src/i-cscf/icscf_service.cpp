@@ -82,6 +82,19 @@ auto IcscfService::start() -> VoidResult {
             IMS_LOG_ERROR("Failed to forward CANCEL statefully: {}", result.error().message);
         }
     });
+    sip_stack_->onRequest("PRACK", [this](auto txn, auto& req) {
+        IMS_LOG_DEBUG("I-CSCF received PRACK");
+        proxy_.processRouteHeaders(req);
+        ims::sip::Endpoint dest{
+            .address = "127.0.0.1",
+            .port = 5062,
+            .transport = "udp"
+        };
+        auto result = proxy_.forwardStateful(req, dest, txn, *sip_stack_);
+        if (!result) {
+            IMS_LOG_ERROR("Failed to forward PRACK statefully: {}", result.error().message);
+        }
+    });
     sip_stack_->onRequest("SUBSCRIBE", [this](auto txn, auto& req) {
         onSubscribe(txn, req);
     });

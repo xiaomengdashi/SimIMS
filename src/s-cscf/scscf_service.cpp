@@ -112,6 +112,9 @@ auto ScscfService::start() -> VoidResult {
     sip_stack_->onRequest("CANCEL", [this](auto txn, auto& req) {
         onCancel(txn, req);
     });
+    sip_stack_->onRequest("PRACK", [this](auto txn, auto& req) {
+        onPrack(txn, req);
+    });
     sip_stack_->onRequest("SUBSCRIBE", [this](auto txn, auto& req) {
         onSubscribe(txn, req);
     });
@@ -195,6 +198,13 @@ void ScscfService::onCancel(std::shared_ptr<ims::sip::ServerTransaction> txn,
 {
     IMS_LOG_DEBUG("S-CSCF received CANCEL");
     session_router_->handleCancel(request, txn);
+}
+
+void ScscfService::onPrack(std::shared_ptr<ims::sip::ServerTransaction> txn,
+                            ims::sip::SipMessage& request)
+{
+    IMS_LOG_DEBUG("S-CSCF received PRACK");
+    session_router_->handlePrack(request, txn);
 }
 
 void ScscfService::onSubscribe(std::shared_ptr<ims::sip::ServerTransaction> txn,

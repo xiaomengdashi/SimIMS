@@ -260,6 +260,48 @@ TEST_F(ProxyCoreTest, ForwardResponseUpstreamRemovesTopVia) {
     EXPECT_EQ(transport->destinations[0].address, "198.51.100.10");
 }
 
+TEST_F(ProxyCoreTest, ForwardResponseUpstreamHandlesPrack200Ok) {
+    auto response = SipMessage::parse(
+        "SIP/2.0 200 OK\r\n"
+        "Via: SIP/2.0/UDP scscf.example.com:5062;branch=z9hG4bK-scscf\r\n"
+        "Via: SIP/2.0/UDP icscf.example.com:5061;branch=z9hG4bK-icscf\r\n"
+        "To: <sip:callee@ims.example.com>;tag=callee-tag\r\n"
+        "From: <sip:caller@ims.example.com>;tag=caller-tag\r\n"
+        "Call-ID: prack-call-id\r\n"
+        "CSeq: 2 PRACK\r\n"
+        "Content-Length: 0\r\n"
+        "\r\n");
+    ASSERT_TRUE(response.has_value()) << response.error().message;
+
+    auto request = SipMessage::parse(
+        "PRACK sip:callee@ims.example.com SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP icscf.example.com:5061;branch=z9hG4bK-icscf\r\n"
+        "From: <sip:caller@ims.example.com>;tag=caller-tag\r\n"
+        "To: <sip:callee@ims.example.com>;tag=callee-tag\r\n"
+        "Call-ID: prack-call-id\r\n"
+        "CSeq: 2 PRACK\r\n"
+        "RAck: 101 1 INVITE\r\n"
+        "Content-Length: 0\r\n"
+        "\r\n");
+    ASSERT_TRUE(request.has_value()) << request.error().message;
+
+    auto transport = std::make_shared<CapturingTransport>();
+    boost::asio::io_context io;
+    auto txn = std::make_shared<ServerTransaction>(std::move(*request), transport,
+                                                   Endpoint{.address = "198.51.100.10", .port = 5090, .transport = "udp"},
+                                                   io);
+
+    ProxyCore proxy("icscf.example.com", 5061);
+    auto forwarded = proxy.forwardResponseUpstream(*response, txn);
+    ASSERT_TRUE(forwarded.has_value()) << forwarded.error().message;
+    ASSERT_EQ(transport->send_count, 1);
+    ASSERT_EQ(transport->destinations.size(), 1u);
+    EXPECT_EQ(transport->destinations[0].address, "198.51.100.10");
+    EXPECT_EQ(transport->destinations[0].port, 5090);
+    EXPECT_EQ(response->viaCount(), 2);
+    EXPECT_NE(response->topVia().find("scscf.example.com:5062"), std::string::npos);
+}
+
 TEST_F(ProxyCoreTest, ForwardResponseUpstreamPreservesFinalViaForEdgeUac) {
     auto response = SipMessage::parse(
         "SIP/2.0 200 OK\r\n"

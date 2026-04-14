@@ -167,7 +167,7 @@ void SessionRouter::handleInvite(const ims::sip::SipMessage& request,
             {
                 std::lock_guard lock(sessions_mutex_);
                 auto it = sessions_.find(call_id);
-                if (it != sessions_.end() && response.statusCode() >= 200 && response.statusCode() < 300) {
+                if (it != sessions_.end() && !response.toTag().empty()) {
                     it->second.callee_tag = response.toTag();
                 }
             }
@@ -269,6 +269,56 @@ void SessionRouter::handleAck(const ims::sip::SipMessage& request,
     if (!result) {
         IMS_LOG_WARN("Failed to forward ACK for Call-ID={}: {}", call_id, result.error().message);
     }
+}
+
+void SessionRouter::handlePrack(const ims::sip::SipMessage& request,
+                                std::shared_ptr<ims::sip::ServerTransaction> txn) {
+    auto call_id = request.callId();
+    IMS_LOG_INFO("PRACK received, Call-ID={}", call_id);
+
+    auto fwd_prack = request.clone();
+    if (!fwd_prack) {
+        auto resp = ims::sip::createResponse(request, 500, "Server Internal Error");
+        if (resp) txn->sendResponse(std::move(*resp));
+        return;
+    }
+
+    ims::sip::Endpoint dest;
+    {
+        std::lock_guard lock(sessions_mutex_);
+        auto* session = findSessionByCallId(call_id);
+        if (!session) {
+            IMS_LOG_WARN("No session found for PRACK, Call-ID={} from_tag={} to_tag={}", call_id, request.fromTag(), request.toTag());
+            auto resp = ims::sip::createResponse(request, 481, "Call/Transaction Does Not Exist");
+            if (resp) txn->sendResponse(std::move(*resp));
+            return;
+        }
+        auto* resolved = resolveInDialogDestination(request, *session);
+        if (!resolved) {
+            IMS_LOG_WARN("Unable to resolve PRACK destination, Call-ID={} from_tag={} to_tag={}", call_id, request.fromTag(), request.toTag());
+            auto resp = ims::sip::createResponse(request, 481, "Call/Transaction Does Not Exist");
+            if (resp) txn->sendResponse(std::move(*resp));
+            return;
+        }
+        dest = *resolved;
+    }
+
+    proxy_.processRouteHeaders(*fwd_prack);
+    auto prep = proxy_.prepareRequestForForward(*fwd_prack, dest.transport);
+    if (!prep) {
+        auto resp = ims::sip::createResponse(request, 500, "Server Internal Error");
+        if (resp) txn->sendResponse(std::move(*resp));
+        return;
+    }
+
+    sip_stack_.sendRequest(std::move(*fwd_prack), dest,
+        [this, txn, call_id](const ims::sip::SipMessage& response) {
+            IMS_LOG_DEBUG("Got response {} for PRACK Call-ID={}", response.statusCode(), call_id);
+            auto upstream = proxy_.forwardResponseUpstream(response, txn);
+            if (!upstream) {
+                IMS_LOG_WARN("Failed to forward PRACK response upstream: {}", upstream.error().message);
+            }
+        });
 }
 
 void SessionRouter::handleCancel(const ims::sip::SipMessage& request,

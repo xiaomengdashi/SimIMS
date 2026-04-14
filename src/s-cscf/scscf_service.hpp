@@ -46,6 +46,8 @@ private:
                ims::sip::SipMessage& request);
     void onCancel(std::shared_ptr<ims::sip::ServerTransaction> txn,
                   ims::sip::SipMessage& request);
+    void onPrack(std::shared_ptr<ims::sip::ServerTransaction> txn,
+                 ims::sip::SipMessage& request);
     void onSubscribe(std::shared_ptr<ims::sip::ServerTransaction> txn,
                      ims::sip::SipMessage& request);
     void sendInitialNotify(const ims::sip::SipMessage& subscribe,
