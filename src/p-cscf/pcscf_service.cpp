@@ -48,16 +48,16 @@ PcscfService::PcscfService(const ims::PcscfConfig& config,
                            boost::asio::io_context& io,
                            std::shared_ptr<ims::diameter::IPcfClient> pcf,
                            std::shared_ptr<ims::media::IRtpengineClient> rtpengine,
-                           const std::string& icscf_addr,
-                           ims::Port icscf_port)
+                           const std::string& core_entry_addr,
+                           ims::Port core_entry_port)
     : config_(config)
     , sip_stack_(std::make_unique<ims::sip::SipStack>(
           io, config.listen_addr, config.listen_port))
     , proxy_(resolve_proxy_advertised_address(config), config.listen_port)
     , pcf_(std::move(pcf))
     , rtpengine_(std::move(rtpengine))
-    , icscf_addr_(icscf_addr)
-    , icscf_port_(icscf_port)
+    , core_entry_addr_(core_entry_addr)
+    , core_entry_port_(core_entry_port)
     , proxy_public_addr_(resolve_proxy_advertised_address(config))
 {
 }
@@ -88,7 +88,7 @@ void PcscfService::onRegister(std::shared_ptr<ims::sip::ServerTransaction> txn,
                   request.viaCount(), request.topVia());
 
     proxy_.addPathHeader(request);
-    forwardStatefulToIcscf(std::move(txn), request);
+    forwardStatefulToCore(std::move(txn), request);
 }
 
 void PcscfService::onInvite(std::shared_ptr<ims::sip::ServerTransaction> txn,
@@ -131,7 +131,7 @@ void PcscfService::onInvite(std::shared_ptr<ims::sip::ServerTransaction> txn,
         }
     }
 
-    forwardStatefulToIcscf(std::move(txn), request, true, true);
+    forwardStatefulToCore(std::move(txn), request, true, true);
 }
 
 void PcscfService::onBye(std::shared_ptr<ims::sip::ServerTransaction> txn,
@@ -163,7 +163,7 @@ void PcscfService::onBye(std::shared_ptr<ims::sip::ServerTransaction> txn,
     media_sessions_.removeSession(call_id);
 
     // Forward BYE along signaling path
-    forwardStatefulToIcscf(std::move(txn), request);
+    forwardStatefulToCore(std::move(txn), request);
 }
 
 void PcscfService::onAck(std::shared_ptr<ims::sip::ServerTransaction> txn,
@@ -175,7 +175,7 @@ void PcscfService::onAck(std::shared_ptr<ims::sip::ServerTransaction> txn,
         forwardStatelessToUe(request);
         return;
     }
-    forwardStatelessToIcscf(request);
+    forwardStatelessToCore(request);
 }
 
 void PcscfService::onCancel(std::shared_ptr<ims::sip::ServerTransaction> txn,
@@ -196,7 +196,7 @@ void PcscfService::onCancel(std::shared_ptr<ims::sip::ServerTransaction> txn,
     }
     media_sessions_.removeSession(call_id);
 
-    forwardStatefulToIcscf(std::move(txn), request);
+    forwardStatefulToCore(std::move(txn), request);
 }
 
 void PcscfService::onPrack(std::shared_ptr<ims::sip::ServerTransaction> txn,
@@ -207,7 +207,7 @@ void PcscfService::onPrack(std::shared_ptr<ims::sip::ServerTransaction> txn,
         forwardStatefulToUe(std::move(txn), request);
         return;
     }
-    forwardStatefulToIcscf(std::move(txn), request);
+    forwardStatefulToCore(std::move(txn), request);
 }
 
 void PcscfService::onSubscribe(std::shared_ptr<ims::sip::ServerTransaction> txn,
@@ -218,7 +218,7 @@ void PcscfService::onSubscribe(std::shared_ptr<ims::sip::ServerTransaction> txn,
         forwardStatefulToUe(std::move(txn), request, true);
         return;
     }
-    forwardStatefulToIcscf(std::move(txn), request, true);
+    forwardStatefulToCore(std::move(txn), request, true);
 }
 
 void PcscfService::onInviteResponse(ims::sip::SipMessage& response) {
@@ -277,27 +277,39 @@ void PcscfService::onInviteResponse(ims::sip::SipMessage& response) {
 }
 
 auto PcscfService::isCoreFacingRequest(const ims::sip::ServerTransaction& txn) const -> bool {
-    auto source = txn.source();
+    const auto source = txn.source();
     const auto source_addr = to_lower(source.address);
-    const auto core_addr = to_lower(icscf_addr_);
-    const auto advertised_addr = to_lower(proxy_public_addr_);
-    const auto listen_addr = to_lower(config_.listen_addr);
+    const auto source_transport = to_lower(source.transport.empty() ? "udp" : source.transport);
 
-    const bool is_loopback_source = source_addr == "127.0.0.1" || source_addr == "::1";
-    const bool core_addr_matches =
-        source_addr == core_addr ||
-        source_addr == advertised_addr ||
-        (!listen_addr.empty() && listen_addr != "0.0.0.0" && listen_addr != "::" &&
-         source_addr == listen_addr) ||
-        (((core_addr == "0.0.0.0" || core_addr == "::") ||
-          (listen_addr == "0.0.0.0" || listen_addr == "::")) &&
-         is_loopback_source);
-    if (!core_addr_matches) {
-        return false;
+    auto endpoint_matches = [&](const std::string& configured_addr,
+                                ims::Port configured_port,
+                                const std::string& configured_transport) {
+        const auto target_addr = to_lower(configured_addr);
+        const auto target_transport = to_lower(configured_transport.empty() ? "udp" : configured_transport);
+        const auto listen_addr = to_lower(config_.listen_addr);
+        const bool is_loopback_source = source_addr == "127.0.0.1" || source_addr == "::1";
+        const bool addr_matches =
+            source_addr == target_addr ||
+            source_addr == to_lower(proxy_public_addr_) ||
+            (!listen_addr.empty() && listen_addr != "0.0.0.0" && listen_addr != "::" &&
+             source_addr == listen_addr) ||
+            (((target_addr == "0.0.0.0" || target_addr == "::") ||
+              (listen_addr == "0.0.0.0" || listen_addr == "::")) &&
+             is_loopback_source);
+        return addr_matches && source.port == configured_port && source_transport == target_transport;
+    };
+
+    if (config_.core_peers.empty()) {
+        return endpoint_matches(core_entry_addr_, core_entry_port_, config_.core_entry.transport);
     }
 
-    const auto scscf_port = static_cast<ims::Port>(icscf_port_ + 1);
-    return source.port == icscf_port_ || source.port == scscf_port;
+    for (const auto& peer : config_.core_peers) {
+        if (endpoint_matches(peer.address, peer.port, peer.transport)) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 auto PcscfService::resolveUeDestination(const ims::sip::SipMessage& request) const
@@ -361,9 +373,9 @@ auto PcscfService::resolveCoreDestination(const ims::sip::SipMessage& request) c
         }
     }
     return ims::sip::Endpoint{
-        .address = icscf_addr_,
-        .port = icscf_port_,
-        .transport = "udp",
+        .address = core_entry_addr_,
+        .port = core_entry_port_,
+        .transport = config_.core_entry.transport.empty() ? "udp" : config_.core_entry.transport,
     };
 }
 
@@ -414,7 +426,7 @@ void PcscfService::sanitizeForUeEgress(ims::sip::SipMessage& request) {
     }
 }
 
-void PcscfService::forwardStatefulToIcscf(std::shared_ptr<ims::sip::ServerTransaction> txn,
+void PcscfService::forwardStatefulToCore(std::shared_ptr<ims::sip::ServerTransaction> txn,
                                           ims::sip::SipMessage& request,
                                           bool add_record_route,
                                           bool process_invite_response_media)
@@ -432,7 +444,7 @@ void PcscfService::forwardStatefulToIcscf(std::shared_ptr<ims::sip::ServerTransa
 
     auto result = proxy_.forwardStateful(request, dest, txn, *sip_stack_, options);
     if (!result) {
-        IMS_LOG_ERROR("Failed to send request to I-CSCF: {}", result.error().message);
+        IMS_LOG_ERROR("Failed to send request to core entry: {}", result.error().message);
     }
 }
 
@@ -469,7 +481,7 @@ void PcscfService::forwardStatefulToUe(std::shared_ptr<ims::sip::ServerTransacti
     }
 }
 
-void PcscfService::forwardStatelessToIcscf(ims::sip::SipMessage& request,
+void PcscfService::forwardStatelessToCore(ims::sip::SipMessage& request,
                                            bool add_record_route)
 {
     if (proxy_.isLoopDetected(request)) {

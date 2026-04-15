@@ -9,6 +9,7 @@
 
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
 
@@ -17,7 +18,8 @@ namespace ims::scscf {
 class SessionRouter {
 public:
     SessionRouter(std::shared_ptr<ims::registration::IRegistrationStore> store,
-                  ims::sip::SipStack& sip_stack);
+                  ims::sip::SipStack& sip_stack,
+                  std::optional<ims::sip::Endpoint> peer_icscf = std::nullopt);
 
     /// Handle incoming INVITE - look up callee and forward
     void handleInvite(const ims::sip::SipMessage& request,
@@ -64,6 +66,7 @@ private:
     std::shared_ptr<ims::registration::IRegistrationStore> store_;
     ims::sip::SipStack& sip_stack_;
     ims::sip::ProxyCore proxy_;
+    std::optional<ims::sip::Endpoint> peer_icscf_;
 
     std::mutex sessions_mutex_;
     std::unordered_map<std::string, SessionInfo> sessions_;

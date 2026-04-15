@@ -2,6 +2,7 @@
 #include "types.hpp"
 #include <string>
 #include <vector>
+#include <optional>
 #include <cstdint>
 
 namespace ims {
@@ -21,6 +22,12 @@ struct PcfSettings {
     uint16_t port = 8080;
 };
 
+struct SipEndpointConfig {
+    std::string address = "127.0.0.1";
+    uint16_t port = 5060;
+    std::string transport = "udp";
+};
+
 struct HssSettings {
     std::string host = "127.0.0.1";
     uint16_t port = 3868;
@@ -32,6 +39,12 @@ struct PcscfConfig {
     uint16_t listen_port = 5060;
     std::string advertised_addr;
     PcfSettings pcf;
+    SipEndpointConfig core_entry{
+        .address = "127.0.0.1",
+        .port = 5062,
+        .transport = "udp",
+    };
+    std::vector<SipEndpointConfig> core_peers;
 };
 
 struct IcscfConfig {
@@ -39,6 +52,11 @@ struct IcscfConfig {
     uint16_t listen_port = 5060;
     std::string advertised_addr;
     HssSettings hss;
+    SipEndpointConfig local_scscf{
+        .address = "127.0.0.1",
+        .port = 5062,
+        .transport = "udp",
+    };
 };
 
 struct ExosipConfig {
@@ -59,6 +77,7 @@ struct ScscfConfig {
     std::string auth_mode = "ims_only";  // ims_only, digest_only, hybrid_fallback
     uint32_t registration_cleanup_interval_ms = 30000;
     ExosipConfig exosip;
+    std::optional<SipEndpointConfig> peer_icscf;
 };
 
 struct HssSubscriberConfig {

@@ -8,6 +8,7 @@
 #include <expected>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
+#include <optional>
 
 namespace ims::scscf {
 
@@ -105,6 +106,12 @@ protected:
         config.domain = "ims.example.com";
         config.exosip.enabled = false;
 
+        auto notifier = std::make_unique<RecordingRegEventNotifier>();
+        notifier_ptr = notifier.get();
+        service = std::make_unique<ims::scscf::ScscfService>(config, io, hss, store, std::move(notifier));
+    }
+
+    void reinitializeService() {
         auto notifier = std::make_unique<RecordingRegEventNotifier>();
         notifier_ptr = notifier.get();
         service = std::make_unique<ims::scscf::ScscfService>(config, io, hss, store, std::move(notifier));
@@ -296,12 +303,76 @@ TEST_F(ScscfServiceTest, OnPrackReturns481WhenNoSessionExists) {
     EXPECT_EQ(response.reasonPhrase(), "Call/Transaction Does Not Exist");
 }
 
+TEST_F(ScscfServiceTest, OnInviteFallsBackToPeerIcscfWhenBindingMissing) {
+    config.peer_icscf = ims::SipEndpointConfig{
+        .address = "10.20.30.40",
+        .port = 5071,
+        .transport = "udp",
+    };
+    reinitializeService();
+
+    auto invite = ims::sip::createRequest("INVITE", "sip:callee@ims.example.com");
+    ASSERT_TRUE(invite.has_value()) << invite.error().message;
+    invite->setFromHeader("<sip:caller@ims.example.com>;tag=caller-tag");
+    invite->setToHeader("<sip:callee@ims.example.com>");
+    invite->setCallId("invite-fallback-call");
+    invite->setCSeq(1, "INVITE");
+    invite->addVia("SIP/2.0/UDP 127.0.0.1:5090;branch=z9hG4bK-invite-fallback");
+
+    auto invite_for_txn = invite->clone();
+    ASSERT_TRUE(invite_for_txn.has_value()) << invite_for_txn.error().message;
+
+    auto transport = std::make_shared<CapturingTransport>();
+    ims::sip::Endpoint source{.address = "127.0.0.1", .port = 5090, .transport = "udp"};
+    auto txn = std::make_shared<ims::sip::ServerTransaction>(std::move(*invite_for_txn), transport, source, io);
+
+    EXPECT_CALL(*store, lookup("sip:callee@ims.example.com"))
+        .WillOnce(Return(ims::Result<ims::registration::RegistrationBinding>{
+            std::unexpected(ims::ErrorInfo{ims::ErrorCode::kRegistrationNotFound, "Not found"})}));
+
+    ims::scscf::ScscfServiceTestPeer::onInvite(*service, txn, *invite);
+
+    ASSERT_EQ(transport->sent_destinations.size(), 1u);
+    EXPECT_EQ(transport->sent_destinations[0].address, "10.20.30.40");
+    EXPECT_EQ(transport->sent_destinations[0].port, 5071);
+    EXPECT_EQ(transport->sent_destinations[0].transport, "udp");
+}
+
+TEST_F(ScscfServiceTest, OnInviteReturns404WhenBindingMissingAndNoPeerIcscfConfigured) {
+    config.peer_icscf.reset();
+    reinitializeService();
+
+    auto invite = ims::sip::createRequest("INVITE", "sip:callee@ims.example.com");
+    ASSERT_TRUE(invite.has_value()) << invite.error().message;
+    invite->setFromHeader("<sip:caller@ims.example.com>;tag=caller-tag");
+    invite->setToHeader("<sip:callee@ims.example.com>");
+    invite->setCallId("invite-no-peer-call");
+    invite->setCSeq(1, "INVITE");
+    invite->addVia("SIP/2.0/UDP 127.0.0.1:5090;branch=z9hG4bK-invite-no-peer");
+
+    auto invite_for_txn = invite->clone();
+    ASSERT_TRUE(invite_for_txn.has_value()) << invite_for_txn.error().message;
+
+    auto transport = std::make_shared<CapturingTransport>();
+    ims::sip::Endpoint source{.address = "127.0.0.1", .port = 5090, .transport = "udp"};
+    auto txn = std::make_shared<ims::sip::ServerTransaction>(std::move(*invite_for_txn), transport, source, io);
+
+    EXPECT_CALL(*store, lookup("sip:callee@ims.example.com"))
+        .WillOnce(Return(ims::Result<ims::registration::RegistrationBinding>{
+            std::unexpected(ims::ErrorInfo{ims::ErrorCode::kRegistrationNotFound, "Not found"})}));
+
+    ims::scscf::ScscfServiceTestPeer::onInvite(*service, txn, *invite);
+
+    ASSERT_EQ(transport->sent_messages.size(), 2u);
+    const auto& response = transport->sent_messages.back();
+    EXPECT_TRUE(response.isResponse());
+    EXPECT_EQ(response.statusCode(), 404);
+    EXPECT_EQ(response.reasonPhrase(), "Not Found");
+}
+
 TEST_F(ScscfServiceTest, StartSchedulesPeriodicRegistrationCleanup) {
     config.registration_cleanup_interval_ms = 1;
-
-    auto notifier = std::make_unique<RecordingRegEventNotifier>();
-    notifier_ptr = notifier.get();
-    service = std::make_unique<ims::scscf::ScscfService>(config, io, hss, store, std::move(notifier));
+    reinitializeService();
 
     EXPECT_CALL(*store, purgeExpired())
         .WillOnce(Return(ims::Result<size_t>{1}))

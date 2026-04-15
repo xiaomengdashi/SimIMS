@@ -79,7 +79,16 @@ ScscfService::ScscfService(const ims::ScscfConfig& config,
     }
     auto auth_providers = buildAuthProviders(config_, hss_, digest_store_);
     registrar_ = std::make_unique<Registrar>(store_, std::move(auth_providers), hss_, config.domain);
-    session_router_ = std::make_unique<SessionRouter>(store_, *sip_stack_);
+
+    std::optional<ims::sip::Endpoint> peer_icscf;
+    if (config.peer_icscf) {
+        peer_icscf = ims::sip::Endpoint{
+            .address = config.peer_icscf->address,
+            .port = config.peer_icscf->port,
+            .transport = config.peer_icscf->transport.empty() ? "udp" : config.peer_icscf->transport,
+        };
+    }
+    session_router_ = std::make_unique<SessionRouter>(store_, *sip_stack_, peer_icscf);
 }
 
 auto ScscfService::start() -> VoidResult {

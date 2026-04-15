@@ -18,6 +18,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace {
 
@@ -56,11 +57,16 @@ protected:
         ims::PcscfConfig cfg;
         cfg.listen_addr = "127.0.0.1";
         cfg.listen_port = 0;
+        cfg.core_entry = {
+            .address = "127.0.0.1",
+            .port = 5062,
+            .transport = "udp",
+        };
 
         pcf_ = std::make_shared<StrictMock<ims::test::MockPcfClient>>();
         rtpengine_ = std::make_shared<StrictMock<ims::test::MockRtpengineClient>>();
         service_ = std::make_unique<ims::pcscf::PcscfService>(
-            cfg, io_, pcf_, rtpengine_, "127.0.0.1", 5061);
+            cfg, io_, pcf_, rtpengine_, cfg.core_entry.address, cfg.core_entry.port);
     }
 
     boost::asio::io_context io_;
@@ -185,6 +191,23 @@ TEST_F(PcscfServiceTest, ResolveCoreDestinationUsesStoredTopologyToken) {
     EXPECT_EQ(resolved.transport, expected.transport);
 }
 
+TEST_F(PcscfServiceTest, ResolveCoreDestinationFallsBackToConfiguredCoreEntryWhenNoToken) {
+    auto parsed = ims::sip::SipMessage::parse(
+        "BYE sip:alice@ims.local SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP 10.0.0.9:5099;branch=z9hG4bKabc;rport\r\n"
+        "From: <sip:bob@ims.local>;tag=f1\r\n"
+        "To: <sip:alice@ims.local>;tag=t1\r\n"
+        "Call-ID: token-fallback\r\n"
+        "CSeq: 3 BYE\r\n"
+        "Content-Length: 0\r\n\r\n");
+    ASSERT_TRUE(parsed.has_value()) << parsed.error().message;
+
+    auto resolved = service_->resolveCoreDestination(*parsed);
+    EXPECT_EQ(resolved.address, "127.0.0.1");
+    EXPECT_EQ(resolved.port, 5062);
+    EXPECT_EQ(resolved.transport, "udp");
+}
+
 TEST_F(PcscfServiceTest, AddTopologyRecordRouteCarriesToken) {
     auto parsed = ims::sip::SipMessage::parse(
         "INVITE sip:alice@ims.local SIP/2.0\r\n"
@@ -203,7 +226,7 @@ TEST_F(PcscfServiceTest, AddTopologyRecordRouteCarriesToken) {
     EXPECT_NE(rr[0].find(";th=thabc123"), std::string::npos);
 }
 
-TEST_F(PcscfServiceTest, CoreFacingRequestAcceptsScscfSourcePort) {
+TEST_F(PcscfServiceTest, CoreFacingRequestAcceptsConfiguredCoreEntrySource) {
     auto req = ims::sip::SipMessage::parse(
         "INVITE sip:alice@ims.local SIP/2.0\r\n"
         "Via: SIP/2.0/UDP 127.0.0.1:5062;branch=z9hG4bKcore;rport\r\n"
@@ -224,20 +247,32 @@ TEST_F(PcscfServiceTest, CoreFacingRequestAcceptsScscfSourcePort) {
     EXPECT_TRUE(service_->isCoreFacingRequest(*txn));
 }
 
-TEST_F(PcscfServiceTest, CoreFacingRequestAcceptsWildcardConfiguredCoreAddress) {
+TEST_F(PcscfServiceTest, CoreFacingRequestAcceptsExplicitCorePeer) {
     ims::PcscfConfig cfg;
     cfg.listen_addr = "127.0.0.1";
     cfg.listen_port = 0;
+    cfg.core_entry = {
+        .address = "127.0.0.1",
+        .port = 5062,
+        .transport = "udp",
+    };
+    cfg.core_peers = {
+        ims::SipEndpointConfig{
+            .address = "10.0.0.2",
+            .port = 5061,
+            .transport = "udp",
+        },
+    };
 
-    auto wildcard_service = std::make_unique<ims::pcscf::PcscfService>(
-        cfg, io_, pcf_, rtpengine_, "0.0.0.0", 5061);
+    auto peer_service = std::make_unique<ims::pcscf::PcscfService>(
+        cfg, io_, pcf_, rtpengine_, cfg.core_entry.address, cfg.core_entry.port);
 
     auto req = ims::sip::SipMessage::parse(
         "INVITE sip:alice@ims.local SIP/2.0\r\n"
-        "Via: SIP/2.0/UDP 127.0.0.1:5062;branch=z9hG4bKcore2;rport\r\n"
+        "Via: SIP/2.0/UDP 10.0.0.2:5061;branch=z9hG4bKcore-peer;rport\r\n"
         "From: <sip:bob@ims.local>;tag=f1\r\n"
         "To: <sip:alice@ims.local>\r\n"
-        "Call-ID: core-facing-test-wildcard\r\n"
+        "Call-ID: core-peer-test\r\n"
         "CSeq: 1 INVITE\r\n"
         "Content-Length: 0\r\n\r\n");
     ASSERT_TRUE(req.has_value()) << req.error().message;
@@ -246,27 +281,38 @@ TEST_F(PcscfServiceTest, CoreFacingRequestAcceptsWildcardConfiguredCoreAddress) 
     auto txn = std::make_shared<ims::sip::ServerTransaction>(
         std::move(*req),
         transport,
-        ims::sip::Endpoint{.address = "127.0.0.1", .port = 5062, .transport = "udp"},
+        ims::sip::Endpoint{.address = "10.0.0.2", .port = 5061, .transport = "udp"},
         io_);
 
-    EXPECT_TRUE(wildcard_service->isCoreFacingRequest(*txn));
+    EXPECT_TRUE(peer_service->isCoreFacingRequest(*txn));
 }
 
-TEST_F(PcscfServiceTest, CoreFacingRequestAcceptsAdvertisedAddressOnScscfPort) {
+TEST_F(PcscfServiceTest, CoreFacingRequestRejectsUnexpectedCorePeerPort) {
     ims::PcscfConfig cfg;
-    cfg.listen_addr = "0.0.0.0";
+    cfg.listen_addr = "127.0.0.1";
     cfg.listen_port = 0;
-    cfg.advertised_addr = "192.168.31.40";
+    cfg.core_entry = {
+        .address = "127.0.0.1",
+        .port = 5062,
+        .transport = "udp",
+    };
+    cfg.core_peers = {
+        ims::SipEndpointConfig{
+            .address = "10.0.0.2",
+            .port = 5061,
+            .transport = "udp",
+        },
+    };
 
-    auto service = std::make_unique<ims::pcscf::PcscfService>(
-        cfg, io_, pcf_, rtpengine_, "127.0.0.1", 5061);
+    auto peer_service = std::make_unique<ims::pcscf::PcscfService>(
+        cfg, io_, pcf_, rtpengine_, cfg.core_entry.address, cfg.core_entry.port);
 
     auto req = ims::sip::SipMessage::parse(
         "INVITE sip:alice@ims.local SIP/2.0\r\n"
-        "Via: SIP/2.0/UDP 192.168.31.40:5062;branch=z9hG4bKcore3;rport\r\n"
+        "Via: SIP/2.0/UDP 10.0.0.2:9999;branch=z9hG4bKcore-peer-bad-port;rport\r\n"
         "From: <sip:bob@ims.local>;tag=f1\r\n"
         "To: <sip:alice@ims.local>\r\n"
-        "Call-ID: core-facing-test-advertised\r\n"
+        "Call-ID: core-peer-bad-port\r\n"
         "CSeq: 1 INVITE\r\n"
         "Content-Length: 0\r\n\r\n");
     ASSERT_TRUE(req.has_value()) << req.error().message;
@@ -275,10 +321,10 @@ TEST_F(PcscfServiceTest, CoreFacingRequestAcceptsAdvertisedAddressOnScscfPort) {
     auto txn = std::make_shared<ims::sip::ServerTransaction>(
         std::move(*req),
         transport,
-        ims::sip::Endpoint{.address = "192.168.31.40", .port = 5062, .transport = "udp"},
+        ims::sip::Endpoint{.address = "10.0.0.2", .port = 9999, .transport = "udp"},
         io_);
 
-    EXPECT_TRUE(service->isCoreFacingRequest(*txn));
+    EXPECT_FALSE(peer_service->isCoreFacingRequest(*txn));
 }
 
 TEST_F(PcscfServiceTest, ResolveUeDestinationFallsBackToRequestUriWhenViaMissing) {

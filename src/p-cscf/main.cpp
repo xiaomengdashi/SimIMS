@@ -35,12 +35,12 @@ int main(int argc, char* argv[]) {
     auto rtpengine = std::make_shared<ims::media::RtpengineClientImpl>(
         io_ctx.get(), config.media.rtpengine_host, config.media.rtpengine_port);
 
-    // I-CSCF address for forwarding (from config or DNS)
-    std::string icscf_addr = config.icscf.listen_addr;
-    if (icscf_addr == "0.0.0.0") icscf_addr = "127.0.0.1";
+    // Core entry address for forwarding (default target is S-CSCF(A))
+    std::string core_entry_addr = config.pcscf.core_entry.address;
+    if (core_entry_addr == "0.0.0.0") core_entry_addr = "127.0.0.1";
 
     ims::pcscf::PcscfService service(config.pcscf, io_ctx.get(), pcf, rtpengine,
-                                     icscf_addr, config.icscf.listen_port);
+                                     core_entry_addr, config.pcscf.core_entry.port);
 
     auto start_result = service.start();
     if (!start_result) {

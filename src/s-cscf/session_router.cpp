@@ -22,10 +22,12 @@ auto isInDialogRequest(const ims::sip::SipMessage& request) -> bool {
 } // namespace
 
 SessionRouter::SessionRouter(std::shared_ptr<ims::registration::IRegistrationStore> store,
-                             ims::sip::SipStack& sip_stack)
+                             ims::sip::SipStack& sip_stack,
+                             std::optional<ims::sip::Endpoint> peer_icscf)
     : store_(std::move(store))
     , sip_stack_(sip_stack)
-    , proxy_(sip_stack.localAddress(), sip_stack.localPort()) {
+    , proxy_(sip_stack.localAddress(), sip_stack.localPort())
+    , peer_icscf_(std::move(peer_icscf)) {
     IMS_LOG_INFO("SessionRouter initialized");
 }
 
@@ -82,40 +84,46 @@ void SessionRouter::handleInvite(const ims::sip::SipMessage& request,
     } else {
         auto binding = lookupCallee(request_uri);
         if (!binding) {
-            IMS_LOG_WARN("Callee not found: {}", request_uri);
-            auto resp = ims::sip::createResponse(request, 404, "Not Found");
-            if (resp) txn->sendResponse(std::move(*resp));
-            return;
-        }
+            if (!peer_icscf_) {
+                IMS_LOG_WARN("Callee not found and no peer I-CSCF configured: {}", request_uri);
+                auto resp = ims::sip::createResponse(request, 404, "Not Found");
+                if (resp) txn->sendResponse(std::move(*resp));
+                return;
+            }
+            IMS_LOG_INFO("Callee {} not found locally, forwarding INVITE to peer I-CSCF {}:{}",
+                         request_uri, peer_icscf_->address, peer_icscf_->port);
+            dest = *peer_icscf_;
+            callee_impu = ims::sip::normalize_impu_uri(request_uri);
+        } else {
+            auto contacts = binding->active_contacts();
+            if (contacts.empty()) {
+                IMS_LOG_WARN("No active contacts for callee: {}", request_uri);
+                auto resp = ims::sip::createResponse(request, 480, "Temporarily Unavailable");
+                if (resp) txn->sendResponse(std::move(*resp));
+                return;
+            }
 
-        auto contacts = binding->active_contacts();
-        if (contacts.empty()) {
-            IMS_LOG_WARN("No active contacts for callee: {}", request_uri);
-            auto resp = ims::sip::createResponse(request, 480, "Temporarily Unavailable");
-            if (resp) txn->sendResponse(std::move(*resp));
-            return;
-        }
+            contact_uri = contacts[0]->contact_uri;
+            if (!contacts[0]->path.empty()) {
+                path = contacts[0]->path;
+            }
+            callee_impu = binding->impu;
+            auto target_uri = ims::sip::extract_uri_from_name_addr(contact_uri);
+            if (!target_uri.empty()) {
+                fwd_request->setRequestUri(target_uri);
+            }
 
-        contact_uri = contacts[0]->contact_uri;
-        if (!contacts[0]->path.empty()) {
-            path = contacts[0]->path;
-        }
-        callee_impu = binding->impu;
-        auto target_uri = ims::sip::extract_uri_from_name_addr(contact_uri);
-        if (!target_uri.empty()) {
-            fwd_request->setRequestUri(target_uri);
-        }
+            auto resolved_dest = resolveBindingDestination(*binding);
+            if (!resolved_dest) {
+                IMS_LOG_WARN("Failed to resolve INVITE destination for {}: {}",
+                             request_uri, resolved_dest.error().message);
+                auto resp = ims::sip::createResponse(request, 480, "Temporarily Unavailable");
+                if (resp) txn->sendResponse(std::move(*resp));
+                return;
+            }
 
-        auto resolved_dest = resolveBindingDestination(*binding);
-        if (!resolved_dest) {
-            IMS_LOG_WARN("Failed to resolve INVITE destination for {}: {}",
-                         request_uri, resolved_dest.error().message);
-            auto resp = ims::sip::createResponse(request, 480, "Temporarily Unavailable");
-            if (resp) txn->sendResponse(std::move(*resp));
-            return;
+            dest = *resolved_dest;
         }
-
-        dest = *resolved_dest;
     }
 
     proxy_.processRouteHeaders(*fwd_request);

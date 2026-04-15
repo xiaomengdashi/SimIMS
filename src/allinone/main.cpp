@@ -50,14 +50,17 @@ int main(int argc, char* argv[]) {
     IMS_LOG_INFO("rtpengine client configured for {}:{}",
                  config.media.rtpengine_host, config.media.rtpengine_port);
 
-    // I-CSCF address for P-CSCF forwarding
-    std::string icscf_addr = "127.0.0.1";
+    // Core entry address for P-CSCF forwarding
+    std::string core_entry_addr = config.pcscf.core_entry.address;
+    if (core_entry_addr == "0.0.0.0") {
+        core_entry_addr = "127.0.0.1";
+    }
 
     // Create services
     ims::scscf::ScscfService scscf(config.scscf, io_ctx.get(), hss, store, digest_store, nullptr);
     ims::icscf::IcscfService icscf(config.icscf, io_ctx.get(), hss);
     ims::pcscf::PcscfService pcscf(config.pcscf, io_ctx.get(), pcf, rtpengine,
-                                    icscf_addr, config.icscf.listen_port);
+                                    core_entry_addr, config.pcscf.core_entry.port);
 
     // Start all services
     auto r1 = scscf.start();

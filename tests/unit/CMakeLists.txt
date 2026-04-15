@@ -119,3 +119,20 @@ target_link_libraries(test_pcscf_service PRIVATE
 target_include_directories(test_pcscf_service PRIVATE ${CMAKE_SOURCE_DIR}/tests ${CMAKE_SOURCE_DIR}/src)
 ims_configure_test_target(test_pcscf_service)
 gtest_discover_tests(test_pcscf_service)
+
+# I-CSCF service test
+add_executable(test_icscf_service
+    test_icscf_service.cpp
+    ${CMAKE_SOURCE_DIR}/src/i-cscf/icscf_service.cpp
+    ${CMAKE_SOURCE_DIR}/src/i-cscf/scscf_selector.cpp
+)
+target_link_libraries(test_icscf_service PRIVATE
+    ims_sip
+    ims_diameter
+    ims_common
+    GTest::gtest_main
+    GTest::gmock
+)
+target_include_directories(test_icscf_service PRIVATE ${CMAKE_SOURCE_DIR}/tests ${CMAKE_SOURCE_DIR}/src)
+ims_configure_test_target(test_icscf_service)
+gtest_discover_tests(test_icscf_service)

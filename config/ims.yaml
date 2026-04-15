@@ -9,6 +9,17 @@ pcscf:
   listen_addr: 0.0.0.0
   listen_port: 5060
   advertised_addr: 192.168.31.40
+  core_entry:
+    address: 127.0.0.1
+    port: 5062
+    transport: udp
+  core_peers:
+    - address: 127.0.0.1
+      port: 5062
+      transport: udp
+    - address: 127.0.0.1
+      port: 5061
+      transport: udp
   pcf:
     host: 127.0.0.1
     port: 7777
@@ -17,6 +28,10 @@ icscf:
   listen_addr: 0.0.0.0
   listen_port: 5061
   advertised_addr: 192.168.31.40
+  local_scscf:
+    address: 127.0.0.1
+    port: 5062
+    transport: udp
   hss:
     host: 127.0.0.1
     port: 3868
@@ -26,6 +41,10 @@ scscf:
   listen_addr: 0.0.0.0
   listen_port: 5062
   advertised_addr: 192.168.31.40
+  peer_icscf:
+    address: 127.0.0.1
+    port: 5061
+    transport: udp
   auth_mode: ims_only      # ims_only=仅IMS AKA, digest_only=仅普通SIP Digest, hybrid_fallback=优先IMS失败后回退Digest
   registration_cleanup_interval_ms: 30000
   hss:

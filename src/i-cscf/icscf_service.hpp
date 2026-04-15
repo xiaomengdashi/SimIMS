@@ -26,6 +26,11 @@ private:
                   ims::sip::SipMessage& request);
     void onSubscribe(std::shared_ptr<ims::sip::ServerTransaction> txn,
                      ims::sip::SipMessage& request);
+    auto localScscfEndpoint() const -> ims::sip::Endpoint;
+    void onAck(ims::sip::SipMessage& request);
+    void onInDialogStateful(std::shared_ptr<ims::sip::ServerTransaction> txn,
+                            ims::sip::SipMessage& request,
+                            const char* method_name);
     void forwardStateful(std::shared_ptr<ims::sip::ServerTransaction> txn,
                          ims::sip::SipMessage& request,
                          const ims::sip::Endpoint& dest,

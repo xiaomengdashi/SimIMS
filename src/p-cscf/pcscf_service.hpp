@@ -26,8 +26,8 @@ public:
                  boost::asio::io_context& io,
                  std::shared_ptr<ims::diameter::IPcfClient> pcf,
                  std::shared_ptr<ims::media::IRtpengineClient> rtpengine,
-                 const std::string& icscf_addr,
-                 ims::Port icscf_port);
+                 const std::string& core_entry_addr,
+                 ims::Port core_entry_port);
 
     auto start() -> VoidResult;
     void stop();
@@ -57,14 +57,14 @@ private:
     void onSubscribe(std::shared_ptr<ims::sip::ServerTransaction> txn,
                      ims::sip::SipMessage& request);
     void onInviteResponse(ims::sip::SipMessage& response);
-    void forwardStatefulToIcscf(std::shared_ptr<ims::sip::ServerTransaction> txn,
+    void forwardStatefulToCore(std::shared_ptr<ims::sip::ServerTransaction> txn,
                                 ims::sip::SipMessage& request,
                                 bool add_record_route = false,
                                 bool process_invite_response_media = false);
     void forwardStatefulToUe(std::shared_ptr<ims::sip::ServerTransaction> txn,
                              ims::sip::SipMessage& request,
                              bool add_record_route = true);
-    void forwardStatelessToIcscf(ims::sip::SipMessage& request,
+    void forwardStatelessToCore(ims::sip::SipMessage& request,
                                  bool add_record_route = false);
     void forwardStatelessToUe(ims::sip::SipMessage& request,
                               bool add_record_route = true);
@@ -76,8 +76,8 @@ private:
     std::shared_ptr<ims::media::IRtpengineClient> rtpengine_;
     ims::media::MediaSessionManager media_sessions_;
 
-    std::string icscf_addr_;
-    ims::Port icscf_port_;
+    std::string core_entry_addr_;
+    ims::Port core_entry_port_;
     std::string proxy_public_addr_;
 
     mutable std::mutex topology_mutex_;

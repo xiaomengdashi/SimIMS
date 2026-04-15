@@ -4,6 +4,28 @@
 
 namespace ims {
 
+namespace {
+
+auto parse_endpoint_config(const YAML::Node& node, const SipEndpointConfig& defaults)
+    -> SipEndpointConfig {
+    SipEndpointConfig endpoint = defaults;
+    if (auto v = node["address"]) {
+        endpoint.address = v.as<std::string>();
+    }
+    if (auto v = node["port"]) {
+        endpoint.port = v.as<uint16_t>();
+    }
+    if (auto v = node["transport"]) {
+        endpoint.transport = v.as<std::string>();
+    }
+    if (endpoint.transport.empty()) {
+        endpoint.transport = "udp";
+    }
+    return endpoint;
+}
+
+} // namespace
+
 Result<ImsConfig> load_config(const std::string& path) {
     if (!std::filesystem::exists(path)) {
         return std::unexpected(ErrorInfo{
@@ -41,6 +63,15 @@ Result<ImsConfig> load_config(const std::string& path) {
             if (auto v = pcf["host"])  config.pcscf.pcf.host = v.as<std::string>();
             if (auto v = pcf["port"])  config.pcscf.pcf.port = v.as<uint16_t>();
         }
+        if (auto v = pcscf["core_entry"]) {
+            config.pcscf.core_entry = parse_endpoint_config(v, config.pcscf.core_entry);
+        }
+        if (auto peers = pcscf["core_peers"]) {
+            config.pcscf.core_peers.clear();
+            for (const auto& peer : peers) {
+                config.pcscf.core_peers.push_back(parse_endpoint_config(peer, config.pcscf.core_entry));
+            }
+        }
     }
 
     // I-CSCF section
@@ -52,6 +83,9 @@ Result<ImsConfig> load_config(const std::string& path) {
             if (auto v = hss["host"])   config.icscf.hss.host = v.as<std::string>();
             if (auto v = hss["port"])   config.icscf.hss.port = v.as<uint16_t>();
             if (auto v = hss["realm"])  config.icscf.hss.realm = v.as<std::string>();
+        }
+        if (auto v = icscf["local_scscf"]) {
+            config.icscf.local_scscf = parse_endpoint_config(v, config.icscf.local_scscf);
         }
     }
 
@@ -77,6 +111,9 @@ Result<ImsConfig> load_config(const std::string& path) {
             if (auto v = exosip["transport"])      config.scscf.exosip.transport = v.as<std::string>();
             if (auto v = exosip["user_agent"])     config.scscf.exosip.user_agent = v.as<std::string>();
             if (auto v = exosip["event_poll_ms"])  config.scscf.exosip.event_poll_ms = v.as<uint32_t>();
+        }
+        if (auto v = scscf["peer_icscf"]) {
+            config.scscf.peer_icscf = parse_endpoint_config(v, config.icscf.local_scscf);
         }
     }
 

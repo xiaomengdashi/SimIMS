@@ -44,56 +44,16 @@ auto IcscfService::start() -> VoidResult {
         onInvite(txn, req);
     });
     sip_stack_->onRequest("ACK", [this](auto /*txn*/, auto& req) {
-        IMS_LOG_DEBUG("I-CSCF received ACK");
-        proxy_.processRouteHeaders(req);
-        ims::sip::Endpoint dest{
-            .address = "127.0.0.1",
-            .port = 5062,
-            .transport = "udp"
-        };
-        auto result = proxy_.forwardRequest(req, dest, sip_stack_->transport());
-        if (!result) {
-            IMS_LOG_ERROR("Failed to forward ACK statelessly: {}", result.error().message);
-        }
+        onAck(req);
     });
     sip_stack_->onRequest("BYE", [this](auto txn, auto& req) {
-        IMS_LOG_DEBUG("I-CSCF received BYE");
-        proxy_.processRouteHeaders(req);
-        ims::sip::Endpoint dest{
-            .address = "127.0.0.1",
-            .port = 5062,
-            .transport = "udp"
-        };
-        auto result = proxy_.forwardStateful(req, dest, txn, *sip_stack_);
-        if (!result) {
-            IMS_LOG_ERROR("Failed to forward BYE statefully: {}", result.error().message);
-        }
+        onInDialogStateful(txn, req, "BYE");
     });
     sip_stack_->onRequest("CANCEL", [this](auto txn, auto& req) {
-        IMS_LOG_DEBUG("I-CSCF received CANCEL");
-        proxy_.processRouteHeaders(req);
-        ims::sip::Endpoint dest{
-            .address = "127.0.0.1",
-            .port = 5062,
-            .transport = "udp"
-        };
-        auto result = proxy_.forwardStateful(req, dest, txn, *sip_stack_);
-        if (!result) {
-            IMS_LOG_ERROR("Failed to forward CANCEL statefully: {}", result.error().message);
-        }
+        onInDialogStateful(txn, req, "CANCEL");
     });
     sip_stack_->onRequest("PRACK", [this](auto txn, auto& req) {
-        IMS_LOG_DEBUG("I-CSCF received PRACK");
-        proxy_.processRouteHeaders(req);
-        ims::sip::Endpoint dest{
-            .address = "127.0.0.1",
-            .port = 5062,
-            .transport = "udp"
-        };
-        auto result = proxy_.forwardStateful(req, dest, txn, *sip_stack_);
-        if (!result) {
-            IMS_LOG_ERROR("Failed to forward PRACK statefully: {}", result.error().message);
-        }
+        onInDialogStateful(txn, req, "PRACK");
     });
     sip_stack_->onRequest("SUBSCRIBE", [this](auto txn, auto& req) {
         onSubscribe(txn, req);
@@ -185,6 +145,42 @@ void IcscfService::onSubscribe(std::shared_ptr<ims::sip::ServerTransaction> txn,
         return;
     }
     forwardStateful(std::move(txn), request, *endpoint, false);
+}
+
+auto IcscfService::localScscfEndpoint() const -> ims::sip::Endpoint {
+    std::string address = config_.local_scscf.address;
+    if (address.empty() || address == "0.0.0.0") {
+        address = "127.0.0.1";
+    }
+    return ims::sip::Endpoint{
+        .address = address,
+        .port = config_.local_scscf.port,
+        .transport = config_.local_scscf.transport.empty() ? "udp" : config_.local_scscf.transport,
+    };
+}
+
+void IcscfService::onAck(ims::sip::SipMessage& request) {
+    IMS_LOG_DEBUG("I-CSCF received ACK");
+    proxy_.processRouteHeaders(request);
+    auto dest = localScscfEndpoint();
+    auto result = proxy_.forwardRequest(request, dest, sip_stack_->transport());
+    if (!result) {
+        IMS_LOG_ERROR("Failed to forward ACK statelessly: {}", result.error().message);
+    }
+}
+
+void IcscfService::onInDialogStateful(std::shared_ptr<ims::sip::ServerTransaction> txn,
+                                      ims::sip::SipMessage& request,
+                                      const char* method_name) {
+    IMS_LOG_DEBUG("I-CSCF received {}", method_name);
+    proxy_.processRouteHeaders(request);
+    auto dest = localScscfEndpoint();
+    auto result = proxy_.forwardStateful(request, dest, txn, *sip_stack_, {
+        .add_record_route = false,
+    });
+    if (!result) {
+        IMS_LOG_ERROR("Failed to forward {} statefully: {}", method_name, result.error().message);
+    }
 }
 
 void IcscfService::forwardStateful(std::shared_ptr<ims::sip::ServerTransaction> txn,

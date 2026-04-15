@@ -36,6 +36,14 @@ global:
 pcscf:
   listen_addr: 10.0.0.1
   listen_port: 5060
+  core_entry:
+    address: 127.0.0.1
+    port: 5062
+    transport: udp
+  core_peers:
+    - address: 10.0.0.2
+      port: 5061
+      transport: udp
   pcf:
     host: 10.0.0.9
     port: 7777
@@ -43,6 +51,10 @@ pcscf:
 icscf:
   listen_addr: 10.0.0.2
   listen_port: 5061
+  local_scscf:
+    address: 10.0.0.3
+    port: 5062
+    transport: udp
 
 scscf:
   listen_addr: 10.0.0.3
@@ -73,7 +85,15 @@ dns:
     EXPECT_EQ(config.pcscf.listen_port, 5060);
     EXPECT_EQ(config.pcscf.pcf.host, "10.0.0.9");
     EXPECT_EQ(config.pcscf.pcf.port, 7777);
+    EXPECT_EQ(config.pcscf.core_entry.address, "127.0.0.1");
+    EXPECT_EQ(config.pcscf.core_entry.port, 5062);
+    EXPECT_EQ(config.pcscf.core_entry.transport, "udp");
+    EXPECT_EQ(config.pcscf.core_peers.size(), 1u);
+    EXPECT_EQ(config.pcscf.core_peers[0].address, "10.0.0.2");
+    EXPECT_EQ(config.pcscf.core_peers[0].port, 5061);
     EXPECT_EQ(config.icscf.listen_port, 5061);
+    EXPECT_EQ(config.icscf.local_scscf.address, "10.0.0.3");
+    EXPECT_EQ(config.icscf.local_scscf.port, 5062);
     EXPECT_EQ(config.scscf.listen_port, 5062);
     EXPECT_EQ(config.scscf.domain, "test.ims.com");
     EXPECT_EQ(config.scscf.auth_mode, "hybrid_fallback");
@@ -82,6 +102,7 @@ dns:
     EXPECT_EQ(config.scscf.exosip.listen_addr, "0.0.0.0");
     EXPECT_EQ(config.scscf.exosip.listen_port, 5072);
     EXPECT_EQ(config.scscf.exosip.transport, "udp");
+    EXPECT_FALSE(config.scscf.peer_icscf.has_value());
     ASSERT_EQ(config.dns.servers.size(), 2u);
     EXPECT_EQ(config.dns.servers[0], "8.8.8.8");
     EXPECT_EQ(config.dns.timeout_ms, 5000u);
@@ -206,12 +227,18 @@ TEST_F(ConfigTest, LoadWithDefaults) {
     // Should use defaults for missing sections
     EXPECT_EQ(config.pcscf.listen_addr, "0.0.0.0");
     EXPECT_EQ(config.pcscf.listen_port, 5060);
+    EXPECT_EQ(config.pcscf.core_entry.address, "127.0.0.1");
+    EXPECT_EQ(config.pcscf.core_entry.port, 5062);
+    EXPECT_TRUE(config.pcscf.core_peers.empty());
+    EXPECT_EQ(config.icscf.local_scscf.address, "127.0.0.1");
+    EXPECT_EQ(config.icscf.local_scscf.port, 5062);
     EXPECT_EQ(config.scscf.domain, "ims.local");
     EXPECT_EQ(config.scscf.auth_mode, "ims_only");
     EXPECT_EQ(config.scscf.registration_cleanup_interval_ms, 30000u);
     EXPECT_TRUE(config.scscf.exosip.enabled);
     EXPECT_EQ(config.scscf.exosip.listen_addr, "0.0.0.0");
     EXPECT_EQ(config.scscf.exosip.listen_port, 5072);
+    EXPECT_FALSE(config.scscf.peer_icscf.has_value());
 }
 
 TEST_F(ConfigTest, FileNotFound) {
