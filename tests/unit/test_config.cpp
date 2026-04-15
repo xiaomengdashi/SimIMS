@@ -120,7 +120,7 @@ hss_adapter:
       tel: "+8613824122023"
       password: "pass-a"
       realm: "ims.operator.com"
-      k: "465b5ce8b199b49faa5f0a2ee238a6bc"
+      ki: "465b5ce8b199b49faa5f0a2ee238a6bc"
       operator_code_type: "opc"
       opc: "cd63cb71954a9f4e48a5994e37a02baf"
       sqn: "000000000001"
@@ -128,7 +128,7 @@ hss_adapter:
       tel: "+8613824122024"
       password: "pass-b"
       realm: "ims.operator.com"
-      k: "465b5ce8b199b49faa5f0a2ee238a6bc"
+      ki: "465b5ce8b199b49faa5f0a2ee238a6bc"
       operator_code_type: "op"
       op: "cdc202d5123e20f62b6d676ac72cb318"
       sqn: "000000000002"
@@ -152,7 +152,7 @@ hss_adapter:
     EXPECT_EQ(config.hss_adapter.subscribers[0].operator_code_type, "opc");
     EXPECT_EQ(config.hss_adapter.subscribers[1].imsi, "460112024122024");
     EXPECT_EQ(config.hss_adapter.subscribers[1].tel, "+8613824122024");
-    EXPECT_EQ(config.hss_adapter.subscribers[0].k, "465b5ce8b199b49faa5f0a2ee238a6bc");
+    EXPECT_EQ(config.hss_adapter.subscribers[0].ki, "465b5ce8b199b49faa5f0a2ee238a6bc");
     EXPECT_EQ(config.hss_adapter.subscribers[0].opc, "cd63cb71954a9f4e48a5994e37a02baf");
     EXPECT_EQ(config.hss_adapter.subscribers[0].sqn, "000000000001");
     EXPECT_EQ(config.hss_adapter.subscribers[1].operator_code_type, "op");
@@ -168,7 +168,7 @@ TEST_F(ConfigTest, LoadHssSubscribersWithoutOperatorCodeTypeUsesLegacyFields) {
        tel: "+8613824122023"
        password: "pass-a"
        realm: "ims.operator.com"
-       k: "465b5ce8b199b49faa5f0a2ee238a6bc"
+       ki: "465b5ce8b199b49faa5f0a2ee238a6bc"
        opc: "cd63cb71954a9f4e48a5994e37a02baf"
        sqn: "000000000001"
  )yaml");
@@ -180,6 +180,27 @@ TEST_F(ConfigTest, LoadHssSubscribersWithoutOperatorCodeTypeUsesLegacyFields) {
     EXPECT_EQ(result->hss_adapter.subscribers[0].opc, "cd63cb71954a9f4e48a5994e37a02baf");
 }
 
+TEST_F(ConfigTest, LoadHssSubscribersUsesKiField) {
+    writeConfig(R"yaml(
+ hss_adapter:
+   subscribers:
+     - imsi: "460112024122023"
+       tel: "+8613824122023"
+       password: "pass-a"
+       realm: "ims.operator.com"
+       ki: "465b5ce8b199b49faa5f0a2ee238a6bc"
+       operator_code_type: "opc"
+       opc: "cd63cb71954a9f4e48a5994e37a02baf"
+       sqn: "000000000001"
+ )yaml");
+
+    auto result = load_config(config_path_);
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+    ASSERT_EQ(result->hss_adapter.subscribers.size(), 1u);
+    EXPECT_EQ(result->hss_adapter.subscribers[0].ki, "465b5ce8b199b49faa5f0a2ee238a6bc");
+    EXPECT_EQ(result->hss_adapter.subscribers[0].operator_code_type, "opc");
+}
+
 TEST_F(ConfigTest, RejectsMissingOperatorCodeFieldForExplicitType) {
     writeConfig(R"yaml(
  hss_adapter:
@@ -188,7 +209,7 @@ TEST_F(ConfigTest, RejectsMissingOperatorCodeFieldForExplicitType) {
        tel: "+8613824122023"
        password: "pass-a"
        realm: "ims.operator.com"
-       k: "465b5ce8b199b49faa5f0a2ee238a6bc"
+       ki: "465b5ce8b199b49faa5f0a2ee238a6bc"
        operator_code_type: "opc"
        sqn: "000000000001"
  )yaml");
@@ -206,7 +227,7 @@ TEST_F(ConfigTest, RejectsInvalidOperatorCodeType) {
        tel: "+8613824122023"
        password: "pass-a"
        realm: "ims.operator.com"
-       k: "465b5ce8b199b49faa5f0a2ee238a6bc"
+       ki: "465b5ce8b199b49faa5f0a2ee238a6bc"
        operator_code_type: "bad"
        opc: "cd63cb71954a9f4e48a5994e37a02baf"
        sqn: "000000000001"

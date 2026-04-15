@@ -95,7 +95,7 @@ auto resolve_opc(const HssSubscriberConfig& subscriber,
 
 auto build_aka_auth_vector(const HssSubscriberConfig& subscriber,
                            std::mt19937& rng) -> Result<AuthVector> {
-    if (subscriber.k.empty() || subscriber.sqn.empty()) {
+    if (subscriber.ki.empty() || subscriber.sqn.empty()) {
         return std::unexpected(ErrorInfo{
             ErrorCode::kConfigInvalidValue,
             "missing AKA subscriber material",
@@ -103,7 +103,7 @@ auto build_aka_auth_vector(const HssSubscriberConfig& subscriber,
         });
     }
 
-    auto k = parse_hex_exact<16>(subscriber.k, "k");
+    auto k = parse_hex_exact<16>(subscriber.ki, "ki");
     if (!k) {
         return std::unexpected(k.error());
     }

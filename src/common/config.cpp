@@ -132,7 +132,7 @@ Result<ImsConfig> load_config(const std::string& path) {
                 if (auto v = item["tel"])       subscriber.tel = v.as<std::string>();
                 if (auto v = item["password"])  subscriber.password = v.as<std::string>();
                 if (auto v = item["realm"])     subscriber.realm = v.as<std::string>();
-                if (auto v = item["k"])                   subscriber.k = v.as<std::string>();
+                if (auto v = item["ki"])                 subscriber.ki = v.as<std::string>();
                 if (auto v = item["operator_code_type"])  subscriber.operator_code_type = v.as<std::string>();
                 if (auto v = item["opc"])                 subscriber.opc = v.as<std::string>();
                 if (auto v = item["op"])                  subscriber.op = v.as<std::string>();

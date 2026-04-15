@@ -69,7 +69,7 @@ hss_adapter:
   subscribers:
     # 这些订户既可供 Stub HSS 的 IMS AKA 鉴权使用，也可在 digest_only/hybrid_fallback 模式下
     # 作为普通 SIP 客户端的本地用户名/密码来源。
-    # AKA 需要额外配置 k + operator_code_type(opc/op) + 对应的 opc/op + sqn，amf 默认 8000。
+    # AKA 需要额外配置 ki + operator_code_type(opc/op) + 对应的 opc/op + sqn，amf 默认 8000。
     # Digest 用户名可使用:
     # - 460112024122023@ims.mnc011.mcc460.3gppnetwork.org
     # - 460112024122023
@@ -80,12 +80,18 @@ hss_adapter:
       tel: "+8613822600007"
       realm: "ims.mnc011.mcc460.3gppnetwork.org"
       ki: "11111111111111111111111111111111"
+      operator_code_type: "opc"
       opc: "11111111111111111111111111111111"
+      sqn: "000000000001"
+      amf: "8000"
     - imsi: "460112292600008"
       tel: "+8613822600008"
       realm: "ims.mnc011.mcc460.3gppnetwork.org"
       ki: "11111111111111111111111111111111"
+      operator_code_type: "opc"
       opc: "11111111111111111111111111111111"
+      sqn: "000000000002"
+      amf: "8000"
 
 media:
   rtpengine_host: 192.168.31.40

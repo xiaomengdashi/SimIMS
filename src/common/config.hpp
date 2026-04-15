@@ -85,7 +85,7 @@ struct HssSubscriberConfig {
     std::string tel;
     std::string password;
     std::string realm;
-    std::string k;
+    std::string ki;
     std::string operator_code_type;
     std::string opc;
     std::string op;
