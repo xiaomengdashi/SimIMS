@@ -2,7 +2,8 @@
 #include "common/config.hpp"
 #include "common/logger.hpp"
 #include "common/io_context.hpp"
-#include "../diameter/cx_client.hpp"
+#include "db/mongo_subscriber_repository.hpp"
+#include "diameter/mongo_hss_client.hpp"
 
 #include <csignal>
 #include <iostream>
@@ -29,7 +30,16 @@ int main(int argc, char* argv[]) {
     IMS_LOG_INFO("I-CSCF starting...");
 
     ims::IoContext io_ctx(2);
-    auto hss = std::make_shared<ims::diameter::StubHssClient>(config.hss_adapter);
+
+    auto repository = ims::db::MongoSubscriberRepository::create(config.hss_adapter);
+    if (!repository) {
+        IMS_LOG_CRITICAL("Failed to create Mongo subscriber repository: {} ({})",
+                         repository.error().message,
+                         repository.error().detail);
+        return 1;
+    }
+
+    auto hss = std::make_shared<ims::diameter::MongoHssClient>(config.hss_adapter, **repository);
 
     ims::icscf::IcscfService service(config.icscf, io_ctx.get(), hss);
 

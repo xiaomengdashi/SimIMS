@@ -79,10 +79,11 @@ add_executable(test_auth_providers
     test_auth_providers.cpp
     ${CMAKE_SOURCE_DIR}/src/s-cscf/auth_manager.cpp
     ${CMAKE_SOURCE_DIR}/src/s-cscf/digest_credential_store.cpp
+    ${CMAKE_SOURCE_DIR}/src/s-cscf/mongo_digest_credential_store.cpp
     ${CMAKE_SOURCE_DIR}/src/s-cscf/digest_auth_provider.cpp
     ${CMAKE_SOURCE_DIR}/src/s-cscf/ims_aka_auth_provider.cpp
 )
-target_link_libraries(test_auth_providers PRIVATE ims_sip ims_common ims_diameter GTest::gtest_main GTest::gmock)
+target_link_libraries(test_auth_providers PRIVATE ims_sip ims_common ims_diameter ims_db GTest::gtest_main GTest::gmock)
 target_include_directories(test_auth_providers PRIVATE ${CMAKE_SOURCE_DIR}/tests ${CMAKE_SOURCE_DIR}/src)
 ims_configure_test_target(test_auth_providers)
 gtest_discover_tests(test_auth_providers)
@@ -94,11 +95,12 @@ add_executable(test_scscf_service
     ${CMAKE_SOURCE_DIR}/src/s-cscf/registrar.cpp
     ${CMAKE_SOURCE_DIR}/src/s-cscf/auth_manager.cpp
     ${CMAKE_SOURCE_DIR}/src/s-cscf/digest_credential_store.cpp
+    ${CMAKE_SOURCE_DIR}/src/s-cscf/mongo_digest_credential_store.cpp
     ${CMAKE_SOURCE_DIR}/src/s-cscf/digest_auth_provider.cpp
     ${CMAKE_SOURCE_DIR}/src/s-cscf/ims_aka_auth_provider.cpp
     ${CMAKE_SOURCE_DIR}/src/s-cscf/session_router.cpp
 )
-target_link_libraries(test_scscf_service PRIVATE ims_dns ims_diameter GTest::gtest_main GTest::gmock)
+target_link_libraries(test_scscf_service PRIVATE ims_dns ims_diameter ims_db GTest::gtest_main GTest::gmock)
 target_include_directories(test_scscf_service PRIVATE ${CMAKE_SOURCE_DIR}/tests ${CMAKE_SOURCE_DIR}/src)
 ims_configure_test_target(test_scscf_service)
 gtest_discover_tests(test_scscf_service)
@@ -136,3 +138,34 @@ target_link_libraries(test_icscf_service PRIVATE
 target_include_directories(test_icscf_service PRIVATE ${CMAKE_SOURCE_DIR}/tests ${CMAKE_SOURCE_DIR}/src)
 ims_configure_test_target(test_icscf_service)
 gtest_discover_tests(test_icscf_service)
+
+# Subscriber codec test
+add_executable(test_subscriber_codec test_subscriber_codec.cpp)
+target_link_libraries(test_subscriber_codec PRIVATE ims_db ims_common GTest::gtest_main)
+target_include_directories(test_subscriber_codec PRIVATE ${CMAKE_SOURCE_DIR}/src)
+ims_configure_test_target(test_subscriber_codec)
+gtest_discover_tests(test_subscriber_codec)
+
+# Mongo HSS client test
+add_executable(test_mongo_hss_client test_mongo_hss_client.cpp)
+target_link_libraries(test_mongo_hss_client PRIVATE ims_diameter ims_common GTest::gtest_main GTest::gmock)
+target_include_directories(test_mongo_hss_client PRIVATE ${CMAKE_SOURCE_DIR}/tests ${CMAKE_SOURCE_DIR}/src)
+ims_configure_test_target(test_mongo_hss_client)
+gtest_discover_tests(test_mongo_hss_client)
+
+# Mongo digest credential store test
+add_executable(test_mongo_digest_credential_store
+    test_mongo_digest_credential_store.cpp
+    ${CMAKE_SOURCE_DIR}/src/s-cscf/mongo_digest_credential_store.cpp
+)
+target_link_libraries(test_mongo_digest_credential_store PRIVATE ims_common ims_db ims_sip GTest::gtest_main GTest::gmock)
+target_include_directories(test_mongo_digest_credential_store PRIVATE ${CMAKE_SOURCE_DIR}/tests ${CMAKE_SOURCE_DIR}/src)
+ims_configure_test_target(test_mongo_digest_credential_store)
+gtest_discover_tests(test_mongo_digest_credential_store)
+
+# Mongo subscriber repository test
+add_executable(test_mongo_subscriber_repository test_mongo_subscriber_repository.cpp)
+target_link_libraries(test_mongo_subscriber_repository PRIVATE ims_db ims_common GTest::gtest_main)
+target_include_directories(test_mongo_subscriber_repository PRIVATE ${CMAKE_SOURCE_DIR}/src)
+ims_configure_test_target(test_mongo_subscriber_repository)
+gtest_discover_tests(test_mongo_subscriber_repository)

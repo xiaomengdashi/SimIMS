@@ -100,6 +100,11 @@ struct HssAdapterConfig {
     std::string diameter_realm = "ims.local";
     std::string nudm_url = "http://127.0.0.1:8080";
     std::vector<HssSubscriberConfig> subscribers;
+
+    std::string mongo_uri = "mongodb://127.0.0.1:27017";
+    std::string mongo_db = "simims";
+    std::string mongo_collection = "subscribers";
+    std::string default_scscf_uri = "sip:127.0.0.1:5062;transport=udp";
 };
 
 struct MediaConfig {

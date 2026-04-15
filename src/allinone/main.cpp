@@ -4,8 +4,10 @@
 #include "common/config.hpp"
 #include "common/logger.hpp"
 #include "common/io_context.hpp"
-#include "../diameter/cx_client.hpp"
+#include "../diameter/mongo_hss_client.hpp"
 #include "../diameter/rx_client.hpp"
+#include "../db/mongo_subscriber_repository.hpp"
+#include "../s-cscf/mongo_digest_credential_store.hpp"
 #include "../rtp/rtpengine_client_impl.hpp"
 #include "../sip/memory_store.hpp"
 
@@ -40,10 +42,25 @@ int main(int argc, char* argv[]) {
     ims::IoContext io_ctx(4);
 
     // Shared dependencies
-    auto hss = std::make_shared<ims::diameter::StubHssClient>(config.hss_adapter);
+    auto repository = ims::db::MongoSubscriberRepository::create(config.hss_adapter);
+    if (!repository) {
+        IMS_LOG_CRITICAL("Failed to create Mongo subscriber repository: {} ({})",
+                         repository.error().message,
+                         repository.error().detail);
+        return 1;
+    }
+
+    auto hss = std::make_shared<ims::diameter::MongoHssClient>(config.hss_adapter, **repository);
     auto pcf = std::make_shared<ims::diameter::StubPcfClient>(config.pcscf.pcf);
     auto store = std::make_shared<ims::registration::MemoryRegistrationStore>();
-    auto digest_store = ims::scscf::make_local_digest_credential_store(config.hss_adapter);
+
+    auto digest_store = ims::scscf::make_mongo_digest_credential_store(config.hss_adapter);
+    if (!digest_store) {
+        IMS_LOG_CRITICAL("Failed to create Mongo digest credential store: {} ({})",
+                         digest_store.error().message,
+                         digest_store.error().detail);
+        return 1;
+    }
 
     auto rtpengine = std::make_shared<ims::media::RtpengineClientImpl>(
         io_ctx.get(), config.media.rtpengine_host, config.media.rtpengine_port);
@@ -57,7 +74,7 @@ int main(int argc, char* argv[]) {
     }
 
     // Create services
-    ims::scscf::ScscfService scscf(config.scscf, io_ctx.get(), hss, store, digest_store, nullptr);
+    ims::scscf::ScscfService scscf(config.scscf, io_ctx.get(), hss, store, *digest_store, nullptr);
     ims::icscf::IcscfService icscf(config.icscf, io_ctx.get(), hss);
     ims::pcscf::PcscfService pcscf(config.pcscf, io_ctx.get(), pcf, rtpengine,
                                     core_entry_addr, config.pcscf.core_entry.port);

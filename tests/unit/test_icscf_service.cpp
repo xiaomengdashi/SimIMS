@@ -51,14 +51,13 @@ public:
                  ims::Port port,
                  std::shared_ptr<ims::sip::ITransport> transport)
         : ims::sip::SipStack(io, bind_addr, port)
-        , transport_(std::move(transport)) {}
-
-    auto transport() -> std::shared_ptr<ims::sip::ITransport> {
-        return transport_;
+        , injected_transport_(std::move(transport)) {
+        transport_ = injected_transport_;
+        txn_layer_ = std::make_unique<ims::sip::TransactionLayer>(io, injected_transport_);
     }
 
 private:
-    std::shared_ptr<ims::sip::ITransport> transport_;
+    std::shared_ptr<ims::sip::ITransport> injected_transport_;
 };
 
 class IcscfServiceTest : public ::testing::Test {

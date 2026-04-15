@@ -2,7 +2,9 @@
 #include "common/config.hpp"
 #include "common/logger.hpp"
 #include "common/io_context.hpp"
-#include "../diameter/cx_client.hpp"
+#include "diameter/mongo_hss_client.hpp"
+#include "db/mongo_subscriber_repository.hpp"
+#include "s-cscf/mongo_digest_credential_store.hpp"
 #include "../sip/memory_store.hpp"
 
 #include <csignal>
@@ -32,11 +34,26 @@ int main(int argc, char* argv[]) {
 
     ims::IoContext io_ctx(4);
 
-    auto hss = std::make_shared<ims::diameter::StubHssClient>(config.hss_adapter);
-    auto store = std::make_shared<ims::registration::MemoryRegistrationStore>();
-    auto digest_store = ims::scscf::make_local_digest_credential_store(config.hss_adapter);
+    auto repository = ims::db::MongoSubscriberRepository::create(config.hss_adapter);
+    if (!repository) {
+        IMS_LOG_CRITICAL("Failed to create Mongo subscriber repository: {} ({})",
+                         repository.error().message,
+                         repository.error().detail);
+        return 1;
+    }
 
-    ims::scscf::ScscfService service(config.scscf, io_ctx.get(), hss, store, digest_store, nullptr);
+    auto hss = std::make_shared<ims::diameter::MongoHssClient>(config.hss_adapter, **repository);
+    auto store = std::make_shared<ims::registration::MemoryRegistrationStore>();
+
+    auto digest_store = ims::scscf::make_mongo_digest_credential_store(config.hss_adapter);
+    if (!digest_store) {
+        IMS_LOG_CRITICAL("Failed to create Mongo digest credential store: {} ({})",
+                         digest_store.error().message,
+                         digest_store.error().detail);
+        return 1;
+    }
+
+    ims::scscf::ScscfService service(config.scscf, io_ctx.get(), hss, store, *digest_store, nullptr);
 
     auto start_result = service.start();
     if (!start_result) {

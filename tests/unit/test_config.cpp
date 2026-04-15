@@ -108,130 +108,74 @@ dns:
     EXPECT_EQ(config.dns.timeout_ms, 5000u);
 }
 
-TEST_F(ConfigTest, LoadHssSubscribers) {
+TEST_F(ConfigTest, LoadHssAdapterMongoConfig) {
     writeConfig(R"yaml(
 hss_adapter:
   type: diameter
   diameter_host: hss.example.com
   diameter_port: 3868
   diameter_realm: ims.operator.com
-  subscribers:
-    - imsi: "460112024122023"
-      tel: "+8613824122023"
-      password: "pass-a"
-      realm: "ims.operator.com"
-      ki: "465b5ce8b199b49faa5f0a2ee238a6bc"
-      operator_code_type: "opc"
-      opc: "cd63cb71954a9f4e48a5994e37a02baf"
-      sqn: "000000000001"
-    - imsi: "460112024122024"
-      tel: "+8613824122024"
-      password: "pass-b"
-      realm: "ims.operator.com"
-      ki: "465b5ce8b199b49faa5f0a2ee238a6bc"
-      operator_code_type: "op"
-      op: "cdc202d5123e20f62b6d676ac72cb318"
-      sqn: "000000000002"
-      amf: "9001"
+  mongo_uri: mongodb://127.0.0.1:27017
+  mongo_db: simims
+  mongo_collection: subscribers
+  default_scscf_uri: sip:127.0.0.1:5062;transport=udp
 )yaml");
 
     auto result = load_config(config_path_);
     ASSERT_TRUE(result.has_value()) << result.error().message;
-
-    auto& config = *result;
-    EXPECT_EQ(config.hss_adapter.type, "diameter");
-    EXPECT_EQ(config.hss_adapter.diameter_host, "hss.example.com");
-    EXPECT_EQ(config.hss_adapter.diameter_port, 3868);
-    EXPECT_EQ(config.hss_adapter.diameter_realm, "ims.operator.com");
-    ASSERT_EQ(config.hss_adapter.subscribers.size(), 2u);
-    EXPECT_EQ(config.hss_adapter.subscribers[0].imsi, "460112024122023");
-    EXPECT_EQ(config.hss_adapter.subscribers[0].tel, "+8613824122023");
-    EXPECT_EQ(config.hss_adapter.subscribers[0].password, "pass-a");
-    EXPECT_EQ(config.hss_adapter.subscribers[0].realm, "ims.operator.com");
-    EXPECT_EQ(config.hss_adapter.subscribers[0].amf, "8000");
-    EXPECT_EQ(config.hss_adapter.subscribers[0].operator_code_type, "opc");
-    EXPECT_EQ(config.hss_adapter.subscribers[1].imsi, "460112024122024");
-    EXPECT_EQ(config.hss_adapter.subscribers[1].tel, "+8613824122024");
-    EXPECT_EQ(config.hss_adapter.subscribers[0].ki, "465b5ce8b199b49faa5f0a2ee238a6bc");
-    EXPECT_EQ(config.hss_adapter.subscribers[0].opc, "cd63cb71954a9f4e48a5994e37a02baf");
-    EXPECT_EQ(config.hss_adapter.subscribers[0].sqn, "000000000001");
-    EXPECT_EQ(config.hss_adapter.subscribers[1].operator_code_type, "op");
-    EXPECT_EQ(config.hss_adapter.subscribers[1].op, "cdc202d5123e20f62b6d676ac72cb318");
-    EXPECT_EQ(config.hss_adapter.subscribers[1].amf, "9001");
+    EXPECT_EQ(result->hss_adapter.type, "diameter");
+    EXPECT_EQ(result->hss_adapter.diameter_host, "hss.example.com");
+    EXPECT_EQ(result->hss_adapter.diameter_port, 3868);
+    EXPECT_EQ(result->hss_adapter.diameter_realm, "ims.operator.com");
+    EXPECT_EQ(result->hss_adapter.mongo_uri, "mongodb://127.0.0.1:27017");
+    EXPECT_EQ(result->hss_adapter.mongo_db, "simims");
+    EXPECT_EQ(result->hss_adapter.mongo_collection, "subscribers");
+    EXPECT_EQ(result->hss_adapter.default_scscf_uri, "sip:127.0.0.1:5062;transport=udp");
 }
 
-TEST_F(ConfigTest, LoadHssSubscribersWithoutOperatorCodeTypeUsesLegacyFields) {
-    writeConfig(R"yaml(
- hss_adapter:
-   subscribers:
-     - imsi: "460112024122023"
-       tel: "+8613824122023"
-       password: "pass-a"
-       realm: "ims.operator.com"
-       ki: "465b5ce8b199b49faa5f0a2ee238a6bc"
-       opc: "cd63cb71954a9f4e48a5994e37a02baf"
-       sqn: "000000000001"
- )yaml");
-
+TEST_F(ConfigTest, LoadHssAdapterMongoDefaults) {
+    writeConfig("hss_adapter:\n  type: diameter\n");
     auto result = load_config(config_path_);
     ASSERT_TRUE(result.has_value()) << result.error().message;
-    ASSERT_EQ(result->hss_adapter.subscribers.size(), 1u);
-    EXPECT_TRUE(result->hss_adapter.subscribers[0].operator_code_type.empty());
-    EXPECT_EQ(result->hss_adapter.subscribers[0].opc, "cd63cb71954a9f4e48a5994e37a02baf");
+    EXPECT_EQ(result->hss_adapter.mongo_uri, "mongodb://127.0.0.1:27017");
+    EXPECT_EQ(result->hss_adapter.mongo_db, "simims");
+    EXPECT_EQ(result->hss_adapter.mongo_collection, "subscribers");
+    EXPECT_EQ(result->hss_adapter.default_scscf_uri, "sip:127.0.0.1:5062;transport=udp");
 }
 
-TEST_F(ConfigTest, LoadHssSubscribersUsesKiField) {
+TEST_F(ConfigTest, LoadHssAdapterMongoUriEmptyFails) {
     writeConfig(R"yaml(
- hss_adapter:
-   subscribers:
-     - imsi: "460112024122023"
-       tel: "+8613824122023"
-       password: "pass-a"
-       realm: "ims.operator.com"
-       ki: "465b5ce8b199b49faa5f0a2ee238a6bc"
-       operator_code_type: "opc"
-       opc: "cd63cb71954a9f4e48a5994e37a02baf"
-       sqn: "000000000001"
- )yaml");
-
-    auto result = load_config(config_path_);
-    ASSERT_TRUE(result.has_value()) << result.error().message;
-    ASSERT_EQ(result->hss_adapter.subscribers.size(), 1u);
-    EXPECT_EQ(result->hss_adapter.subscribers[0].ki, "465b5ce8b199b49faa5f0a2ee238a6bc");
-    EXPECT_EQ(result->hss_adapter.subscribers[0].operator_code_type, "opc");
-}
-
-TEST_F(ConfigTest, RejectsMissingOperatorCodeFieldForExplicitType) {
-    writeConfig(R"yaml(
- hss_adapter:
-   subscribers:
-     - imsi: "460112024122023"
-       tel: "+8613824122023"
-       password: "pass-a"
-       realm: "ims.operator.com"
-       ki: "465b5ce8b199b49faa5f0a2ee238a6bc"
-       operator_code_type: "opc"
-       sqn: "000000000001"
- )yaml");
+hss_adapter:
+  mongo_uri: ""
+  mongo_db: simims
+  mongo_collection: subscribers
+)yaml");
 
     auto result = load_config(config_path_);
     ASSERT_FALSE(result.has_value());
     EXPECT_EQ(result.error().code, ErrorCode::kConfigInvalidValue);
 }
 
-TEST_F(ConfigTest, RejectsInvalidOperatorCodeType) {
+TEST_F(ConfigTest, LoadHssAdapterMongoDbEmptyFails) {
     writeConfig(R"yaml(
- hss_adapter:
-   subscribers:
-     - imsi: "460112024122023"
-       tel: "+8613824122023"
-       password: "pass-a"
-       realm: "ims.operator.com"
-       ki: "465b5ce8b199b49faa5f0a2ee238a6bc"
-       operator_code_type: "bad"
-       opc: "cd63cb71954a9f4e48a5994e37a02baf"
-       sqn: "000000000001"
- )yaml");
+hss_adapter:
+  mongo_uri: mongodb://127.0.0.1:27017
+  mongo_db: ""
+  mongo_collection: subscribers
+)yaml");
+
+    auto result = load_config(config_path_);
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().code, ErrorCode::kConfigInvalidValue);
+}
+
+TEST_F(ConfigTest, LoadHssAdapterMongoCollectionEmptyFails) {
+    writeConfig(R"yaml(
+hss_adapter:
+  mongo_uri: mongodb://127.0.0.1:27017
+  mongo_db: simims
+  mongo_collection: ""
+)yaml");
 
     auto result = load_config(config_path_);
     ASSERT_FALSE(result.has_value());

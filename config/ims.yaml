@@ -61,37 +61,15 @@ scscf:
     event_poll_ms: 100
 
 hss_adapter:
-  type: diameter            # diameter or http2
+  type: diameter            # diameter or nudm
   diameter_host: hss.ims.mnc011.mcc460.3gppnetwork.org
   diameter_port: 3868
   diameter_realm: ims.mnc011.mcc460.3gppnetwork.org
   nudm_url: http://127.0.0.1:8080/nudm-uecm/v1
-  subscribers:
-    # 这些订户既可供 Stub HSS 的 IMS AKA 鉴权使用，也可在 digest_only/hybrid_fallback 模式下
-    # 作为普通 SIP 客户端的本地用户名/密码来源。
-    # AKA 需要额外配置 ki + operator_code_type(opc/op) + 对应的 opc/op + sqn，amf 默认 8000。
-    # Digest 用户名可使用:
-    # - 460112024122023@ims.mnc011.mcc460.3gppnetwork.org
-    # - 460112024122023
-    # - +8613824122023
-    # - +8613824122023@ims.mnc011.mcc460.3gppnetwork.org
-    # KI 和 OPC 是 IMS AKA 鉴权所需的 16 字节十六进制密钥
-    - imsi: "460112292600007"
-      tel: "+8613822600007"
-      realm: "ims.mnc011.mcc460.3gppnetwork.org"
-      ki: "11111111111111111111111111111111"
-      operator_code_type: "opc"
-      opc: "11111111111111111111111111111111"
-      sqn: "000000000001"
-      amf: "8000"
-    - imsi: "460112292600008"
-      tel: "+8613822600008"
-      realm: "ims.mnc011.mcc460.3gppnetwork.org"
-      ki: "11111111111111111111111111111111"
-      operator_code_type: "opc"
-      opc: "11111111111111111111111111111111"
-      sqn: "000000000002"
-      amf: "8000"
+  mongo_uri: mongodb://127.0.0.1:27017
+  mongo_db: simims
+  mongo_collection: subscribers
+  default_scscf_uri: sip:127.0.0.1:5062;transport=udp
 
 media:
   rtpengine_host: 192.168.31.40

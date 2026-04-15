@@ -10,6 +10,7 @@ target_link_libraries(ims_allinone PRIVATE
     ims_sip
     ims_dns
     ims_diameter
+    ims_db
     ims_rtp
     ims_common
 )
@@ -23,6 +24,7 @@ target_sources(ims_allinone PRIVATE
     ${CMAKE_SOURCE_DIR}/src/s-cscf/registrar.cpp
     ${CMAKE_SOURCE_DIR}/src/s-cscf/auth_manager.cpp
     ${CMAKE_SOURCE_DIR}/src/s-cscf/digest_credential_store.cpp
+    ${CMAKE_SOURCE_DIR}/src/s-cscf/mongo_digest_credential_store.cpp
     ${CMAKE_SOURCE_DIR}/src/s-cscf/digest_auth_provider.cpp
     ${CMAKE_SOURCE_DIR}/src/s-cscf/ims_aka_auth_provider.cpp
     ${CMAKE_SOURCE_DIR}/src/s-cscf/session_router.cpp

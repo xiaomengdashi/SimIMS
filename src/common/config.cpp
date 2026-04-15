@@ -119,51 +119,37 @@ Result<ImsConfig> load_config(const std::string& path) {
 
     // HSS adapter section
     if (auto hss = root["hss_adapter"]) {
-        if (auto v = hss["type"])            config.hss_adapter.type = v.as<std::string>();
-        if (auto v = hss["diameter_host"])   config.hss_adapter.diameter_host = v.as<std::string>();
-        if (auto v = hss["diameter_port"])   config.hss_adapter.diameter_port = v.as<uint16_t>();
-        if (auto v = hss["diameter_realm"])  config.hss_adapter.diameter_realm = v.as<std::string>();
-        if (auto v = hss["nudm_url"])        config.hss_adapter.nudm_url = v.as<std::string>();
-        if (auto subscribers = hss["subscribers"]) {
-            config.hss_adapter.subscribers.clear();
-            for (const auto& item : subscribers) {
-                HssSubscriberConfig subscriber;
-                if (auto v = item["imsi"])      subscriber.imsi = v.as<std::string>();
-                if (auto v = item["tel"])       subscriber.tel = v.as<std::string>();
-                if (auto v = item["password"])  subscriber.password = v.as<std::string>();
-                if (auto v = item["realm"])     subscriber.realm = v.as<std::string>();
-                if (auto v = item["ki"])                 subscriber.ki = v.as<std::string>();
-                if (auto v = item["operator_code_type"])  subscriber.operator_code_type = v.as<std::string>();
-                if (auto v = item["opc"])                 subscriber.opc = v.as<std::string>();
-                if (auto v = item["op"])                  subscriber.op = v.as<std::string>();
-                if (auto v = item["sqn"])                 subscriber.sqn = v.as<std::string>();
-                if (auto v = item["amf"])                 subscriber.amf = v.as<std::string>();
-                if (subscriber.operator_code_type == "opc" && subscriber.opc.empty()) {
-                    return std::unexpected(ErrorInfo{
-                        ErrorCode::kConfigInvalidValue,
-                        "missing opc for operator_code_type=opc",
-                        subscriber.imsi
-                    });
-                }
-                if (subscriber.operator_code_type == "op" && subscriber.op.empty()) {
-                    return std::unexpected(ErrorInfo{
-                        ErrorCode::kConfigInvalidValue,
-                        "missing op for operator_code_type=op",
-                        subscriber.imsi
-                    });
-                }
-                if (!subscriber.operator_code_type.empty() &&
-                    subscriber.operator_code_type != "opc" &&
-                    subscriber.operator_code_type != "op") {
-                    return std::unexpected(ErrorInfo{
-                        ErrorCode::kConfigInvalidValue,
-                        "invalid operator_code_type",
-                        subscriber.operator_code_type
-                    });
-                }
-                config.hss_adapter.subscribers.push_back(std::move(subscriber));
-            }
-        }
+        if (auto v = hss["type"])              config.hss_adapter.type = v.as<std::string>();
+        if (auto v = hss["diameter_host"])     config.hss_adapter.diameter_host = v.as<std::string>();
+        if (auto v = hss["diameter_port"])     config.hss_adapter.diameter_port = v.as<uint16_t>();
+        if (auto v = hss["diameter_realm"])    config.hss_adapter.diameter_realm = v.as<std::string>();
+        if (auto v = hss["nudm_url"])          config.hss_adapter.nudm_url = v.as<std::string>();
+        if (auto v = hss["mongo_uri"])         config.hss_adapter.mongo_uri = v.as<std::string>();
+        if (auto v = hss["mongo_db"])          config.hss_adapter.mongo_db = v.as<std::string>();
+        if (auto v = hss["mongo_collection"])  config.hss_adapter.mongo_collection = v.as<std::string>();
+        if (auto v = hss["default_scscf_uri"]) config.hss_adapter.default_scscf_uri = v.as<std::string>();
+    }
+
+    if (config.hss_adapter.mongo_uri.empty()) {
+        return std::unexpected(ErrorInfo{
+            ErrorCode::kConfigInvalidValue,
+            "hss_adapter.mongo_uri must not be empty",
+            "hss_adapter.mongo_uri"
+        });
+    }
+    if (config.hss_adapter.mongo_db.empty()) {
+        return std::unexpected(ErrorInfo{
+            ErrorCode::kConfigInvalidValue,
+            "hss_adapter.mongo_db must not be empty",
+            "hss_adapter.mongo_db"
+        });
+    }
+    if (config.hss_adapter.mongo_collection.empty()) {
+        return std::unexpected(ErrorInfo{
+            ErrorCode::kConfigInvalidValue,
+            "hss_adapter.mongo_collection must not be empty",
+            "hss_adapter.mongo_collection"
+        });
     }
 
     // Media section

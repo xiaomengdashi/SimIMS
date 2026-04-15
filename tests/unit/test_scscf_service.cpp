@@ -1,6 +1,10 @@
 #include "../mocks/mock_hss_client.hpp"
 #include "../mocks/mock_registration_store.hpp"
+#define private public
 #include "s-cscf/scscf_service.hpp"
+#undef private
+
+#include "sip/stack.hpp"
 #include "sip/transaction.hpp"
 #include "sip/transport.hpp"
 
@@ -36,6 +40,27 @@ public:
                         std::shared_ptr<ims::sip::ServerTransaction> txn,
                         ims::sip::SipMessage& request) {
         service.onPrack(std::move(txn), request);
+    }
+
+    static void replaceSipStack(ScscfService& service,
+                                std::unique_ptr<ims::sip::SipStack> sip_stack) {
+        service.sip_stack_ = std::move(sip_stack);
+    }
+
+    static void rewireSessionRouter(ScscfService& service) {
+        std::optional<ims::sip::Endpoint> peer_icscf;
+        if (service.config_.peer_icscf) {
+            peer_icscf = ims::sip::Endpoint{
+                .address = service.config_.peer_icscf->address,
+                .port = service.config_.peer_icscf->port,
+                .transport = service.config_.peer_icscf->transport.empty()
+                    ? "udp"
+                    : service.config_.peer_icscf->transport,
+            };
+        }
+
+        service.session_router_ = std::make_unique<SessionRouter>(
+            service.store_, *service.sip_stack_, peer_icscf);
     }
 
     static void scheduleRegistrationCleanup(ScscfService& service) {
@@ -98,6 +123,22 @@ public:
     std::vector<ims::sip::InitialRegNotifyContext> contexts;
 };
 
+class FakeSipStack final : public ims::sip::SipStack {
+public:
+    FakeSipStack(boost::asio::io_context& io,
+                 const std::string& bind_addr,
+                 ims::Port port,
+                 std::shared_ptr<ims::sip::ITransport> transport)
+        : ims::sip::SipStack(io, bind_addr, port)
+        , injected_transport_(std::move(transport)) {
+        transport_ = injected_transport_;
+        txn_layer_ = std::make_unique<ims::sip::TransactionLayer>(io, injected_transport_);
+    }
+
+private:
+    std::shared_ptr<ims::sip::ITransport> injected_transport_;
+};
+
 class ScscfServiceTest : public ::testing::Test {
 protected:
     void SetUp() override {
@@ -115,6 +156,15 @@ protected:
         auto notifier = std::make_unique<RecordingRegEventNotifier>();
         notifier_ptr = notifier.get();
         service = std::make_unique<ims::scscf::ScscfService>(config, io, hss, store, std::move(notifier));
+    }
+
+    auto make_client_txn_transport() -> std::shared_ptr<CapturingTransport> {
+        auto transport = std::make_shared<CapturingTransport>();
+        ims::scscf::ScscfServiceTestPeer::replaceSipStack(
+            *service,
+            std::make_unique<FakeSipStack>(io, "127.0.0.1", 0, transport));
+        ims::scscf::ScscfServiceTestPeer::rewireSessionRouter(*service);
+        return transport;
     }
 
     auto make_subscribe() -> ims::sip::SipMessage {
@@ -174,7 +224,7 @@ TEST_F(ScscfServiceTest, OnSubscribeSends200OkAndTriggersInitialNotify) {
     auto subscribe_for_txn = subscribe.clone();
     ASSERT_TRUE(subscribe_for_txn.has_value()) << subscribe_for_txn.error().message;
 
-    auto transport = std::make_shared<CapturingTransport>();
+    auto transport = make_client_txn_transport();
     ims::sip::Endpoint source{.address = "127.0.0.1", .port = 5090, .transport = "udp"};
     auto txn = std::make_shared<ims::sip::ServerTransaction>(std::move(*subscribe_for_txn), transport, source, io);
 
@@ -218,7 +268,7 @@ TEST_F(ScscfServiceTest, OnSubscribeRejectsNonRegEventWith489) {
     auto subscribe_for_txn = subscribe.clone();
     ASSERT_TRUE(subscribe_for_txn.has_value()) << subscribe_for_txn.error().message;
 
-    auto transport = std::make_shared<CapturingTransport>();
+    auto transport = make_client_txn_transport();
     ims::sip::Endpoint source{.address = "127.0.0.1", .port = 5090, .transport = "udp"};
     auto txn = std::make_shared<ims::sip::ServerTransaction>(std::move(*subscribe_for_txn), transport, source, io);
 
@@ -239,7 +289,7 @@ TEST_F(ScscfServiceTest, OnSubscribeReturns404WhenBindingMissing) {
     auto subscribe_for_txn = subscribe.clone();
     ASSERT_TRUE(subscribe_for_txn.has_value()) << subscribe_for_txn.error().message;
 
-    auto transport = std::make_shared<CapturingTransport>();
+    auto transport = make_client_txn_transport();
     ims::sip::Endpoint source{.address = "127.0.0.1", .port = 5090, .transport = "udp"};
     auto txn = std::make_shared<ims::sip::ServerTransaction>(std::move(*subscribe_for_txn), transport, source, io);
 
@@ -290,7 +340,7 @@ TEST_F(ScscfServiceTest, OnPrackReturns481WhenNoSessionExists) {
     auto prack_for_txn = prack->clone();
     ASSERT_TRUE(prack_for_txn.has_value()) << prack_for_txn.error().message;
 
-    auto transport = std::make_shared<CapturingTransport>();
+    auto transport = make_client_txn_transport();
     ims::sip::Endpoint source{.address = "127.0.0.1", .port = 5090, .transport = "udp"};
     auto txn = std::make_shared<ims::sip::ServerTransaction>(std::move(*prack_for_txn), transport, source, io);
 
@@ -322,7 +372,7 @@ TEST_F(ScscfServiceTest, OnInviteFallsBackToPeerIcscfWhenBindingMissing) {
     auto invite_for_txn = invite->clone();
     ASSERT_TRUE(invite_for_txn.has_value()) << invite_for_txn.error().message;
 
-    auto transport = std::make_shared<CapturingTransport>();
+    auto transport = make_client_txn_transport();
     ims::sip::Endpoint source{.address = "127.0.0.1", .port = 5090, .transport = "udp"};
     auto txn = std::make_shared<ims::sip::ServerTransaction>(std::move(*invite_for_txn), transport, source, io);
 
@@ -332,10 +382,13 @@ TEST_F(ScscfServiceTest, OnInviteFallsBackToPeerIcscfWhenBindingMissing) {
 
     ims::scscf::ScscfServiceTestPeer::onInvite(*service, txn, *invite);
 
-    ASSERT_EQ(transport->sent_destinations.size(), 1u);
-    EXPECT_EQ(transport->sent_destinations[0].address, "10.20.30.40");
-    EXPECT_EQ(transport->sent_destinations[0].port, 5071);
+    ASSERT_EQ(transport->sent_destinations.size(), 2u);
+    EXPECT_EQ(transport->sent_destinations[0].address, "127.0.0.1");
+    EXPECT_EQ(transport->sent_destinations[0].port, 5090);
     EXPECT_EQ(transport->sent_destinations[0].transport, "udp");
+    EXPECT_EQ(transport->sent_destinations[1].address, "10.20.30.40");
+    EXPECT_EQ(transport->sent_destinations[1].port, 5071);
+    EXPECT_EQ(transport->sent_destinations[1].transport, "udp");
 }
 
 TEST_F(ScscfServiceTest, OnInviteReturns404WhenBindingMissingAndNoPeerIcscfConfigured) {
@@ -353,7 +406,7 @@ TEST_F(ScscfServiceTest, OnInviteReturns404WhenBindingMissingAndNoPeerIcscfConfi
     auto invite_for_txn = invite->clone();
     ASSERT_TRUE(invite_for_txn.has_value()) << invite_for_txn.error().message;
 
-    auto transport = std::make_shared<CapturingTransport>();
+    auto transport = make_client_txn_transport();
     ims::sip::Endpoint source{.address = "127.0.0.1", .port = 5090, .transport = "udp"};
     auto txn = std::make_shared<ims::sip::ServerTransaction>(std::move(*invite_for_txn), transport, source, io);
 

@@ -1,20 +1,24 @@
 #include "../mocks/mock_hss_client.hpp"
+#include "../mocks/mock_subscriber_repository.hpp"
 #include "s-cscf/auth_manager.hpp"
 #include "s-cscf/digest_auth_provider.hpp"
 #include "s-cscf/digest_credential_store.hpp"
 #include "s-cscf/ims_aka_auth_provider.hpp"
+#include "s-cscf/mongo_digest_credential_store.hpp"
 #include "sip/message.hpp"
 
 #include <boost/uuid/detail/md5.hpp>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include <iomanip>
+#include <optional>
 #include <sstream>
 
 namespace {
 
 using ::testing::_;
 using ::testing::Return;
+using ::testing::StrEq;
 
 auto makeRegister(const std::string& request_uri,
                   const std::string& from,
@@ -95,15 +99,25 @@ auto computeDigestResponse(const std::string& username,
 }
 
 TEST(DigestAuthProviderTest, ChallengeAndVerifyAuthorizationSuccess) {
-    ims::HssAdapterConfig config;
-    config.subscribers.push_back({
-        .imsi = "460112024122023",
-        .tel = "13824122023",
-        .password = "testpass",
-        .realm = "ims.example.com",
-    });
+    auto repository = std::make_shared<ims::test::MockSubscriberRepository>();
+    ims::db::SubscriberRecord record;
+    record.identities.impi = "460112024122023@ims.example.com";
+    record.identities.canonical_impu = "sip:460112024122023@ims.example.com";
+    record.identities.associated_impus = {
+        "sip:460112024122023@ims.example.com",
+        "tel:13824122023",
+    };
+    record.identities.realm = "ims.example.com";
+    record.auth.password = "testpass";
 
-    auto credential_store = ims::scscf::make_local_digest_credential_store(config);
+    EXPECT_CALL(*repository, findByIdentity(StrEq("460112024122023@ims.example.com")))
+        .WillRepeatedly(Return(ims::Result<std::optional<ims::db::SubscriberRecord>>{record}));
+    EXPECT_CALL(*repository,
+                findByUsernameRealm(StrEq("460112024122023@ims.example.com"),
+                                    StrEq("ims.example.com")))
+        .WillRepeatedly(Return(ims::Result<std::optional<ims::db::SubscriberRecord>>{record}));
+
+    auto credential_store = std::make_shared<ims::scscf::MongoDigestCredentialStore>(repository);
     ims::scscf::DigestAuthProvider provider(credential_store, "ims.example.com");
 
     auto first_register = makeRegister("sip:ims.example.com",
@@ -231,7 +245,7 @@ TEST(ImsAkaAuthProviderTest, AcceptsDigestAkaSchemeAliasInAuthorization) {
     auto nonce = extractNonce(challenge->www_authenticate);
     auto response = computeDigestResponse("testuser",
                                           "ims.example.com",
-                                          "aabbccddeeff0011",
+                                          std::string(av.xres.begin(), av.xres.end()),
                                           "REGISTER",
                                           "sip:ims.example.com",
                                           nonce,
@@ -246,7 +260,7 @@ TEST(ImsAkaAuthProviderTest, AcceptsDigestAkaSchemeAliasInAuthorization) {
         "Digest username=\"testuser\", realm=\"ims.example.com\", "
         "nonce=\"" + nonce + "\", uri=\"sip:ims.example.com\", "
         "response=\"" + response + "\", "
-        "algorithm=Digest-AKAv1-MD5, qop=auth, nc=00000001, cnonce=\"deadbeef\"");
+        "algorithm=AKAv1-MD5, qop=auth, nc=00000001, cnonce=\"deadbeef\"");
 
     EXPECT_TRUE(provider.canHandleAuthorization(second_register));
     auto verified = provider.verifyAuthorization(second_register);

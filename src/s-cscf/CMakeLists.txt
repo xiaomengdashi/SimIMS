@@ -4,6 +4,7 @@ add_executable(ims_scscf
     registrar.cpp
     auth_manager.cpp
     digest_credential_store.cpp
+    mongo_digest_credential_store.cpp
     digest_auth_provider.cpp
     ims_aka_auth_provider.cpp
     session_router.cpp
@@ -16,4 +17,5 @@ target_include_directories(ims_scscf PRIVATE
 target_link_libraries(ims_scscf PRIVATE
     ims_diameter
     ims_dns
+    ims_db
 )

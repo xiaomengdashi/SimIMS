@@ -203,6 +203,16 @@ IMS_PID=$!
 
 sleep 1
 
+if ! kill -0 "$IMS_PID" 2>/dev/null; then
+    if grep -q "Failed to create Mongo subscriber repository" "$IMS_LOG" 2>/dev/null; then
+        echo "SKIP: MongoDB unavailable for baresip integration test" >&2
+        exit 77
+    fi
+
+    echo "ERROR: ims_allinone exited unexpectedly before SIP registration" >&2
+    exit 1
+fi
+
 CALLEE_FIFO="$RUNTIME_DIR/callee.stdin"
 mkfifo "$CALLEE_FIFO"
 exec {CALLEE_FIFO_FD}<>"$CALLEE_FIFO"
