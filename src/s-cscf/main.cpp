@@ -10,6 +10,8 @@
 #include <csignal>
 #include <iostream>
 #include <memory>
+#include <thread>
+#include <vector>
 
 namespace {
     std::function<void()> shutdown_handler;
@@ -32,7 +34,13 @@ int main(int argc, char* argv[]) {
     ims::init_logger("scscf", config.global.log_level);
     IMS_LOG_INFO("S-CSCF starting...");
 
-    ims::IoContext io_ctx(4);
+    // Here we configure the io_context pool size.
+    // For handling high concurrency like 1000 simultaneous REGISTERS, 
+    // set this to a higher number based on CPU cores (e.g., 8, 16).
+    // Since this is a test/demo environment, we use std::thread::hardware_concurrency()
+    unsigned int thread_count = std::thread::hardware_concurrency();
+    if (thread_count == 0) thread_count = 8;
+    ims::IoContext io_ctx(thread_count);
 
     auto repository = ims::db::MongoSubscriberRepository::create(config.hss_adapter);
     if (!repository) {

@@ -7,18 +7,15 @@ namespace ims::db {
 std::mutex MongoClient::lifecycle_mutex_;
 size_t MongoClient::lifecycle_ref_count_ = 0;
 
-MongoClient::MongoClient(mongoc_client_t* client, mongoc_collection_t* collection)
-    : client_(client)
-    , collection_(collection) {}
+MongoClient::MongoClient(mongoc_client_pool_t* pool, std::string db_name, std::string collection_name)
+    : pool_(pool)
+    , db_name_(std::move(db_name))
+    , collection_name_(std::move(collection_name)) {}
 
 MongoClient::~MongoClient() {
-    if (collection_ != nullptr) {
-        mongoc_collection_destroy(collection_);
-        collection_ = nullptr;
-    }
-    if (client_ != nullptr) {
-        mongoc_client_destroy(client_);
-        client_ = nullptr;
+    if (pool_ != nullptr) {
+        mongoc_client_pool_destroy(pool_);
+        pool_ = nullptr;
     }
     release_driver_lifecycle();
 }
@@ -34,15 +31,30 @@ auto MongoClient::create(const HssAdapterConfig& config) -> Result<std::shared_p
 
     acquire_driver_lifecycle();
 
-    auto* client = mongoc_client_new(config.mongo_uri.c_str());
-    if (client == nullptr) {
+    mongoc_uri_t* uri = mongoc_uri_new_with_error(config.mongo_uri.c_str(), nullptr);
+    if (!uri) {
         release_driver_lifecycle();
         return std::unexpected(ErrorInfo{
             ErrorCode::kInternalError,
-            "Failed to create Mongo client",
+            "Failed to parse Mongo URI",
             config.mongo_uri,
         });
     }
+
+    mongoc_client_pool_t* pool = mongoc_client_pool_new(uri);
+    mongoc_uri_destroy(uri);
+    
+    if (pool == nullptr) {
+        release_driver_lifecycle();
+        return std::unexpected(ErrorInfo{
+            ErrorCode::kInternalError,
+            "Failed to create Mongo client pool",
+            config.mongo_uri,
+        });
+    }
+
+    // Ping check using a client from the pool
+    mongoc_client_t* client = mongoc_client_pool_pop(pool);
 
     bson_t ping_command;
     bson_t ping_reply;
@@ -61,8 +73,10 @@ auto MongoClient::create(const HssAdapterConfig& config) -> Result<std::shared_p
     bson_destroy(&ping_reply);
     bson_destroy(&ping_command);
 
+    mongoc_client_pool_push(pool, client);
+
     if (!ping_ok) {
-        mongoc_client_destroy(client);
+        mongoc_client_pool_destroy(pool);
         release_driver_lifecycle();
         return std::unexpected(ErrorInfo{
             ErrorCode::kInternalError,
@@ -71,19 +85,7 @@ auto MongoClient::create(const HssAdapterConfig& config) -> Result<std::shared_p
         });
     }
 
-    auto* collection =
-        mongoc_client_get_collection(client, config.mongo_db.c_str(), config.mongo_collection.c_str());
-    if (collection == nullptr) {
-        mongoc_client_destroy(client);
-        release_driver_lifecycle();
-        return std::unexpected(ErrorInfo{
-            ErrorCode::kConfigInvalidValue,
-            "Failed to get Mongo collection",
-            config.mongo_db + "." + config.mongo_collection,
-        });
-    }
-
-    return std::shared_ptr<MongoClient>(new MongoClient(client, collection));
+    return std::shared_ptr<MongoClient>(new MongoClient(pool, config.mongo_db, config.mongo_collection));
 }
 
 void MongoClient::acquire_driver_lifecycle() {
@@ -103,12 +105,20 @@ void MongoClient::release_driver_lifecycle() {
     }
 }
 
-auto MongoClient::client() const -> mongoc_client_t* {
-    return client_;
+auto MongoClient::pop_client() const -> mongoc_client_t* {
+    return mongoc_client_pool_pop(pool_);
 }
 
-auto MongoClient::collection() const -> mongoc_collection_t* {
-    return collection_;
+void MongoClient::push_client(mongoc_client_t* client) const {
+    mongoc_client_pool_push(pool_, client);
+}
+
+auto MongoClient::collection_name() const -> const std::string& {
+    return collection_name_;
+}
+
+auto MongoClient::db_name() const -> const std::string& {
+    return db_name_;
 }
 
 } // namespace ims::db

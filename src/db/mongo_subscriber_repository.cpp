@@ -37,64 +37,6 @@ auto parse_matched_count(const bson_t& reply) -> int64_t {
     return 0;
 }
 
-auto extract_old_sqn_from_value(const bson_t& reply) -> Result<uint64_t> {
-    bson_iter_t value_iter;
-    if (!bson_iter_init_find(&value_iter, &reply, "value")) {
-        return std::unexpected(db_error("Mongo findAndModify reply missing value", "value"));
-    }
-    if (BSON_ITER_HOLDS_NULL(&value_iter)) {
-        return std::unexpected(not_found("No subscriber matched in advanceSqn"));
-    }
-    if (!BSON_ITER_HOLDS_DOCUMENT(&value_iter)) {
-        return std::unexpected(db_error("Mongo findAndModify value is not document", "value"));
-    }
-
-    const uint8_t* value_data = nullptr;
-    uint32_t value_len = 0;
-    bson_iter_document(&value_iter, &value_len, &value_data);
-
-    bson_t value_doc;
-    if (!bson_init_static(&value_doc, value_data, value_len)) {
-        return std::unexpected(db_error("Failed to parse findAndModify value document", "value"));
-    }
-
-    bson_iter_t auth_iter;
-    if (!bson_iter_init_find(&auth_iter, &value_doc, "auth") || !BSON_ITER_HOLDS_DOCUMENT(&auth_iter)) {
-        return std::unexpected(db_error("auth field missing in findAndModify value", "auth"));
-    }
-
-    const uint8_t* auth_data = nullptr;
-    uint32_t auth_len = 0;
-    bson_iter_document(&auth_iter, &auth_len, &auth_data);
-
-    bson_t auth_doc;
-    if (!bson_init_static(&auth_doc, auth_data, auth_len)) {
-        return std::unexpected(db_error("Failed to parse auth document", "auth"));
-    }
-
-    bson_iter_t sqn_iter;
-    if (!bson_iter_init_find(&sqn_iter, &auth_doc, "sqn")) {
-        return std::unexpected(db_error("sqn field missing in auth document", "auth.sqn"));
-    }
-
-    if (BSON_ITER_HOLDS_INT64(&sqn_iter)) {
-        const auto sqn = bson_iter_int64(&sqn_iter);
-        if (sqn < 0) {
-            return std::unexpected(db_error("sqn must be non-negative", "auth.sqn"));
-        }
-        return static_cast<uint64_t>(sqn);
-    }
-    if (BSON_ITER_HOLDS_INT32(&sqn_iter)) {
-        const auto sqn = bson_iter_int32(&sqn_iter);
-        if (sqn < 0) {
-            return std::unexpected(db_error("sqn must be non-negative", "auth.sqn"));
-        }
-        return static_cast<uint64_t>(sqn);
-    }
-
-    return std::unexpected(db_error("sqn field must be integer", "auth.sqn"));
-}
-
 } // namespace
 
 auto MongoSubscriberRepository::create(const HssAdapterConfig& config)
@@ -218,50 +160,68 @@ auto MongoSubscriberRepository::incrementSqn(std::string_view impi,
 auto MongoSubscriberRepository::advanceSqn(std::string_view impi,
                                            uint64_t step,
                                            uint64_t mask) -> Result<uint64_t> {
-    bson_t query;
-    bson_t update;
-    bson_t inc_doc;
-    bson_t bit_doc;
-    bson_t and_doc;
+    constexpr int kMaxRetries = 5;
 
-    bson_init(&query);
-    bson_init(&update);
+    MongoClientGuard guard(client_);
+    auto* collection = guard.collection();
 
-    BSON_APPEND_UTF8(&query, "identities.impi", std::string(impi).c_str());
+    for (int attempt = 0; attempt < kMaxRetries; ++attempt) {
+        auto record_opt = find_one_by_field("identities.impi", impi);
+        if (!record_opt) {
+            mongoc_collection_destroy(collection);
+            return std::unexpected(record_opt.error());
+        }
+        if (!*record_opt) {
+            mongoc_collection_destroy(collection);
+            return std::unexpected(not_found("Subscriber not found for advanceSqn"));
+        }
 
-    BSON_APPEND_DOCUMENT_BEGIN(&update, "$inc", &inc_doc);
-    BSON_APPEND_INT64(&inc_doc, "auth.sqn", static_cast<int64_t>(step));
-    bson_append_document_end(&update, &inc_doc);
+        const uint64_t old_sqn = (*record_opt)->auth.sqn;
+        const uint64_t new_sqn = (old_sqn + step) & mask;
 
-    BSON_APPEND_DOCUMENT_BEGIN(&update, "$bit", &bit_doc);
-    BSON_APPEND_DOCUMENT_BEGIN(&bit_doc, "auth.sqn", &and_doc);
-    BSON_APPEND_INT64(&and_doc, "and", static_cast<int64_t>(mask));
-    bson_append_document_end(&bit_doc, &and_doc);
-    bson_append_document_end(&update, &bit_doc);
+        bson_t filter;
+        bson_t update;
+        bson_t set_doc;
 
-    auto* opts = mongoc_find_and_modify_opts_new();
-    mongoc_find_and_modify_opts_set_update(opts, &update);
-    mongoc_find_and_modify_opts_set_flags(opts, MONGOC_FIND_AND_MODIFY_NONE);
+        bson_init(&filter);
+        bson_init(&update);
 
-    bson_t reply;
-    bson_init(&reply);
-    bson_error_t error;
+        BSON_APPEND_UTF8(&filter, "identities.impi", std::string(impi).c_str());
+        BSON_APPEND_INT64(&filter, "auth.sqn", static_cast<int64_t>(old_sqn));
 
-    const bool ok = mongoc_collection_find_and_modify_with_opts(
-        client_->collection(), &query, opts, &reply, &error);
+        BSON_APPEND_DOCUMENT_BEGIN(&update, "$set", &set_doc);
+        BSON_APPEND_INT64(&set_doc, "auth.sqn", static_cast<int64_t>(new_sqn));
+        bson_append_document_end(&update, &set_doc);
 
-    mongoc_find_and_modify_opts_destroy(opts);
-    bson_destroy(&update);
-    bson_destroy(&query);
+        bson_error_t error;
+        bson_t reply;
+        bson_init(&reply);
 
-    if (!ok) {
+        const bool ok = mongoc_collection_update_one(
+            collection, &filter, &update, nullptr, &reply, &error);
+            
+        bson_destroy(&update);
+        bson_destroy(&filter);
+
+        if (!ok) {
+            bson_destroy(&reply);
+            mongoc_collection_destroy(collection);
+            return std::unexpected(db_error("Mongo update failed in advanceSqn", error.message));
+        }
+
+        const auto matched = parse_matched_count(reply);
         bson_destroy(&reply);
-        return std::unexpected(db_error("Mongo advanceSqn failed", error.message));
+
+        if (matched > 0) {
+            mongoc_collection_destroy(collection);
+            return old_sqn;
+        }
+
+        // If matched == 0, it means CAS failed (another process updated it), retry
     }
 
-    auto old_sqn = extract_old_sqn_from_value(reply);
-    bson_destroy(&reply);
-    return old_sqn;
+    mongoc_collection_destroy(collection);
+    return std::unexpected(db_error("Mongo advanceSqn exceeded max retries", "CAS conflict"));
 }
 
 auto MongoSubscriberRepository::setServingScscf(std::string_view impi,
@@ -299,8 +259,13 @@ auto MongoSubscriberRepository::find_one_by_field(std::string_view field, std::s
 
 auto MongoSubscriberRepository::find_one_with_filter(const bson_t& filter) const
     -> Result<std::optional<SubscriberRecord>> {
-    auto* cursor = mongoc_collection_find_with_opts(client_->collection(), &filter, nullptr, nullptr);
+    
+    MongoClientGuard guard(client_);
+    auto* collection = guard.collection();
+    
+    auto* cursor = mongoc_collection_find_with_opts(collection, &filter, nullptr, nullptr);
     if (cursor == nullptr) {
+        mongoc_collection_destroy(collection);
         return std::unexpected(db_error("Mongo query cursor creation failed", "find_with_opts"));
     }
 
@@ -309,14 +274,18 @@ auto MongoSubscriberRepository::find_one_with_filter(const bson_t& filter) const
         bson_error_t error;
         if (mongoc_cursor_error(cursor, &error)) {
             mongoc_cursor_destroy(cursor);
+            mongoc_collection_destroy(collection);
             return std::unexpected(db_error("Mongo query failed", error.message));
         }
         mongoc_cursor_destroy(cursor);
+        mongoc_collection_destroy(collection);
         return std::optional<SubscriberRecord>{std::nullopt};
     }
 
     auto decoded = decodeSubscriber(*doc);
     mongoc_cursor_destroy(cursor);
+    mongoc_collection_destroy(collection);
+    
     if (!decoded) {
         return std::unexpected(decoded.error());
     }
@@ -330,8 +299,14 @@ auto MongoSubscriberRepository::update_one_with_filter(const bson_t& filter, con
     bson_t reply;
     bson_init(&reply);
 
+    MongoClientGuard guard(client_);
+    auto* collection = guard.collection();
+
     const bool ok = mongoc_collection_update_one(
-        client_->collection(), &filter, &update, nullptr, &reply, &error);
+        collection, &filter, &update, nullptr, &reply, &error);
+    
+    mongoc_collection_destroy(collection);
+    
     if (!ok) {
         bson_destroy(&reply);
         return std::unexpected(db_error("Mongo update failed", error.message));
