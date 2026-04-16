@@ -4,6 +4,7 @@
 #include "sip/uri_utils.hpp"
 
 #include <algorithm>
+#include <format>
 
 namespace ims::scscf {
 
@@ -21,15 +22,31 @@ auto MongoDigestCredentialStore::findByUsername(std::string_view username,
         });
     }
 
-    auto record = repository_->findByUsernameRealm(username, realm);
-    if (!record) {
-        return std::unexpected(record.error());
+    auto try_lookup = [&](std::string_view candidate) -> Result<std::optional<DigestCredential>> {
+        auto record = repository_->findByUsernameRealm(candidate, realm);
+        if (!record) {
+            return std::unexpected(record.error());
+        }
+        if (!*record) {
+            return std::optional<DigestCredential>{};
+        }
+        return std::optional<DigestCredential>{to_digest_credential(**record)};
+    };
+
+    auto credential = try_lookup(username);
+    if (!credential) {
+        return std::unexpected(credential.error());
     }
-    if (!*record) {
-        return std::optional<DigestCredential>{};
+    if (*credential) {
+        return credential;
     }
 
-    return std::optional<DigestCredential>{to_digest_credential(**record)};
+    auto username_str = std::string(username);
+    if (username_str.find('@') != std::string::npos || username_str.empty() || username_str.front() != '+') {
+        return credential;
+    }
+
+    return try_lookup(std::format("tel:{}", username));
 }
 
 auto MongoDigestCredentialStore::findByIdentity(std::string_view identity) const

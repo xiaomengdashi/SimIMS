@@ -1,6 +1,7 @@
 #include "db/mongo_subscriber_repository.hpp"
 
 #include "db/subscriber_codec.hpp"
+#include "sip/uri_utils.hpp"
 
 #include <bson/bson.h>
 #include <mongoc/mongoc.h>
@@ -122,7 +123,9 @@ auto MongoSubscriberRepository::findByImpiOrImpu(std::string_view impi,
     }
 
     if (!impu.empty()) {
-        auto by_canonical = find_one_by_field("identities.canonical_impu", impu);
+        auto normalized_impu = ims::sip::normalize_impu_uri(std::string(impu));
+
+        auto by_canonical = find_one_by_field("identities.canonical_impu", normalized_impu);
         if (!by_canonical) {
             return std::unexpected(by_canonical.error());
         }
@@ -130,7 +133,7 @@ auto MongoSubscriberRepository::findByImpiOrImpu(std::string_view impi,
             return by_canonical;
         }
 
-        auto by_associated = find_one_by_field("identities.associated_impus", impu);
+        auto by_associated = find_one_by_field("identities.associated_impus", normalized_impu);
         if (!by_associated) {
             return std::unexpected(by_associated.error());
         }
@@ -144,17 +147,19 @@ auto MongoSubscriberRepository::findByImpiOrImpu(std::string_view impi,
 
 auto MongoSubscriberRepository::findByIdentity(std::string_view identity) const
     -> Result<std::optional<SubscriberRecord>> {
-    auto by_impi = find_one_by_field("identities.impi", identity);
+    auto normalized_identity = ims::sip::normalize_impu_uri(std::string(identity));
+
+    auto by_impi = find_one_by_field("identities.impi", normalized_identity);
     if (!by_impi || *by_impi) {
         return by_impi;
     }
 
-    auto by_canonical = find_one_by_field("identities.canonical_impu", identity);
+    auto by_canonical = find_one_by_field("identities.canonical_impu", normalized_identity);
     if (!by_canonical || *by_canonical) {
         return by_canonical;
     }
 
-    return find_one_by_field("identities.associated_impus", identity);
+    return find_one_by_field("identities.associated_impus", normalized_identity);
 }
 
 auto MongoSubscriberRepository::findByUsernameRealm(std::string_view username,

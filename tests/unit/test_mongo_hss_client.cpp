@@ -72,6 +72,23 @@ TEST_F(MongoHssClientTest, UserAuthorizationSuccess) {
     EXPECT_EQ(result->assigned_scscf, "sip:scscf1.ims.mnc001.mcc001.3gppnetwork.org:5062;transport=udp");
 }
 
+TEST_F(MongoHssClientTest, UserAuthorizationNormalizesImpuBeforeLookup) {
+    auto record = make_record();
+    EXPECT_CALL(repository_, findByImpiOrImpu(StrEq("001010000000001@ims.mnc001.mcc001.3gppnetwork.org"),
+                                              StrEq("sip:+8613800000001@ims.mnc001.mcc001.3gppnetwork.org")))
+        .WillOnce(Return(Result<std::optional<db::SubscriberRecord>>{record}));
+
+    MongoHssClient client(config_, repository_);
+    auto result = client.userAuthorization({
+        .impi = "001010000000001@ims.mnc001.mcc001.3gppnetwork.org",
+        .impu = "<sip:+8613800000001@IMS.MNC001.MCC001.3GPPNETWORK.ORG;user=phone>",
+        .visited_network = "ims.mnc001.mcc001.3gppnetwork.org",
+    });
+
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+    EXPECT_EQ(result->result_code, kDiameterSuccess);
+}
+
 TEST_F(MongoHssClientTest, MultimediaAuthSuccessAdvancesSqnAtomically) {
     auto record = make_record();
     EXPECT_CALL(repository_, findByImpiOrImpu(StrEq("001010000000001@ims.mnc001.mcc001.3gppnetwork.org"),
@@ -170,7 +187,21 @@ TEST_F(MongoHssClientTest, LocationInfoSuccess) {
     EXPECT_EQ(result->assigned_scscf, "sip:scscf1.ims.mnc001.mcc001.3gppnetwork.org:5062;transport=udp");
 }
 
-TEST_F(MongoHssClientTest, LocationInfoReturnsUserNotFoundWhenServingScscfMissing) {
+TEST_F(MongoHssClientTest, LocationInfoNormalizesImpuBeforeLookup) {
+    auto record = make_record();
+    EXPECT_CALL(repository_, findByIdentity(StrEq("sip:+8613800000001@ims.mnc001.mcc001.3gppnetwork.org")))
+        .WillOnce(Return(Result<std::optional<db::SubscriberRecord>>{record}));
+
+    MongoHssClient client(config_, repository_);
+    auto result = client.locationInfo({
+        .impu = "<sip:+8613800000001@IMS.MNC001.MCC001.3GPPNETWORK.ORG;user=phone>",
+    });
+
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+    EXPECT_EQ(result->result_code, kDiameterSuccess);
+}
+
+TEST_F(MongoHssClientTest, LocationInfoFallsBackToDefaultScscfWhenServingScscfMissing) {
     auto record = make_record();
     record.serving.assigned_scscf.clear();
 
@@ -182,8 +213,9 @@ TEST_F(MongoHssClientTest, LocationInfoReturnsUserNotFoundWhenServingScscfMissin
         .impu = "sip:alice@ims.mnc001.mcc001.3gppnetwork.org",
     });
 
-    ASSERT_FALSE(result.has_value());
-    EXPECT_EQ(result.error().code, ErrorCode::kDiameterUserNotFound);
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+    EXPECT_EQ(result->result_code, kDiameterSuccess);
+    EXPECT_EQ(result->assigned_scscf, config_.default_scscf_uri);
 }
 
 TEST_F(MongoHssClientTest, UserAuthorizationReturnsUserNotFoundWhenSubscriberMissing) {

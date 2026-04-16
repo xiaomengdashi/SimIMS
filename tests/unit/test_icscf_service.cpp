@@ -15,6 +15,7 @@ namespace {
 
 using ::testing::_;
 using ::testing::Return;
+using ::testing::Truly;
 
 class CapturingTransport final : public ims::sip::ITransport {
 public:
@@ -80,8 +81,9 @@ protected:
 
     auto make_request(const std::string& method,
                       const std::string& call_id,
-                      uint32_t cseq) -> ims::sip::SipMessage {
-        auto request = ims::sip::createRequest(method, "sip:user@ims.example.com");
+                      uint32_t cseq,
+                      const std::string& request_uri = "sip:user@ims.example.com") -> ims::sip::SipMessage {
+        auto request = ims::sip::createRequest(method, request_uri);
         EXPECT_TRUE(request.has_value()) << request.error().message;
 
         request->setFromHeader("<sip:caller@ims.example.com>;tag=caller-tag");
@@ -168,6 +170,33 @@ TEST_F(IcscfServiceTest, InviteStillUsesSelectorResultForRouting) {
     ASSERT_EQ(capturing_transport->sent_destinations.size(), 1u);
     EXPECT_EQ(capturing_transport->sent_destinations[0].address, "192.168.100.20");
     EXPECT_EQ(capturing_transport->sent_destinations[0].port, 5099);
+    EXPECT_EQ(capturing_transport->sent_destinations[0].transport, "udp");
+}
+
+TEST_F(IcscfServiceTest, InviteNormalizesTelRequestUriBeforeLocationLookup) {
+    auto invite = make_request("INVITE",
+                               "invite-tel-call",
+                               1,
+                               "tel:+8613800000001;phone-context=IMS.EXAMPLE.COM");
+    auto invite_for_txn = invite.clone();
+    ASSERT_TRUE(invite_for_txn.has_value()) << invite_for_txn.error().message;
+
+    ims::sip::Endpoint source{.address = "127.0.0.1", .port = 5090, .transport = "udp"};
+    auto txn = std::make_shared<ims::sip::ServerTransaction>(std::move(*invite_for_txn), capturing_transport, source, io);
+
+    EXPECT_CALL(*hss, locationInfo(Truly([](const ims::diameter::LirParams& params) {
+        return params.impu == "tel:+8613800000001";
+    })))
+        .WillOnce(Return(ims::Result<ims::diameter::LiaResult>{ims::diameter::LiaResult{
+            .result_code = 2001,
+            .assigned_scscf = "sip:192.168.100.30:5100;transport=udp",
+        }}));
+
+    service->onInvite(txn, invite);
+
+    ASSERT_EQ(capturing_transport->sent_destinations.size(), 1u);
+    EXPECT_EQ(capturing_transport->sent_destinations[0].address, "192.168.100.30");
+    EXPECT_EQ(capturing_transport->sent_destinations[0].port, 5100);
     EXPECT_EQ(capturing_transport->sent_destinations[0].transport, "udp");
 }
 

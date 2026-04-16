@@ -18,20 +18,28 @@ struct AuthFields {
     int64_t sqn_value = 0x1234;
 };
 
-auto make_subscriber_document(const AuthFields& auth_fields = {}) -> bson_t {
+auto make_subscriber_document(const AuthFields& auth_fields = {},
+                             bool include_associated_impus = true,
+                             std::optional<std::string> legacy_tel = std::nullopt) -> bson_t {
     bson_t document;
     bson_init(&document);
+
+    if (legacy_tel) {
+        BSON_APPEND_UTF8(&document, "tel", legacy_tel->c_str());
+    }
 
     bson_t identities;
     BSON_APPEND_DOCUMENT_BEGIN(&document, "identities", &identities);
     BSON_APPEND_UTF8(&identities, "impi", "001010000000001@ims.mnc001.mcc001.3gppnetwork.org");
     BSON_APPEND_UTF8(&identities, "canonical_impu", "sip:alice@ims.mnc001.mcc001.3gppnetwork.org");
 
-    bson_t associated_impus;
-    BSON_APPEND_ARRAY_BEGIN(&identities, "associated_impus", &associated_impus);
-    BSON_APPEND_UTF8(&associated_impus, "0", "sip:alice@ims.mnc001.mcc001.3gppnetwork.org");
-    BSON_APPEND_UTF8(&associated_impus, "1", "tel:+8613800000001");
-    bson_append_array_end(&identities, &associated_impus);
+    if (include_associated_impus) {
+        bson_t associated_impus;
+        BSON_APPEND_ARRAY_BEGIN(&identities, "associated_impus", &associated_impus);
+        BSON_APPEND_UTF8(&associated_impus, "0", "sip:alice@ims.mnc001.mcc001.3gppnetwork.org");
+        BSON_APPEND_UTF8(&associated_impus, "1", "tel:+8613800000001");
+        bson_append_array_end(&identities, &associated_impus);
+    }
 
     BSON_APPEND_UTF8(&identities, "realm", "ims.mnc001.mcc001.3gppnetwork.org");
     bson_append_document_end(&document, &identities);
@@ -209,4 +217,19 @@ TEST(SubscriberCodecTest, NextSqnApplies48BitMask) {
     auto next = ims::db::nextSqn(current, step, mask);
 
     EXPECT_EQ(next, 0x30ULL);
+}
+
+TEST(SubscriberCodecTest, DecodeSubscriberBuildsAssociatedImpusFromLegacyTelWhenMissing) {
+    auto document = make_subscriber_document(AuthFields{}, false, std::string("+8613800000001"));
+
+    auto decoded = ims::db::decodeSubscriber(document);
+
+    ASSERT_TRUE(decoded.has_value()) << decoded.error().message;
+    EXPECT_EQ(decoded->identities.canonical_impu, "sip:alice@ims.mnc001.mcc001.3gppnetwork.org");
+    ASSERT_EQ(decoded->identities.associated_impus.size(), 3u);
+    EXPECT_EQ(decoded->identities.associated_impus[0], "tel:+8613800000001");
+    EXPECT_EQ(decoded->identities.associated_impus[1], "sip:+8613800000001@ims.mnc001.mcc001.3gppnetwork.org");
+    EXPECT_EQ(decoded->identities.associated_impus[2], "sip:alice@ims.mnc001.mcc001.3gppnetwork.org");
+
+    bson_destroy(&document);
 }

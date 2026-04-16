@@ -2,6 +2,8 @@
 
 #include "diameter/aka_vector_builder.hpp"
 
+#include "sip/uri_utils.hpp"
+
 #include <format>
 #include <random>
 #include <string_view>
@@ -62,7 +64,9 @@ auto MongoHssClient::resolve_assigned_scscf(const db::SubscriberRecord& subscrib
 }
 
 auto MongoHssClient::userAuthorization(const UarParams& params) -> Result<UaaResult> {
-    auto subscriber = repository_.findByImpiOrImpu(params.impi, params.impu);
+    auto normalized_impu = ims::sip::normalize_impu_uri(params.impu);
+
+    auto subscriber = repository_.findByImpiOrImpu(params.impi, normalized_impu);
     if (!subscriber) {
         return std::unexpected(subscriber.error());
     }
@@ -79,7 +83,9 @@ auto MongoHssClient::userAuthorization(const UarParams& params) -> Result<UaaRes
 }
 
 auto MongoHssClient::multimediaAuth(const MarParams& params) -> Result<MaaResult> {
-    auto subscriber = repository_.findByImpiOrImpu(params.impi, params.impu);
+    auto normalized_impu = ims::sip::normalize_impu_uri(params.impu);
+
+    auto subscriber = repository_.findByImpiOrImpu(params.impi, normalized_impu);
     if (!subscriber) {
         return std::unexpected(subscriber.error());
     }
@@ -125,7 +131,9 @@ auto MongoHssClient::multimediaAuth(const MarParams& params) -> Result<MaaResult
 }
 
 auto MongoHssClient::serverAssignment(const SarParams& params) -> Result<SaaResult> {
-    auto subscriber = repository_.findByImpiOrImpu(params.impi, params.impu);
+    auto normalized_impu = ims::sip::normalize_impu_uri(params.impu);
+
+    auto subscriber = repository_.findByImpiOrImpu(params.impi, normalized_impu);
     if (!subscriber) {
         return std::unexpected(subscriber.error());
     }
@@ -151,7 +159,9 @@ auto MongoHssClient::serverAssignment(const SarParams& params) -> Result<SaaResu
 }
 
 auto MongoHssClient::locationInfo(const LirParams& params) -> Result<LiaResult> {
-    auto subscriber = repository_.findByIdentity(params.impu);
+    auto normalized_impu = ims::sip::normalize_impu_uri(params.impu);
+
+    auto subscriber = repository_.findByIdentity(normalized_impu);
     if (!subscriber) {
         return std::unexpected(subscriber.error());
     }
@@ -161,15 +171,14 @@ auto MongoHssClient::locationInfo(const LirParams& params) -> Result<LiaResult> 
             params.impu));
     }
 
-    if ((*subscriber)->serving.assigned_scscf.empty()) {
-        return std::unexpected(user_not_found(
-            "Serving S-CSCF not found for LIR",
-            params.impu));
+    auto assigned_scscf = (*subscriber)->serving.assigned_scscf;
+    if (assigned_scscf.empty()) {
+        assigned_scscf = config_.default_scscf_uri;
     }
 
     return LiaResult{
         .result_code = kDiameterSuccess,
-        .assigned_scscf = (*subscriber)->serving.assigned_scscf,
+        .assigned_scscf = std::move(assigned_scscf),
     };
 }
 

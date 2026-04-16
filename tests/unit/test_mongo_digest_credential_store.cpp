@@ -72,6 +72,22 @@ TEST(MongoDigestCredentialStoreTest, FindByIdentityNormalizesAndMapsCredential) 
     EXPECT_EQ(result->value().password, "testpass");
 }
 
+TEST(MongoDigestCredentialStoreTest, FindByIdentityNormalizesSipUserPhoneIdentity) {
+    auto repository = std::make_shared<MockSubscriberRepository>();
+    auto record = make_record();
+
+    EXPECT_CALL(*repository, findByIdentity(StrEq("sip:+8613800000001@ims.example.com")))
+        .WillOnce(Return(Result<std::optional<db::SubscriberRecord>>{record}));
+
+    MongoDigestCredentialStore store(repository);
+    auto result = store.findByIdentity("<sip:+8613800000001@IMS.EXAMPLE.COM;user=phone>");
+
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+    ASSERT_TRUE(result->has_value());
+    EXPECT_EQ(result->value().username, "alice");
+    EXPECT_EQ(result->value().password, "testpass");
+}
+
 TEST(MongoDigestCredentialStoreTest, FindByUsernameReturnsEmptyWhenNotFound) {
     auto repository = std::make_shared<MockSubscriberRepository>();
 
@@ -83,6 +99,24 @@ TEST(MongoDigestCredentialStoreTest, FindByUsernameReturnsEmptyWhenNotFound) {
 
     ASSERT_TRUE(result.has_value()) << result.error().message;
     EXPECT_FALSE(result->has_value());
+}
+
+TEST(MongoDigestCredentialStoreTest, FindByUsernameFallsBackToTelAliasesWhenPrimaryLookupMisses) {
+    auto repository = std::make_shared<MockSubscriberRepository>();
+    auto record = make_record();
+
+    EXPECT_CALL(*repository, findByUsernameRealm(StrEq("+8613800000001"), StrEq("ims.example.com")))
+        .WillOnce(Return(Result<std::optional<db::SubscriberRecord>>{std::nullopt}));
+    EXPECT_CALL(*repository, findByUsernameRealm(StrEq("tel:+8613800000001"), StrEq("ims.example.com")))
+        .WillOnce(Return(Result<std::optional<db::SubscriberRecord>>{record}));
+
+    MongoDigestCredentialStore store(repository);
+    auto result = store.findByUsername("+8613800000001", "ims.example.com");
+
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+    ASSERT_TRUE(result->has_value());
+    EXPECT_EQ(result->value().username, "alice");
+    EXPECT_EQ(result->value().realm, "ims.example.com");
 }
 
 TEST(MongoDigestCredentialStoreTest, FindByIdentityPropagatesRepositoryError) {

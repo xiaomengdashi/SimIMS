@@ -93,6 +93,8 @@ auto extract_string_array(const bson_t& root, std::string_view key) -> std::opti
 auto decodeSubscriber(const bson_t& document) -> Result<SubscriberRecord> {
     SubscriberRecord out;
 
+    auto legacy_tel = extract_utf8(document, "tel");
+
     bson_t identities;
     if (!extract_document(document, "identities", &identities)) {
         return std::unexpected(invalid_field("identities"));
@@ -103,8 +105,20 @@ auto decodeSubscriber(const bson_t& document) -> Result<SubscriberRecord> {
     auto associated_impus = extract_string_array(identities, "associated_impus");
     auto realm = extract_utf8(identities, "realm");
 
-    if (!impi || !canonical_impu || !associated_impus || !realm) {
+    if (!impi || !canonical_impu || !realm) {
         return std::unexpected(invalid_field("identities"));
+    }
+
+    if (!associated_impus) {
+        if (!legacy_tel) {
+            return std::unexpected(invalid_field("identities.associated_impus"));
+        }
+
+        std::vector<std::string> generated;
+        generated.emplace_back("tel:" + *legacy_tel);
+        generated.emplace_back("sip:" + *legacy_tel + "@" + *realm);
+        generated.emplace_back(*canonical_impu);
+        associated_impus = std::move(generated);
     }
 
     out.identities.impi = *impi;

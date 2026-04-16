@@ -10,6 +10,7 @@ target_include_directories(ims_db PUBLIC
 
 target_link_libraries(ims_db PUBLIC
     ims_common
+    ims_sip
 )
 
 find_package(PkgConfig REQUIRED)
