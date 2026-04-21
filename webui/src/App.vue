@@ -112,6 +112,8 @@ const ueDetail = ref<UeDetail | null>(null)
 const ueModalVisible = ref(false)
 const ueListLoading = ref(false)
 const ueDetailLoading = ref(false)
+const ueSearchInput = ref('')
+const ueSearchQuery = ref('')
 const ueEditMode = ref(false)
 const ueSaving = ref(false)
 const uePagination = reactive<UePagination>({
@@ -364,11 +366,20 @@ async function loadUePage(page = uePagination.page) {
   globalError.value = ''
 
   try {
-    const response = await fetch(`/api/ue?page=${page}&pageSize=${uePagination.pageSize}`)
+    const params = new URLSearchParams({
+      page: String(page),
+      pageSize: String(uePagination.pageSize),
+    })
+    if (ueSearchQuery.value) {
+      params.set('q', ueSearchQuery.value)
+    }
+
+    const response = await fetch(`/api/ue?${params.toString()}`)
     const payload = await parseJsonResponse<{
       message?: string
       items?: UeListItem[]
       pagination?: UePagination
+      search?: string
     }>(response)
 
     if (!response.ok) {
@@ -383,6 +394,7 @@ async function loadUePage(page = uePagination.page) {
       uePagination.totalPages = payload.pagination.totalPages
       uePageInput.value = String(payload.pagination.page)
     }
+    ueSearchInput.value = payload.search ?? ueSearchQuery.value
 
     if (ueItems.value.length === 0) {
       selectedUeId.value = ''
@@ -415,6 +427,23 @@ async function changeUePageSize(rawValue: string) {
   }
 
   uePagination.pageSize = pageSize
+  uePageInput.value = '1'
+  await loadUePage(1)
+}
+
+async function submitUeSearch() {
+  ueSearchQuery.value = ueSearchInput.value.trim()
+  uePageInput.value = '1'
+  await loadUePage(1)
+}
+
+async function clearUeSearch() {
+  if (!ueSearchQuery.value && !ueSearchInput.value) {
+    return
+  }
+
+  ueSearchInput.value = ''
+  ueSearchQuery.value = ''
   uePageInput.value = '1'
   await loadUePage(1)
 }
@@ -799,6 +828,17 @@ onBeforeUnmount(() => {
             <strong>{{ ueRangeLabel }}</strong>
             <span>每页 {{ uePagination.pageSize }} 条</span>
           </div>
+
+          <form class="ue-search-bar" @submit.prevent="submitUeSearch">
+            <label class="ue-search-input">
+              <span>搜索 UE</span>
+              <input v-model.trim="ueSearchInput" placeholder="输入 IMSI 或 IMPI 前缀" />
+            </label>
+            <button class="ghost-button" type="submit" :disabled="ueListLoading">搜索</button>
+            <button class="mini-button" type="button" :disabled="ueListLoading" @click="clearUeSearch">
+              清空
+            </button>
+          </form>
 
           <div v-if="ueListLoading" class="empty-state">正在加载 UE 列表...</div>
           <div v-else-if="ueItems.length === 0" class="empty-state">当前没有 UE 数据。</div>
@@ -1552,6 +1592,21 @@ h1 {
   gap: 18px;
 }
 
+.ue-search-bar {
+  display: flex;
+  align-items: end;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.ue-search-input {
+  min-width: min(420px, 100%);
+}
+
+.ue-search-input span {
+  font-size: 0.9rem;
+}
+
 .ue-imsi-list {
   border: 1px solid rgba(109, 101, 83, 0.12);
   border-radius: 20px;
@@ -2013,6 +2068,7 @@ select:focus {
   .template-actions,
   .template-toolbar,
   .template-toolbar-actions,
+  .ue-search-bar,
   .table-toolbar,
   .pagination-bar,
   .action-row {

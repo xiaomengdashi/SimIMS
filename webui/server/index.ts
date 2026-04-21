@@ -152,6 +152,10 @@ function parsePositiveInteger(rawValue: unknown, fallbackValue: number, field: s
   return parsed
 }
 
+function escapeRegex(rawValue: string) {
+  return rawValue.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
 function generateSequentialImsis(startImsi: string, countRaw: string) {
   const normalizedStart = ensureNonEmpty(startImsi, '起始 IMSI')
   if (!/^\d+$/.test(normalizedStart)) {
@@ -360,6 +364,11 @@ async function bootstrap() {
 
   const collection = mongo.db(config.mongoDb).collection(config.mongoCollection)
   const templateCollection = mongo.db(config.mongoDb).collection(config.templateCollection)
+  await Promise.all([
+    collection.createIndex({ imsi: 1 }, { unique: true, name: 'simims_imsi_unique' }),
+    collection.createIndex({ 'identities.impi': 1 }, { unique: true, name: 'simims_impi_unique' }),
+    templateCollection.createIndex({ name: 1 }, { unique: true, name: 'simims_template_name_unique' }),
+  ])
   const app = express()
 
   app.use(express.json())
@@ -398,12 +407,22 @@ async function bootstrap() {
       const page = Math.max(parsePositiveInteger(req.query.page, 1, 'page'), 1)
       const pageSize = Math.min(Math.max(parsePositiveInteger(req.query.pageSize, 20, 'pageSize'), 1), 100)
       const skip = (page - 1) * pageSize
+      const search = typeof req.query.q === 'string' ? req.query.q.trim() : ''
+      const filter =
+        search === ''
+          ? {}
+          : {
+              $or: [
+                { imsi: { $regex: escapeRegex(search), $options: 'i' } },
+                { 'identities.impi': { $regex: escapeRegex(search), $options: 'i' } },
+              ],
+            }
 
       const [total, subscribers] = await Promise.all([
-        collection.countDocuments({}),
+        collection.countDocuments(filter),
         collection
           .find(
-            {},
+            filter,
             {
               projection: {
                 imsi: 1,
@@ -430,6 +449,7 @@ async function bootstrap() {
           total,
           totalPages: Math.max(Math.ceil(total / pageSize), 1),
         },
+        search,
       })
     } catch (error) {
       res.status(400).json({
