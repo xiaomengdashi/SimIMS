@@ -89,6 +89,56 @@ vim config/local.yaml
 ./bin/ims_pcscf config/ims.yaml &
 ```
 
+#### Web UI 管理 UE
+
+`webui/` 现在是独立的 `Vue + TypeScript` 前端工程，配套一个 Node.js API 服务，API 会把 UE 信息真实写入 MongoDB。
+
+进入 `webui/` 后先安装依赖：
+
+```bash
+cd webui
+npm install
+```
+
+开发模式：
+
+```bash
+npm run dev
+```
+
+这会同时启动：
+
+- 前端：`http://127.0.0.1:5173`
+- 后端 API：`http://127.0.0.1:18080`
+
+默认读取的配置文件是仓库根目录下的：
+
+- `config/ims.yaml`
+
+如果你要指定别的配置文件：
+
+```bash
+SIMIMS_CONFIG=../config/local.yaml npm run dev
+```
+
+生产构建前端：
+
+```bash
+npm run build
+npm run start
+```
+
+表单提交后会真实写入当前 `hss_adapter.mongo_uri` / `mongo_db` / `mongo_collection` 指向的 MongoDB 集合，并自动生成：
+
+- `IMPI = IMSI@realm`
+- `canonical IMPU = sip:IMSI@realm`
+- `associated IMPUs`（包含 `sip:IMSI@realm`，以及可选的 `sip:TEL@realm` / `tel:TEL`）
+
+当前 WebUI 已支持两类操作：
+
+- 模板管理：预先保存 `realm/password/ki/opc(op)/amf/S-CSCF/TEL 规则/SQN 规则`
+- 批量生成 UE：选择模板后，输入起始 `IMSI` 和 `UE` 数量，系统自动按 IMSI 递增批量写入 MongoDB
+
 ### 测试
 
 ```bash
