@@ -6,8 +6,12 @@
 #include <bson/bson.h>
 #include <mongoc/mongoc.h>
 
+#include <algorithm>
 #include <format>
+#include <optional>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace ims::db {
 namespace {
@@ -37,6 +41,81 @@ auto parse_matched_count(const bson_t& reply) -> int64_t {
     return 0;
 }
 
+auto add_unique_candidate(std::vector<std::string>& candidates, std::string value) {
+    if (value.empty()) {
+        return;
+    }
+    if (std::find(candidates.begin(), candidates.end(), value) == candidates.end()) {
+        candidates.push_back(std::move(value));
+    }
+}
+
+auto strip_scheme(std::string value) -> std::string {
+    if (value.rfind("sip:", 0) == 0) {
+        return value.substr(4);
+    }
+    if (value.rfind("sips:", 0) == 0) {
+        return value.substr(5);
+    }
+    if (value.rfind("tel:", 0) == 0) {
+        return value.substr(4);
+    }
+    return value;
+}
+
+auto user_part(std::string value) -> std::string {
+    value = strip_scheme(std::move(value));
+
+    auto semicolon = value.find(';');
+    if (semicolon != std::string::npos) {
+        value = value.substr(0, semicolon);
+    }
+
+    auto at = value.find('@');
+    if (at != std::string::npos) {
+        value = value.substr(0, at);
+    }
+
+    return value;
+}
+
+auto identity_candidates(std::string_view identity) -> std::pair<std::vector<std::string>, std::vector<std::string>> {
+    std::vector<std::string> imsis;
+    std::vector<std::string> tels;
+
+    if (identity.empty()) {
+        return {imsis, tels};
+    }
+
+    auto normalized = ims::sip::normalize_impu_uri(std::string(identity));
+    auto value = normalized.empty() ? std::string(identity) : normalized;
+    auto user = user_part(value);
+
+    if (value.rfind("tel:", 0) == 0 || user.rfind("+", 0) == 0) {
+        add_unique_candidate(tels, user);
+    } else {
+        add_unique_candidate(imsis, user);
+    }
+
+    return {imsis, tels};
+}
+
+auto private_identity_imsi(std::string_view impi) -> std::optional<std::string> {
+    if (impi.empty()) {
+        return std::nullopt;
+    }
+
+    auto user = user_part(ims::sip::normalize_impu_uri(std::string(impi)));
+    if (user.empty()) {
+        user = user_part(std::string(impi));
+    }
+    if (user.empty()) {
+        return std::nullopt;
+    }
+
+    return user;
+}
+
 } // namespace
 
 auto MongoSubscriberRepository::create(const HssAdapterConfig& config)
@@ -54,76 +133,53 @@ MongoSubscriberRepository::MongoSubscriberRepository(std::shared_ptr<MongoClient
 auto MongoSubscriberRepository::findByImpiOrImpu(std::string_view impi,
                                                  std::string_view impu) const
     -> Result<std::optional<SubscriberRecord>> {
-    if (!impi.empty()) {
-        auto by_impi = find_one_by_field("identities.impi", impi);
-        if (!by_impi) {
-            return std::unexpected(by_impi.error());
-        }
-        if (*by_impi) {
-            return by_impi;
-        }
+    std::vector<std::string> imsis;
+    std::vector<std::string> tels;
+
+    if (auto imsi = private_identity_imsi(impi); imsi) {
+        add_unique_candidate(imsis, *imsi);
     }
 
     if (!impu.empty()) {
-        auto normalized_impu = ims::sip::normalize_impu_uri(std::string(impu));
-
-        auto by_canonical = find_one_by_field("identities.canonical_impu", normalized_impu);
-        if (!by_canonical) {
-            return std::unexpected(by_canonical.error());
+        auto [impu_imsis, impu_tels] = identity_candidates(impu);
+        for (auto& imsi : impu_imsis) {
+            add_unique_candidate(imsis, std::move(imsi));
         }
-        if (*by_canonical) {
-            return by_canonical;
-        }
-
-        auto by_associated = find_one_by_field("identities.associated_impus", normalized_impu);
-        if (!by_associated) {
-            return std::unexpected(by_associated.error());
-        }
-        if (*by_associated) {
-            return by_associated;
+        for (auto& tel : impu_tels) {
+            add_unique_candidate(tels, std::move(tel));
         }
     }
 
-    return std::optional<SubscriberRecord>{std::nullopt};
+    return find_one_by_imsi_or_tel(imsis, tels);
 }
 
 auto MongoSubscriberRepository::findByIdentity(std::string_view identity) const
     -> Result<std::optional<SubscriberRecord>> {
-    auto normalized_identity = ims::sip::normalize_impu_uri(std::string(identity));
-
-    auto by_impi = find_one_by_field("identities.impi", normalized_identity);
-    if (!by_impi || *by_impi) {
-        return by_impi;
-    }
-
-    auto by_canonical = find_one_by_field("identities.canonical_impu", normalized_identity);
-    if (!by_canonical || *by_canonical) {
-        return by_canonical;
-    }
-
-    return find_one_by_field("identities.associated_impus", normalized_identity);
+    auto [imsis, tels] = identity_candidates(identity);
+    return find_one_by_imsi_or_tel(imsis, tels);
 }
 
 auto MongoSubscriberRepository::findByUsernameRealm(std::string_view username,
                                                     std::string_view realm) const
     -> Result<std::optional<SubscriberRecord>> {
-    const auto impi = username.find('@') != std::string_view::npos
-        ? std::string(username)
-        : std::format("{}@{}", username, realm);
+    std::vector<std::string> imsis;
+    std::vector<std::string> tels;
 
-    auto by_impi = find_one_by_field("identities.impi", impi);
-    if (!by_impi || *by_impi) {
-        return by_impi;
+    auto username_text = std::string(username);
+    add_unique_candidate(imsis, user_part(username_text));
+
+    if (username.rfind("+", 0) == 0 || username.rfind("tel:", 0) == 0) {
+        add_unique_candidate(tels, user_part(username_text));
     }
 
-    bson_t filter;
-    bson_init(&filter);
-    BSON_APPEND_UTF8(&filter, "identities.username", std::string(username).c_str());
-    BSON_APPEND_UTF8(&filter, "identities.realm", std::string(realm).c_str());
+    auto impi = username.find('@') != std::string_view::npos
+        ? std::string(username)
+        : std::format("{}@{}", username, realm);
+    if (auto imsi = private_identity_imsi(impi); imsi) {
+        add_unique_candidate(imsis, *imsi);
+    }
 
-    auto result = find_one_with_filter(filter);
-    bson_destroy(&filter);
-    return result;
+    return find_one_by_imsi_or_tel(imsis, tels);
 }
 
 auto MongoSubscriberRepository::setSqn(std::string_view impi, uint64_t sqn) -> VoidResult {
@@ -134,7 +190,8 @@ auto MongoSubscriberRepository::setSqn(std::string_view impi, uint64_t sqn) -> V
     bson_init(&filter);
     bson_init(&update);
 
-    BSON_APPEND_UTF8(&filter, "identities.impi", std::string(impi).c_str());
+    auto imsi = private_identity_imsi(impi).value_or(std::string(impi));
+    BSON_APPEND_UTF8(&filter, "imsi", imsi.c_str());
     BSON_APPEND_DOCUMENT_BEGIN(&update, "$set", &set_doc);
     BSON_APPEND_INT64(&set_doc, "auth.sqn", static_cast<int64_t>(sqn));
     bson_append_document_end(&update, &set_doc);
@@ -164,9 +221,10 @@ auto MongoSubscriberRepository::advanceSqn(std::string_view impi,
 
     MongoClientGuard guard(client_);
     auto* collection = guard.collection();
+    auto imsi = private_identity_imsi(impi).value_or(std::string(impi));
 
     for (int attempt = 0; attempt < kMaxRetries; ++attempt) {
-        auto record_opt = find_one_by_field("identities.impi", impi);
+        auto record_opt = find_one_by_field("imsi", imsi);
         if (!record_opt) {
             mongoc_collection_destroy(collection);
             return std::unexpected(record_opt.error());
@@ -186,7 +244,7 @@ auto MongoSubscriberRepository::advanceSqn(std::string_view impi,
         bson_init(&filter);
         bson_init(&update);
 
-        BSON_APPEND_UTF8(&filter, "identities.impi", std::string(impi).c_str());
+        BSON_APPEND_UTF8(&filter, "imsi", imsi.c_str());
         BSON_APPEND_INT64(&filter, "auth.sqn", static_cast<int64_t>(old_sqn));
 
         BSON_APPEND_DOCUMENT_BEGIN(&update, "$set", &set_doc);
@@ -233,7 +291,8 @@ auto MongoSubscriberRepository::setServingScscf(std::string_view impi,
     bson_init(&filter);
     bson_init(&update);
 
-    BSON_APPEND_UTF8(&filter, "identities.impi", std::string(impi).c_str());
+    auto imsi = private_identity_imsi(impi).value_or(std::string(impi));
+    BSON_APPEND_UTF8(&filter, "imsi", imsi.c_str());
     BSON_APPEND_DOCUMENT_BEGIN(&update, "$set", &set_doc);
     BSON_APPEND_UTF8(&set_doc, "serving.assigned_scscf", std::string(scscf_uri).c_str());
     bson_append_document_end(&update, &set_doc);
@@ -244,6 +303,26 @@ auto MongoSubscriberRepository::setServingScscf(std::string_view impi,
     bson_destroy(&filter);
 
     return result;
+}
+
+auto MongoSubscriberRepository::find_one_by_imsi_or_tel(const std::vector<std::string>& imsis,
+                                                        const std::vector<std::string>& tels) const
+    -> Result<std::optional<SubscriberRecord>> {
+    for (const auto& imsi : imsis) {
+        auto result = find_one_by_field("imsi", imsi);
+        if (!result || *result) {
+            return result;
+        }
+    }
+
+    for (const auto& tel : tels) {
+        auto result = find_one_by_field("tel", tel);
+        if (!result || *result) {
+            return result;
+        }
+    }
+
+    return std::optional<SubscriberRecord>{std::nullopt};
 }
 
 auto MongoSubscriberRepository::find_one_by_field(std::string_view field, std::string_view value) const

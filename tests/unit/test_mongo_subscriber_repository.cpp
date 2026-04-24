@@ -47,6 +47,8 @@ auto make_test_repository() -> std::shared_ptr<ims::db::MongoSubscriberRepositor
 auto make_subscriber_document_without_username() -> bson_t {
     bson_t document;
     bson_init(&document);
+    BSON_APPEND_UTF8(&document, "imsi", "alice");
+    BSON_APPEND_UTF8(&document, "tel", "+8613800000001");
 
     bson_t identities;
     BSON_APPEND_DOCUMENT_BEGIN(&document, "identities", &identities);
@@ -78,6 +80,8 @@ auto make_subscriber_document_without_username() -> bson_t {
 auto make_subscriber_document_with_aliases() -> bson_t {
     bson_t document;
     bson_init(&document);
+    BSON_APPEND_UTF8(&document, "imsi", "alice");
+    BSON_APPEND_UTF8(&document, "tel", "+8613800000001");
 
     bson_t identities;
     BSON_APPEND_DOCUMENT_BEGIN(&document, "identities", &identities);
@@ -115,7 +119,7 @@ void reset_collection(mongoc_collection_t* collection) {
 
 } // namespace
 
-TEST(MongoSubscriberRepositoryTest, FindByUsernameRealmFallsBackToImpiWhenUsernameMissing) {
+TEST(MongoSubscriberRepositoryTest, FindByUsernameRealmUsesTopLevelImsi) {
     auto repository = make_test_repository();
     if (!repository) {
         GTEST_SKIP() << "Mongo unavailable in test environment";
@@ -142,6 +146,37 @@ TEST(MongoSubscriberRepositoryTest, FindByUsernameRealmFallsBackToImpiWhenUserna
     ASSERT_TRUE(result.has_value()) << result.error().message;
     ASSERT_TRUE(result->has_value());
     EXPECT_EQ(result->value().identities.impi, "alice@ims.example.com");
+
+    reset_collection(seed_collection.get());
+}
+
+TEST(MongoSubscriberRepositoryTest, FindByImpiOrImpuPrefersImsi) {
+    auto repository = make_test_repository();
+    if (!repository) {
+        GTEST_SKIP() << "Mongo unavailable in test environment";
+    }
+
+    auto seed_client = std::unique_ptr<mongoc_client_t, decltype(&mongoc_client_destroy)>(
+        mongoc_client_new(kMongoUri), mongoc_client_destroy);
+    ASSERT_NE(seed_client.get(), nullptr);
+
+    auto seed_collection = std::unique_ptr<mongoc_collection_t, decltype(&mongoc_collection_destroy)>(
+        mongoc_client_get_collection(seed_client.get(), kMongoDb, kMongoCollection), mongoc_collection_destroy);
+    ASSERT_NE(seed_collection.get(), nullptr);
+
+    reset_collection(seed_collection.get());
+
+    auto document = make_subscriber_document_with_aliases();
+    bson_error_t insert_error;
+    ASSERT_TRUE(mongoc_collection_insert_one(seed_collection.get(), &document, nullptr, nullptr, &insert_error))
+        << insert_error.message;
+    bson_destroy(&document);
+
+    auto result = repository->findByImpiOrImpu("alice@ims.example.com", "sip:other@ims.example.com");
+
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+    ASSERT_TRUE(result->has_value());
+    EXPECT_EQ(result->value().imsi, "alice");
 
     reset_collection(seed_collection.get());
 }
@@ -196,6 +231,7 @@ TEST(MongoSubscriberRepositoryTest, FindByIdentityNormalizesSipUserPhoneAlias) {
 
     ASSERT_TRUE(result.has_value()) << result.error().message;
     ASSERT_TRUE(result->has_value());
+    EXPECT_EQ(result->value().tel, "+8613800000001");
     EXPECT_EQ(result->value().identities.impi, "alice@ims.example.com");
 
     reset_collection(seed_collection.get());
@@ -227,6 +263,7 @@ TEST(MongoSubscriberRepositoryTest, FindByIdentityNormalizesTelWithPhoneContext)
 
     ASSERT_TRUE(result.has_value()) << result.error().message;
     ASSERT_TRUE(result->has_value());
+    EXPECT_EQ(result->value().tel, "+8613800000001");
     EXPECT_EQ(result->value().identities.impi, "alice@ims.example.com");
 
     reset_collection(seed_collection.get());

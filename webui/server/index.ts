@@ -364,11 +364,15 @@ async function bootstrap() {
 
   const collection = mongo.db(config.mongoDb).collection(config.mongoCollection)
   const templateCollection = mongo.db(config.mongoDb).collection(config.templateCollection)
-  await Promise.all([
-    collection.createIndex({ imsi: 1 }, { unique: true, name: 'simims_imsi_unique' }),
-    collection.createIndex({ 'identities.impi': 1 }, { unique: true, name: 'simims_impi_unique' }),
-    templateCollection.createIndex({ name: 1 }, { unique: true, name: 'simims_template_name_unique' }),
-  ])
+  await collection.createIndex({ imsi: 1 }, { unique: true, name: 'simims_imsi_unique' })
+  await collection.createIndex({ tel: 1 }, { name: 'simims_tel' })
+  for (const index of await collection.indexes()) {
+    const indexName = index.name ?? ''
+    if (!['_id_', 'simims_imsi_unique', 'simims_tel'].includes(indexName)) {
+      await collection.dropIndex(indexName)
+    }
+  }
+  await templateCollection.createIndex({ name: 1 }, { unique: true, name: 'simims_template_name_unique' })
   const app = express()
 
   app.use(express.json())

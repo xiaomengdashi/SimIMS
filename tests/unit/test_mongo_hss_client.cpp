@@ -22,6 +22,8 @@ constexpr uint64_t kSqnMask = 0x0000FFFFFFFFFFFFULL;
 
 auto make_record() -> db::SubscriberRecord {
     db::SubscriberRecord record;
+    record.imsi = "001010000000001";
+    record.tel = "+8613800000001";
     record.identities.impi = "001010000000001@ims.mnc001.mcc001.3gppnetwork.org";
     record.identities.canonical_impu = "sip:alice@ims.mnc001.mcc001.3gppnetwork.org";
     record.identities.associated_impus = {

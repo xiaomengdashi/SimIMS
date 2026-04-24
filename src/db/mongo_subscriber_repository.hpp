@@ -6,6 +6,7 @@
 
 #include <memory>
 #include <string_view>
+#include <vector>
 
 namespace ims::db {
 
@@ -41,6 +42,10 @@ public:
                          std::string_view scscf_uri) -> VoidResult override;
 
 private:
+    auto find_one_by_imsi_or_tel(const std::vector<std::string>& imsis,
+                                 const std::vector<std::string>& tels) const
+        -> Result<std::optional<SubscriberRecord>>;
+
     auto find_one_by_field(std::string_view field, std::string_view value) const
         -> Result<std::optional<SubscriberRecord>>;
 

@@ -93,7 +93,10 @@ auto extract_string_array(const bson_t& root, std::string_view key) -> std::opti
 auto decodeSubscriber(const bson_t& document) -> Result<SubscriberRecord> {
     SubscriberRecord out;
 
+    auto imsi = extract_utf8(document, "imsi");
     auto legacy_tel = extract_utf8(document, "tel");
+    out.imsi = imsi.value_or("");
+    out.tel = legacy_tel.value_or("");
 
     bson_t identities;
     if (!extract_document(document, "identities", &identities)) {

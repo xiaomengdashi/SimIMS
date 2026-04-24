@@ -38,6 +38,8 @@ struct SubscriberServing {
 };
 
 struct SubscriberRecord {
+    std::string imsi;
+    std::string tel;
     SubscriberIdentities identities;
     SubscriberAuth auth;
     SubscriberProfile profile;
