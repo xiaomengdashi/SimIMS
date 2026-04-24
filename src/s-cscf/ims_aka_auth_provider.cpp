@@ -46,6 +46,22 @@ auto ImsAkaAuthProvider::createChallenge(const ims::sip::SipMessage& request) ->
     auto impu = extractImpu(request);
     auto call_id = request.callId();
 
+    {
+        std::lock_guard lock(auth_mutex_);
+        auto it = pending_auth_.find(call_id);
+        if (it != pending_auth_.end()) {
+            return AuthChallenge{
+                .session_key = call_id,
+                .impi = it->second.impi,
+                .impu = it->second.impu,
+                .scheme = it->second.scheme,
+                .realm = domain_,
+                .www_authenticate = AuthManager::buildChallenge(
+                    it->second.vector, domain_, it->second.scheme),
+            };
+        }
+    }
+
     ims::diameter::MarParams mar{
         .impi = impi,
         .impu = impu,

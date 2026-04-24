@@ -70,6 +70,21 @@ auto DigestAuthProvider::createChallenge(const ims::sip::SipMessage& request) ->
     }
 
     auto call_id = request.callId();
+    {
+        std::lock_guard lock(mutex_);
+        auto it = pending_auth_.find(call_id);
+        if (it != pending_auth_.end()) {
+            return AuthChallenge{
+                .session_key = call_id,
+                .impi = it->second.credential.impi,
+                .impu = it->second.credential.impu,
+                .scheme = "Digest-MD5",
+                .realm = realm_,
+                .www_authenticate = AuthManager::buildDigestChallenge(realm_, it->second.nonce),
+            };
+        }
+    }
+
     auto nonce = makeNonce();
 
     {
