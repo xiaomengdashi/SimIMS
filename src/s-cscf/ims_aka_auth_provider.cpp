@@ -3,9 +3,15 @@
 #include "auth_manager.hpp"
 #include "sip/uri_utils.hpp"
 
+#include <algorithm>
 #include <format>
 
 namespace ims::scscf {
+namespace {
+
+constexpr auto kPendingAuthTtl = std::chrono::seconds(120);
+
+} // namespace
 
 ImsAkaAuthProvider::ImsAkaAuthProvider(std::shared_ptr<ims::diameter::IHssClient> hss,
                                        std::string domain)
@@ -19,13 +25,6 @@ auto ImsAkaAuthProvider::canHandleInitialRegister(const ims::sip::SipMessage& re
 }
 
 auto ImsAkaAuthProvider::canHandleAuthorization(const ims::sip::SipMessage& request) const -> bool {
-    {
-        std::lock_guard lock(auth_mutex_);
-        if (pending_auth_.contains(request.callId())) {
-            return true;
-        }
-    }
-
     auto auth_header = request.getHeader("Authorization");
     if (!auth_header) {
         return false;
@@ -34,6 +33,14 @@ auto ImsAkaAuthProvider::canHandleAuthorization(const ims::sip::SipMessage& requ
     auto params = AuthManager::parseAuthorization(*auth_header);
     if (!params) {
         return false;
+    }
+
+    {
+        std::lock_guard lock(auth_mutex_);
+        purgeExpiredLocked(std::chrono::steady_clock::now());
+        if (findPendingForAuthorizationLocked(request.callId(), params->username) != pending_auth_.end()) {
+            return true;
+        }
     }
 
     return params->algorithm.empty()
@@ -45,21 +52,20 @@ auto ImsAkaAuthProvider::createChallenge(const ims::sip::SipMessage& request) ->
     auto impi = extractImpi(request);
     auto impu = extractImpu(request);
     auto call_id = request.callId();
+    auto key = makePendingKey(call_id, impi, impu);
 
-    {
-        std::lock_guard lock(auth_mutex_);
-        auto it = pending_auth_.find(call_id);
-        if (it != pending_auth_.end()) {
-            return AuthChallenge{
-                .session_key = call_id,
-                .impi = it->second.impi,
-                .impu = it->second.impu,
-                .scheme = it->second.scheme,
-                .realm = domain_,
-                .www_authenticate = AuthManager::buildChallenge(
-                    it->second.vector, domain_, it->second.scheme),
-            };
-        }
+    std::lock_guard lock(auth_mutex_);
+    purgeExpiredLocked(std::chrono::steady_clock::now());
+    if (auto it = pending_auth_.find(key); it != pending_auth_.end()) {
+        return AuthChallenge{
+            .session_key = call_id,
+            .impi = it->second.impi,
+            .impu = it->second.impu,
+            .scheme = it->second.scheme,
+            .realm = domain_,
+            .www_authenticate = AuthManager::buildChallenge(
+                it->second.vector, domain_, it->second.scheme),
+        };
     }
 
     ims::diameter::MarParams mar{
@@ -74,15 +80,25 @@ auto ImsAkaAuthProvider::createChallenge(const ims::sip::SipMessage& request) ->
         return std::unexpected(maa.error());
     }
 
-    {
-        std::lock_guard lock(auth_mutex_);
-        pending_auth_[call_id] = PendingAuth{
-            .vector = maa->auth_vector,
-            .impi = impi,
-            .impu = impu,
-            .scheme = maa->sip_auth_scheme,
+    if (auto it = pending_auth_.find(key); it != pending_auth_.end()) {
+        return AuthChallenge{
+            .session_key = call_id,
+            .impi = it->second.impi,
+            .impu = it->second.impu,
+            .scheme = it->second.scheme,
+            .realm = domain_,
+            .www_authenticate = AuthManager::buildChallenge(
+                it->second.vector, domain_, it->second.scheme),
         };
     }
+
+    pending_auth_[key] = PendingAuth{
+        .vector = maa->auth_vector,
+        .impi = impi,
+        .impu = impu,
+        .scheme = maa->sip_auth_scheme,
+        .expires_at = std::chrono::steady_clock::now() + kPendingAuthTtl,
+    };
 
     return AuthChallenge{
         .session_key = call_id,
@@ -102,20 +118,31 @@ auto ImsAkaAuthProvider::verifyAuthorization(const ims::sip::SipMessage& request
     }
 
     auto call_id = request.callId();
+    auto params = AuthManager::parseAuthorization(*auth_header);
+    if (!params) {
+        return std::unexpected(params.error());
+    }
 
     PendingAuth pending;
+    std::string key;
     {
         std::lock_guard lock(auth_mutex_);
-        auto it = pending_auth_.find(call_id);
+        purgeExpiredLocked(std::chrono::steady_clock::now());
+        auto it = findPendingForAuthorizationLocked(call_id, params->username);
         if (it == pending_auth_.end()) {
             return std::unexpected(ErrorInfo{ErrorCode::kDiameterAuthFailed, "no pending auth state"});
         }
+        key = it->first;
         pending = it->second;
-        pending_auth_.erase(it);
     }
 
     if (!AuthManager::verifyResponse(*auth_header, pending.vector, request.method(), pending.scheme)) {
         return std::unexpected(ErrorInfo{ErrorCode::kDiameterAuthFailed, "authorization verification failed"});
+    }
+
+    {
+        std::lock_guard lock(auth_mutex_);
+        pending_auth_.erase(key);
     }
 
     return AuthVerificationResult{
@@ -138,6 +165,42 @@ auto ImsAkaAuthProvider::extractImpu(const ims::sip::SipMessage& msg) const -> s
         return ims::sip::normalize_impu_uri(*impu);
     }
     return ims::sip::normalize_impu_uri(msg.toHeader());
+}
+
+auto ImsAkaAuthProvider::makePendingKey(std::string_view call_id,
+                                        std::string_view impi,
+                                        std::string_view impu) const -> std::string {
+    return std::format("{}\x1f{}\x1f{}",
+                       call_id,
+                       ims::sip::normalize_impu_uri(std::string(impi)),
+                       ims::sip::normalize_impu_uri(std::string(impu)));
+}
+
+auto ImsAkaAuthProvider::findPendingForAuthorizationLocked(std::string_view call_id,
+                                                           std::string_view impi) const
+    -> std::unordered_map<std::string, PendingAuth>::const_iterator {
+    auto normalized_impi = normalizeAuthorizationImpi(impi);
+    return std::find_if(pending_auth_.begin(), pending_auth_.end(), [&](const auto& entry) {
+        return entry.second.impi == normalized_impi
+            && entry.first.rfind(std::string(call_id) + "\x1f", 0) == 0;
+    });
+}
+
+auto ImsAkaAuthProvider::normalizeAuthorizationImpi(std::string_view username) const -> std::string {
+    auto normalized = ims::sip::normalize_impu_uri(std::string(username));
+    if (normalized.find('@') == std::string::npos
+        && normalized.rfind("tel:", 0) != 0
+        && normalized.rfind("sip:", 0) != 0
+        && normalized.rfind("sips:", 0) != 0) {
+        return std::format("{}@{}", normalized, domain_);
+    }
+    return normalized;
+}
+
+void ImsAkaAuthProvider::purgeExpiredLocked(std::chrono::steady_clock::time_point now) const {
+    std::erase_if(pending_auth_, [&](const auto& entry) {
+        return entry.second.expires_at <= now;
+    });
 }
 
 } // namespace ims::scscf

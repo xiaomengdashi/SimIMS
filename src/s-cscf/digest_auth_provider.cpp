@@ -7,6 +7,11 @@
 #include <random>
 
 namespace ims::scscf {
+namespace {
+
+constexpr auto kPendingAuthTtl = std::chrono::seconds(120);
+
+} // namespace
 
 DigestAuthProvider::DigestAuthProvider(std::shared_ptr<IDigestCredentialStore> credential_store,
                                        std::string realm)
@@ -34,13 +39,6 @@ auto DigestAuthProvider::canHandleAuthorization(const ims::sip::SipMessage& requ
         return false;
     }
 
-    {
-        std::lock_guard lock(mutex_);
-        if (pending_auth_.contains(request.callId())) {
-            return true;
-        }
-    }
-
     auto auth_header = request.getHeader("Authorization");
     if (!auth_header) {
         return false;
@@ -56,7 +54,20 @@ auto DigestAuthProvider::canHandleAuthorization(const ims::sip::SipMessage& requ
     }
 
     auto credential = credential_store_->findByUsername(params->username, params->realm);
-    return credential.has_value() && credential->has_value();
+    if (!credential.has_value() || !credential->has_value()) {
+        return false;
+    }
+
+    {
+        std::lock_guard lock(mutex_);
+        purgeExpiredLocked(std::chrono::steady_clock::now());
+        auto key = makePendingKey(request.callId(), (*credential)->impi);
+        if (pending_auth_.contains(key)) {
+            return true;
+        }
+    }
+
+    return true;
 }
 
 auto DigestAuthProvider::createChallenge(const ims::sip::SipMessage& request) -> Result<AuthChallenge> {
@@ -70,9 +81,11 @@ auto DigestAuthProvider::createChallenge(const ims::sip::SipMessage& request) ->
     }
 
     auto call_id = request.callId();
+    auto key = makePendingKey(call_id, (*credential)->impi);
     {
         std::lock_guard lock(mutex_);
-        auto it = pending_auth_.find(call_id);
+        purgeExpiredLocked(std::chrono::steady_clock::now());
+        auto it = pending_auth_.find(key);
         if (it != pending_auth_.end()) {
             return AuthChallenge{
                 .session_key = call_id,
@@ -89,9 +102,21 @@ auto DigestAuthProvider::createChallenge(const ims::sip::SipMessage& request) ->
 
     {
         std::lock_guard lock(mutex_);
-        pending_auth_[call_id] = PendingAuth{
+        purgeExpiredLocked(std::chrono::steady_clock::now());
+        if (auto it = pending_auth_.find(key); it != pending_auth_.end()) {
+            return AuthChallenge{
+                .session_key = call_id,
+                .impi = it->second.credential.impi,
+                .impu = it->second.credential.impu,
+                .scheme = "Digest-MD5",
+                .realm = realm_,
+                .www_authenticate = AuthManager::buildDigestChallenge(realm_, it->second.nonce),
+            };
+        }
+        pending_auth_[key] = PendingAuth{
             .nonce = nonce,
             .credential = **credential,
+            .expires_at = std::chrono::steady_clock::now() + kPendingAuthTtl,
         };
     }
 
@@ -114,14 +139,28 @@ auto DigestAuthProvider::verifyAuthorization(const ims::sip::SipMessage& request
 
     PendingAuth pending;
     auto call_id = request.callId();
+    auto params = AuthManager::parseAuthorization(*auth_header);
+    if (!params) {
+        return std::unexpected(params.error());
+    }
+
+    auto credential = credential_store_->findByUsername(params->username, params->realm);
+    if (!credential) {
+        return std::unexpected(credential.error());
+    }
+    if (!*credential) {
+        return std::unexpected(ErrorInfo{ErrorCode::kDiameterAuthFailed, "credential not found"});
+    }
+    auto key = makePendingKey(call_id, (*credential)->impi);
+
     {
         std::lock_guard lock(mutex_);
-        auto it = pending_auth_.find(call_id);
+        purgeExpiredLocked(std::chrono::steady_clock::now());
+        auto it = pending_auth_.find(key);
         if (it == pending_auth_.end()) {
             return std::unexpected(ErrorInfo{ErrorCode::kDiameterAuthFailed, "no pending auth state"});
         }
         pending = it->second;
-        pending_auth_.erase(it);
     }
 
     if (!AuthManager::verifyDigestPassword(*auth_header,
@@ -129,6 +168,11 @@ auto DigestAuthProvider::verifyAuthorization(const ims::sip::SipMessage& request
                                            request.method(),
                                            pending.nonce)) {
         return std::unexpected(ErrorInfo{ErrorCode::kDiameterAuthFailed, "authorization verification failed"});
+    }
+
+    {
+        std::lock_guard lock(mutex_);
+        pending_auth_.erase(key);
     }
 
     return AuthVerificationResult{
@@ -147,6 +191,16 @@ auto DigestAuthProvider::extractIdentity(const ims::sip::SipMessage& request) co
         return ims::sip::normalize_impu_uri(*impu);
     }
     return ims::sip::normalize_impu_uri(request.toHeader());
+}
+
+auto DigestAuthProvider::makePendingKey(std::string_view call_id, std::string_view impi) const -> std::string {
+    return std::format("{}\x1f{}", call_id, ims::sip::normalize_impu_uri(std::string(impi)));
+}
+
+void DigestAuthProvider::purgeExpiredLocked(std::chrono::steady_clock::time_point now) const {
+    std::erase_if(pending_auth_, [&](const auto& entry) {
+        return entry.second.expires_at <= now;
+    });
 }
 
 auto DigestAuthProvider::makeNonce() const -> std::string {

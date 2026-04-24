@@ -3,6 +3,7 @@
 #include "digest_credential_store.hpp"
 #include "i_auth_provider.hpp"
 
+#include <chrono>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -26,14 +27,17 @@ private:
     struct PendingAuth {
         std::string nonce;
         DigestCredential credential;
+        std::chrono::steady_clock::time_point expires_at;
     };
 
     auto extractIdentity(const ims::sip::SipMessage& request) const -> std::string;
+    auto makePendingKey(std::string_view call_id, std::string_view impi) const -> std::string;
+    void purgeExpiredLocked(std::chrono::steady_clock::time_point now) const;
     auto makeNonce() const -> std::string;
 
     std::shared_ptr<IDigestCredentialStore> credential_store_;
     std::string realm_;
-    std::unordered_map<std::string, PendingAuth> pending_auth_;
+    mutable std::unordered_map<std::string, PendingAuth> pending_auth_;
     mutable std::mutex mutex_;
 };
 

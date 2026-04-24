@@ -218,6 +218,109 @@ TEST(DigestAuthProviderTest, DuplicateInitialRegisterReusesPendingChallenge) {
     ASSERT_TRUE(verified.has_value()) << verified.error().message;
 }
 
+TEST(DigestAuthProviderTest, FailedAuthorizationDoesNotConsumePendingChallenge) {
+    auto repository = std::make_shared<ims::test::MockSubscriberRepository>();
+    ims::db::SubscriberRecord record;
+    record.identities.impi = "460112024122023@ims.example.com";
+    record.identities.canonical_impu = "sip:460112024122023@ims.example.com";
+    record.identities.associated_impus = {"sip:460112024122023@ims.example.com"};
+    record.identities.realm = "ims.example.com";
+    record.auth.password = "testpass";
+
+    EXPECT_CALL(*repository, findByIdentity(StrEq("460112024122023@ims.example.com")))
+        .WillRepeatedly(Return(ims::Result<std::optional<ims::db::SubscriberRecord>>{record}));
+    EXPECT_CALL(*repository,
+                findByUsernameRealm(StrEq("460112024122023@ims.example.com"),
+                                    StrEq("ims.example.com")))
+        .WillRepeatedly(Return(ims::Result<std::optional<ims::db::SubscriberRecord>>{record}));
+
+    auto credential_store = std::make_shared<ims::scscf::MongoDigestCredentialStore>(repository);
+    ims::scscf::DigestAuthProvider provider(credential_store, "ims.example.com");
+
+    auto first_register = makeRegister("sip:ims.example.com",
+                                       "<sip:460112024122023@ims.example.com>;tag=from-1",
+                                       "<sip:460112024122023@ims.example.com>",
+                                       "call-digest-failed-auth");
+    auto challenge = provider.createChallenge(first_register);
+    ASSERT_TRUE(challenge.has_value()) << challenge.error().message;
+    auto nonce = extractNonce(challenge->www_authenticate);
+
+    auto bad_register = makeRegisterWithAuthorization(
+        "sip:ims.example.com",
+        "<sip:460112024122023@ims.example.com>;tag=from-1",
+        "<sip:460112024122023@ims.example.com>",
+        "call-digest-failed-auth",
+        "Digest username=\"460112024122023@ims.example.com\", realm=\"ims.example.com\", "
+        "nonce=\"" + nonce + "\", uri=\"sip:ims.example.com\", "
+        "response=\"bad\", algorithm=MD5, qop=auth, nc=00000001, cnonce=\"deadbeef\"");
+    auto failed = provider.verifyAuthorization(bad_register);
+    ASSERT_FALSE(failed.has_value());
+
+    auto final_response = computeDigestResponse("460112024122023@ims.example.com",
+                                                "ims.example.com",
+                                                "testpass",
+                                                "REGISTER",
+                                                "sip:ims.example.com",
+                                                nonce,
+                                                "00000001",
+                                                "deadbeef",
+                                                "auth");
+    auto good_register = makeRegisterWithAuthorization(
+        "sip:ims.example.com",
+        "<sip:460112024122023@ims.example.com>;tag=from-1",
+        "<sip:460112024122023@ims.example.com>",
+        "call-digest-failed-auth",
+        "Digest username=\"460112024122023@ims.example.com\", realm=\"ims.example.com\", "
+        "nonce=\"" + nonce + "\", uri=\"sip:ims.example.com\", "
+        "response=\"" + final_response + "\", algorithm=MD5, qop=auth, nc=00000001, cnonce=\"deadbeef\"");
+
+    auto verified = provider.verifyAuthorization(good_register);
+    ASSERT_TRUE(verified.has_value()) << verified.error().message;
+}
+
+TEST(DigestAuthProviderTest, SameCallIdDifferentIdentityGetsSeparateChallenge) {
+    auto repository = std::make_shared<ims::test::MockSubscriberRepository>();
+    ims::db::SubscriberRecord alice;
+    alice.identities.impi = "alice@ims.example.com";
+    alice.identities.canonical_impu = "sip:alice@ims.example.com";
+    alice.identities.associated_impus = {"sip:alice@ims.example.com"};
+    alice.identities.realm = "ims.example.com";
+    alice.auth.password = "alicepass";
+
+    ims::db::SubscriberRecord bob;
+    bob.identities.impi = "bob@ims.example.com";
+    bob.identities.canonical_impu = "sip:bob@ims.example.com";
+    bob.identities.associated_impus = {"sip:bob@ims.example.com"};
+    bob.identities.realm = "ims.example.com";
+    bob.auth.password = "bobpass";
+
+    EXPECT_CALL(*repository, findByIdentity(StrEq("alice@ims.example.com")))
+        .WillRepeatedly(Return(ims::Result<std::optional<ims::db::SubscriberRecord>>{alice}));
+    EXPECT_CALL(*repository, findByIdentity(StrEq("bob@ims.example.com")))
+        .WillRepeatedly(Return(ims::Result<std::optional<ims::db::SubscriberRecord>>{bob}));
+
+    auto credential_store = std::make_shared<ims::scscf::MongoDigestCredentialStore>(repository);
+    ims::scscf::DigestAuthProvider provider(credential_store, "ims.example.com");
+
+    auto alice_register = makeRegister("sip:ims.example.com",
+                                       "<sip:alice@ims.example.com>;tag=from-1",
+                                       "<sip:alice@ims.example.com>",
+                                       "shared-call-id");
+    auto bob_register = makeRegister("sip:ims.example.com",
+                                     "<sip:bob@ims.example.com>;tag=from-2",
+                                     "<sip:bob@ims.example.com>",
+                                     "shared-call-id");
+
+    auto alice_challenge = provider.createChallenge(alice_register);
+    ASSERT_TRUE(alice_challenge.has_value()) << alice_challenge.error().message;
+    auto bob_challenge = provider.createChallenge(bob_register);
+    ASSERT_TRUE(bob_challenge.has_value()) << bob_challenge.error().message;
+
+    EXPECT_EQ(bob_challenge->impi, "bob@ims.example.com");
+    EXPECT_NE(extractNonce(alice_challenge->www_authenticate),
+              extractNonce(bob_challenge->www_authenticate));
+}
+
 TEST(ImsAkaAuthProviderTest, PendingStateKeepsDigestMd5RegistrationFlow) {
     auto hss = std::make_shared<ims::test::MockHssClient>();
     ims::scscf::ImsAkaAuthProvider provider(hss, "ims.example.com");
@@ -331,6 +434,117 @@ TEST(ImsAkaAuthProviderTest, DuplicateInitialRegisterReusesPendingChallenge) {
     auto verified = provider.verifyAuthorization(authorized_register);
     ASSERT_TRUE(verified.has_value()) << verified.error().message;
     EXPECT_EQ(verified->scheme, "Digest-AKAv1-MD5");
+}
+
+TEST(ImsAkaAuthProviderTest, FailedAuthorizationDoesNotConsumePendingChallenge) {
+    auto hss = std::make_shared<ims::test::MockHssClient>();
+    ims::scscf::ImsAkaAuthProvider provider(hss, "ims.example.com");
+
+    ims::diameter::AuthVector av{
+        .rand = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+                 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10},
+        .autn = {0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
+                 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x20},
+        .xres = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x11},
+    };
+
+    EXPECT_CALL(*hss, multimediaAuth(_))
+        .WillOnce(Return(ims::Result<ims::diameter::MaaResult>{
+            ims::diameter::MaaResult{
+                .result_code = 2001,
+                .sip_auth_scheme = "Digest-AKAv1-MD5",
+                .auth_vector = av,
+            }}));
+
+    auto first_register = makeRegister("sip:ims.example.com",
+                                       "<sip:testuser@ims.example.com>;tag=from-1",
+                                       "<sip:testuser@ims.example.com>",
+                                       "call-aka-failed-auth");
+    auto challenge = provider.createChallenge(first_register);
+    ASSERT_TRUE(challenge.has_value()) << challenge.error().message;
+    auto nonce = extractNonce(challenge->www_authenticate);
+
+    auto bad_register = makeRegisterWithAuthorization(
+        "sip:ims.example.com",
+        "<sip:testuser@ims.example.com>;tag=from-1",
+        "<sip:testuser@ims.example.com>",
+        "call-aka-failed-auth",
+        "Digest username=\"testuser@ims.example.com\", realm=\"ims.example.com\", "
+        "nonce=\"" + nonce + "\", uri=\"sip:ims.example.com\", "
+        "response=\"bad\", algorithm=AKAv1-MD5, qop=auth, nc=00000001, cnonce=\"deadbeef\"");
+    auto failed = provider.verifyAuthorization(bad_register);
+    ASSERT_FALSE(failed.has_value());
+
+    auto response = computeDigestResponse("testuser@ims.example.com",
+                                          "ims.example.com",
+                                          std::string(av.xres.begin(), av.xres.end()),
+                                          "REGISTER",
+                                          "sip:ims.example.com",
+                                          nonce,
+                                          "00000001",
+                                          "deadbeef",
+                                          "auth");
+    auto good_register = makeRegisterWithAuthorization(
+        "sip:ims.example.com",
+        "<sip:testuser@ims.example.com>;tag=from-1",
+        "<sip:testuser@ims.example.com>",
+        "call-aka-failed-auth",
+        "Digest username=\"testuser@ims.example.com\", realm=\"ims.example.com\", "
+        "nonce=\"" + nonce + "\", uri=\"sip:ims.example.com\", "
+        "response=\"" + response + "\", "
+        "algorithm=AKAv1-MD5, qop=auth, nc=00000001, cnonce=\"deadbeef\"");
+
+    auto verified = provider.verifyAuthorization(good_register);
+    ASSERT_TRUE(verified.has_value()) << verified.error().message;
+}
+
+TEST(ImsAkaAuthProviderTest, SameCallIdDifferentIdentityGetsSeparateChallenge) {
+    auto hss = std::make_shared<ims::test::MockHssClient>();
+    ims::scscf::ImsAkaAuthProvider provider(hss, "ims.example.com");
+
+    ims::diameter::AuthVector alice_av{
+        .rand = {0x01},
+        .autn = {0x02},
+        .xres = {0x03},
+    };
+    ims::diameter::AuthVector bob_av{
+        .rand = {0x11},
+        .autn = {0x12},
+        .xres = {0x13},
+    };
+
+    EXPECT_CALL(*hss, multimediaAuth(_))
+        .Times(2)
+        .WillOnce(Return(ims::Result<ims::diameter::MaaResult>{
+            ims::diameter::MaaResult{
+                .result_code = 2001,
+                .sip_auth_scheme = "Digest-AKAv1-MD5",
+                .auth_vector = alice_av,
+            }}))
+        .WillOnce(Return(ims::Result<ims::diameter::MaaResult>{
+            ims::diameter::MaaResult{
+                .result_code = 2001,
+                .sip_auth_scheme = "Digest-AKAv1-MD5",
+                .auth_vector = bob_av,
+            }}));
+
+    auto alice_register = makeRegister("sip:ims.example.com",
+                                       "<sip:alice@ims.example.com>;tag=from-1",
+                                       "<sip:alice@ims.example.com>",
+                                       "shared-aka-call-id");
+    auto bob_register = makeRegister("sip:ims.example.com",
+                                     "<sip:bob@ims.example.com>;tag=from-2",
+                                     "<sip:bob@ims.example.com>",
+                                     "shared-aka-call-id");
+
+    auto alice_challenge = provider.createChallenge(alice_register);
+    ASSERT_TRUE(alice_challenge.has_value()) << alice_challenge.error().message;
+    auto bob_challenge = provider.createChallenge(bob_register);
+    ASSERT_TRUE(bob_challenge.has_value()) << bob_challenge.error().message;
+
+    EXPECT_EQ(bob_challenge->impi, "bob@ims.example.com");
+    EXPECT_NE(extractNonce(alice_challenge->www_authenticate),
+              extractNonce(bob_challenge->www_authenticate));
 }
 
 TEST(ImsAkaAuthProviderTest, AcceptsDigestAkaSchemeAliasInAuthorization) {
