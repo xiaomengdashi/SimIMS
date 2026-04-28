@@ -8,6 +8,7 @@
 #include <boost/asio/io_context.hpp>
 #include <functional>
 #include <memory>
+#include <shared_mutex>
 #include <string>
 #include <unordered_map>
 
@@ -41,6 +42,7 @@ private:
     boost::asio::io_context& io_;
     std::shared_ptr<ITransport> transport_;
     std::unique_ptr<TransactionLayer> txn_layer_;
+    mutable std::shared_mutex handlers_mutex_;
     std::unordered_map<std::string, RequestHandler> method_handlers_;
     RequestHandler default_handler_;
 };

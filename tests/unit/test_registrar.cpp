@@ -1,9 +1,9 @@
 #include "sip/store.hpp"
 #include "sip/memory_store.hpp"
 #include "sip/uri_utils.hpp"
-#include "s-cscf/auth_manager.hpp"
 #include "s-cscf/digest_auth_provider.hpp"
 #include "s-cscf/digest_credential_store.hpp"
+#include "s-cscf/i_auth_provider.hpp"
 #include "s-cscf/registrar.hpp"
 #include "../mocks/mock_hss_client.hpp"
 #include "../mocks/mock_registration_store.hpp"
@@ -92,7 +92,12 @@ auto extractNonce(const ims::sip::SipMessage& response) -> std::string {
     return serialized->substr(start, end - start);
 }
 
-auto makeRegister(const std::string& call_id, uint32_t cseq) -> ims::sip::SipMessage {
+auto makeRegister(const std::string& call_id,
+                  uint32_t cseq,
+                  const std::string& contact = "<sip:460112024122023@127.0.0.1:5060>",
+                  uint32_t expires = 600,
+                  const std::vector<std::pair<std::string, std::string>>& extra_headers = {})
+    -> ims::sip::SipMessage {
     auto request = ims::sip::createRequest("REGISTER", "sip:ims.example.com");
     EXPECT_TRUE(request.has_value()) << request.error().message;
 
@@ -101,14 +106,21 @@ auto makeRegister(const std::string& call_id, uint32_t cseq) -> ims::sip::SipMes
     request->setCallId(call_id);
     request->setCSeq(cseq, "REGISTER");
     request->addVia(std::format("SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bK-reg-{}", cseq));
-    request->setContact("<sip:460112024122023@127.0.0.1:5060>");
-    request->addHeader("Expires", "600");
+    request->setContact(contact);
+    request->addHeader("Expires", std::to_string(expires));
+    for (const auto& [name, value] : extra_headers) {
+        request->addHeader(name, value);
+    }
     return std::move(*request);
 }
 
 auto makeAuthorizedRegister(const std::string& call_id,
                             uint32_t cseq,
-                            const std::string& nonce) -> ims::sip::SipMessage {
+                            const std::string& nonce,
+                            const std::string& contact = "<sip:460112024122023@127.0.0.1:5060>",
+                            uint32_t expires = 600,
+                            const std::vector<std::pair<std::string, std::string>>& extra_headers = {})
+    -> ims::sip::SipMessage {
     constexpr auto kUsername = "460112024122023@ims.example.com";
     constexpr auto kRealm = "ims.example.com";
     constexpr auto kPassword = "testpass";
@@ -126,13 +138,16 @@ auto makeAuthorizedRegister(const std::string& call_id,
         "To: <sip:460112024122023@ims.example.com>\r\n"
         "Call-ID: {}\r\n"
         "CSeq: {} REGISTER\r\n"
-        "Contact: <sip:460112024122023@127.0.0.1:5060>\r\n"
-        "Expires: 600\r\n"
+        "Contact: {}\r\n"
+        "Expires: {}\r\n"
         "Authorization: Digest username=\"{}\", realm=\"{}\", nonce=\"{}\", uri=\"{}\", "
-        "response=\"{}\", algorithm=MD5, qop={}, nc={}, cnonce=\"{}\"\r\n"
-        "Content-Length: 0\r\n"
-        "\r\n",
-        kUri, cseq, call_id, cseq, kUsername, kRealm, nonce, kUri, response, kQop, kNc, kCnonce);
+        "response=\"{}\", algorithm=MD5, qop={}, nc={}, cnonce=\"{}\"\r\n",
+        kUri, cseq, call_id, cseq, contact, expires, kUsername, kRealm, nonce, kUri, response, kQop, kNc, kCnonce);
+
+    for (const auto& [name, value] : extra_headers) {
+        raw += std::format("{}: {}\r\n", name, value);
+    }
+    raw += "Content-Length: 0\r\n\r\n";
 
     auto parsed = ims::sip::SipMessage::parse(raw);
     EXPECT_TRUE(parsed.has_value()) << parsed.error().message;
@@ -147,6 +162,32 @@ auto makeTxn(const ims::sip::SipMessage& request,
     ims::sip::Endpoint source{.address = "127.0.0.1", .port = 5060, .transport = "udp"};
     return std::make_shared<ims::sip::ServerTransaction>(std::move(*txn_request), transport, source, io);
 }
+
+class StaticAuthProvider final : public ims::scscf::IAuthProvider {
+public:
+    auto canHandleInitialRegister(const ims::sip::SipMessage&) const -> bool override { return true; }
+    auto canHandleAuthorization(const ims::sip::SipMessage&) const -> bool override { return true; }
+
+    auto createChallenge(const ims::sip::SipMessage&) -> ims::Result<ims::scscf::AuthChallenge> override {
+        return ims::scscf::AuthChallenge{
+            .session_key = "static-session",
+            .impi = "460112024122023@ims.example.com",
+            .impu = "sip:460112024122023@ims.example.com",
+            .scheme = "Digest",
+            .realm = "ims.example.com",
+            .www_authenticate = "Digest realm=\"ims.example.com\", nonce=\"static-nonce\", algorithm=MD5, qop=\"auth\"",
+        };
+    }
+
+    auto verifyAuthorization(const ims::sip::SipMessage&) -> ims::Result<ims::scscf::AuthVerificationResult> override {
+        return ims::scscf::AuthVerificationResult{
+            .session_key = "static-session",
+            .impi = "460112024122023@ims.example.com",
+            .impu = "sip:460112024122023@ims.example.com",
+            .scheme = "Digest",
+        };
+    }
+};
 
 } // namespace
 
@@ -292,6 +333,35 @@ TEST(UriUtilsTest, NormalizeImpuUriSupportsTelAndSipAliases) {
               "sip:460112024122023@ims.operator.com");
 }
 
+class RegistrarAtomicStoreTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        auth_provider_ = std::make_shared<StaticAuthProvider>();
+        providers_.push_back(auth_provider_);
+        registrar_ = std::make_unique<ims::scscf::Registrar>(store_, providers_, hss_, "ims.example.com");
+    }
+
+    auto successSaa(std::vector<std::string> associated_impus = {
+                        "sip:460112024122023@ims.example.com"}) -> ims::Result<ims::diameter::SaaResult> {
+        return ims::Result<ims::diameter::SaaResult>{ims::diameter::SaaResult{
+            .result_code = 2001,
+            .user_profile = {
+                .impu = "sip:460112024122023@ims.example.com",
+                .associated_impus = std::move(associated_impus),
+                .ifcs = {},
+            },
+        }};
+    }
+
+    boost::asio::io_context io_;
+    std::shared_ptr<CapturingTransport> transport_ = std::make_shared<CapturingTransport>();
+    std::shared_ptr<MemoryRegistrationStore> store_ = std::make_shared<MemoryRegistrationStore>();
+    std::shared_ptr<MockHssClient> hss_ = std::make_shared<MockHssClient>();
+    std::shared_ptr<StaticAuthProvider> auth_provider_;
+    std::vector<std::shared_ptr<ims::scscf::IAuthProvider>> providers_;
+    std::unique_ptr<ims::scscf::Registrar> registrar_;
+};
+
 TEST(RegistrarAuthTest, DuplicateInitialRegisterDoesNotInvalidateFirstChallenge) {
     boost::asio::io_context io;
     auto transport = std::make_shared<CapturingTransport>();
@@ -328,7 +398,8 @@ TEST(RegistrarAuthTest, DuplicateInitialRegisterDoesNotInvalidateFirstChallenge)
                     .ifcs = {},
                 },
             }}));
-    EXPECT_CALL(*store, store(_)).WillOnce(Return(ims::VoidResult{}));
+    EXPECT_CALL(*store, upsertContact(_, _, _, _, _, _, _, _))
+        .WillOnce(Return(ims::Result<bool>{true}));
 
     auto first_register = makeRegister("register-race-call", 1);
     registrar.handleRegister(first_register, makeTxn(first_register, transport, io));
@@ -346,4 +417,123 @@ TEST(RegistrarAuthTest, DuplicateInitialRegisterDoesNotInvalidateFirstChallenge)
     registrar.handleRegister(authorized_register, makeTxn(authorized_register, transport, io));
     ASSERT_EQ(transport->sent_messages.size(), 3u);
     EXPECT_EQ(transport->sent_messages[2].statusCode(), 200);
+}
+
+TEST_F(RegistrarAtomicStoreTest, InitialRegisterDoesNotOverwriteExistingContact) {
+    EXPECT_CALL(*hss_, serverAssignment(_))
+        .WillOnce(Return(successSaa()))
+        .WillOnce(Return(successSaa()));
+
+    auto first = makeAuthorizedRegister(
+        "atomic-init-1", 1, "nonce-a",
+        "<sip:460112024122023@127.0.0.1:5060>;expires=600;+sip.instance=\"urn:uuid:ue-a\";reg-id=1",
+        600,
+        {{"User-Agent", "UE-A"}});
+    registrar_->handleRegister(first, makeTxn(first, transport_, io_));
+
+    auto second = makeAuthorizedRegister(
+        "atomic-init-2", 1, "nonce-b",
+        "<sip:460112024122023@127.0.0.1:5070>;expires=600;+sip.instance=\"urn:uuid:ue-b\";reg-id=2",
+        600,
+        {{"User-Agent", "UE-B"}});
+    registrar_->handleRegister(second, makeTxn(second, transport_, io_));
+
+    auto binding = store_->lookup("sip:460112024122023@ims.example.com");
+    ASSERT_TRUE(binding.has_value()) << binding.error().message;
+    ASSERT_EQ(binding->contacts.size(), 2u);
+}
+
+TEST_F(RegistrarAtomicStoreTest, ReregisterRefreshesOnlyMatchingContact) {
+    EXPECT_CALL(*hss_, serverAssignment(_))
+        .WillOnce(Return(successSaa()))
+        .WillOnce(Return(successSaa()))
+        .WillOnce(Return(successSaa()));
+
+    auto first = makeAuthorizedRegister(
+        "rereg-a", 1, "nonce-a",
+        "<sip:460112024122023@127.0.0.1:5060>;expires=600;+sip.instance=\"urn:uuid:ue-a\";reg-id=1",
+        600,
+        {{"User-Agent", "UE-A"}});
+    auto second = makeAuthorizedRegister(
+        "rereg-b", 1, "nonce-b",
+        "<sip:460112024122023@127.0.0.1:5070>;expires=600;+sip.instance=\"urn:uuid:ue-b\";reg-id=2",
+        600,
+        {{"User-Agent", "UE-B"}});
+
+    registrar_->handleRegister(first, makeTxn(first, transport_, io_));
+    registrar_->handleRegister(second, makeTxn(second, transport_, io_));
+
+    auto refresh = makeRegister(
+        "rereg-a", 2,
+        "<sip:460112024122023@127.0.0.1:5060>;expires=1200;+sip.instance=\"urn:uuid:ue-a\";reg-id=1",
+        1200,
+        {{"User-Agent", "UE-A-REFRESH"}});
+    registrar_->handleRegister(refresh, makeTxn(refresh, transport_, io_));
+
+    auto binding = store_->lookup("sip:460112024122023@ims.example.com");
+    ASSERT_TRUE(binding.has_value()) << binding.error().message;
+    ASSERT_EQ(binding->contacts.size(), 2u);
+    auto it_a = std::find_if(binding->contacts.begin(), binding->contacts.end(), [](const ContactBinding& contact) {
+        return contact.contact_uri.find(":5060") != std::string::npos;
+    });
+    auto it_b = std::find_if(binding->contacts.begin(), binding->contacts.end(), [](const ContactBinding& contact) {
+        return contact.contact_uri.find(":5070") != std::string::npos;
+    });
+    ASSERT_NE(it_a, binding->contacts.end());
+    ASSERT_NE(it_b, binding->contacts.end());
+    EXPECT_EQ(it_a->user_agent, "UE-A-REFRESH");
+    EXPECT_EQ(it_a->cseq, 2u);
+    EXPECT_EQ(it_b->user_agent, "UE-B");
+    EXPECT_EQ(it_b->cseq, 1u);
+}
+
+TEST_F(RegistrarAtomicStoreTest, PartialDeregisterRemovesOnlyTargetContact) {
+    EXPECT_CALL(*hss_, serverAssignment(_))
+        .WillOnce(Return(successSaa()))
+        .WillOnce(Return(successSaa()))
+        .WillOnce(Return(successSaa()));
+
+    auto first = makeAuthorizedRegister(
+        "dereg-a", 1, "nonce-a",
+        "<sip:460112024122023@127.0.0.1:5060>;expires=600;+sip.instance=\"urn:uuid:ue-a\";reg-id=1",
+        600,
+        {{"User-Agent", "UE-A"}});
+    auto second = makeAuthorizedRegister(
+        "dereg-b", 1, "nonce-b",
+        "<sip:460112024122023@127.0.0.1:5070>;expires=600;+sip.instance=\"urn:uuid:ue-b\";reg-id=2",
+        600,
+        {{"User-Agent", "UE-B"}});
+    registrar_->handleRegister(first, makeTxn(first, transport_, io_));
+    registrar_->handleRegister(second, makeTxn(second, transport_, io_));
+
+    auto dereg = makeRegister(
+        "dereg-a", 2,
+        "<sip:460112024122023@127.0.0.1:5060>;expires=0;+sip.instance=\"urn:uuid:ue-a\";reg-id=1",
+        0);
+    registrar_->handleRegister(dereg, makeTxn(dereg, transport_, io_));
+
+    auto binding = store_->lookup("sip:460112024122023@ims.example.com");
+    ASSERT_TRUE(binding.has_value()) << binding.error().message;
+    ASSERT_EQ(binding->contacts.size(), 1u);
+    EXPECT_NE(binding->contacts[0].contact_uri.find(":5070"), std::string::npos);
+}
+
+TEST_F(RegistrarAtomicStoreTest, WildcardDeregisterRemovesEntireBinding) {
+    EXPECT_CALL(*hss_, serverAssignment(_))
+        .WillOnce(Return(successSaa()))
+        .WillOnce(Return(successSaa()));
+
+    auto first = makeAuthorizedRegister(
+        "wild-a", 1, "nonce-a",
+        "<sip:460112024122023@127.0.0.1:5060>;expires=600;+sip.instance=\"urn:uuid:ue-a\";reg-id=1",
+        600,
+        {{"User-Agent", "UE-A"}});
+    registrar_->handleRegister(first, makeTxn(first, transport_, io_));
+
+    auto dereg = makeRegister("wild-a", 2, "*", 0);
+    registrar_->handleRegister(dereg, makeTxn(dereg, transport_, io_));
+
+    auto binding = store_->lookup("sip:460112024122023@ims.example.com");
+    ASSERT_FALSE(binding.has_value());
+    EXPECT_EQ(binding.error().code, ims::ErrorCode::kRegistrationNotFound);
 }

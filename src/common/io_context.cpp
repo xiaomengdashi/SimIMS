@@ -1,5 +1,6 @@
 #include "io_context.hpp"
 #include <algorithm>
+#include <utility>
 
 namespace ims {
 
@@ -32,15 +33,23 @@ void IoContext::run() {
 }
 
 void IoContext::stop() {
+    std::vector<std::jthread> workers;
     {
         std::lock_guard lock(mutex_);
         running_ = false;
+        workers = std::move(workers_);
     }
     cv_.notify_all();
 
     work_guard_.reset();
     io_context_.stop();
-    workers_.clear();  // jthread destructor requests stop and joins
+
+    const auto current_id = std::this_thread::get_id();
+    for (auto& worker : workers) {
+        if (worker.get_id() == current_id && worker.joinable()) {
+            worker.detach();
+        }
+    }
 }
 
 boost::asio::io_context& IoContext::get() {

@@ -54,18 +54,24 @@ auto ImsAkaAuthProvider::createChallenge(const ims::sip::SipMessage& request) ->
     auto call_id = request.callId();
     auto key = makePendingKey(call_id, impi, impu);
 
-    std::lock_guard lock(auth_mutex_);
-    purgeExpiredLocked(std::chrono::steady_clock::now());
-    if (auto it = pending_auth_.find(key); it != pending_auth_.end()) {
+    auto build_challenge = [&](const PendingAuth& pending) {
         return AuthChallenge{
             .session_key = call_id,
-            .impi = it->second.impi,
-            .impu = it->second.impu,
-            .scheme = it->second.scheme,
+            .impi = pending.impi,
+            .impu = pending.impu,
+            .scheme = pending.scheme,
             .realm = domain_,
-            .www_authenticate = AuthManager::buildChallenge(
-                it->second.vector, domain_, it->second.scheme),
+            .www_authenticate = AuthManager::buildChallenge(pending.vector, domain_, pending.scheme),
         };
+    };
+
+    {
+        std::lock_guard lock(auth_mutex_);
+        auto now = std::chrono::steady_clock::now();
+        purgeExpiredLocked(now);
+        if (auto it = pending_auth_.find(key); it != pending_auth_.end()) {
+            return build_challenge(it->second);
+        }
     }
 
     ims::diameter::MarParams mar{
@@ -80,34 +86,23 @@ auto ImsAkaAuthProvider::createChallenge(const ims::sip::SipMessage& request) ->
         return std::unexpected(maa.error());
     }
 
+    std::lock_guard lock(auth_mutex_);
+    auto now = std::chrono::steady_clock::now();
+    purgeExpiredLocked(now);
     if (auto it = pending_auth_.find(key); it != pending_auth_.end()) {
-        return AuthChallenge{
-            .session_key = call_id,
-            .impi = it->second.impi,
-            .impu = it->second.impu,
-            .scheme = it->second.scheme,
-            .realm = domain_,
-            .www_authenticate = AuthManager::buildChallenge(
-                it->second.vector, domain_, it->second.scheme),
-        };
+        return build_challenge(it->second);
     }
 
-    pending_auth_[key] = PendingAuth{
+    auto pending = PendingAuth{
         .vector = maa->auth_vector,
-        .impi = impi,
-        .impu = impu,
+        .impi = std::move(impi),
+        .impu = std::move(impu),
         .scheme = maa->sip_auth_scheme,
-        .expires_at = std::chrono::steady_clock::now() + kPendingAuthTtl,
+        .expires_at = now + kPendingAuthTtl,
     };
-
-    return AuthChallenge{
-        .session_key = call_id,
-        .impi = impi,
-        .impu = impu,
-        .scheme = maa->sip_auth_scheme,
-        .realm = domain_,
-        .www_authenticate = AuthManager::buildChallenge(maa->auth_vector, domain_, maa->sip_auth_scheme),
-    };
+    auto challenge = build_challenge(pending);
+    pending_auth_[key] = std::move(pending);
+    return challenge;
 }
 
 auto ImsAkaAuthProvider::verifyAuthorization(const ims::sip::SipMessage& request)

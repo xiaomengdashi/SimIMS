@@ -48,6 +48,16 @@ struct RegistrationBinding {
     }
 };
 
+struct ContactBindingSelector {
+    std::string normalized_contact_uri;
+    std::string instance_id;
+    std::string reg_id;
+
+    [[nodiscard]] auto uses_instance_and_reg_id() const -> bool {
+        return !instance_id.empty() && !reg_id.empty();
+    }
+};
+
 /// Abstract registration storage interface
 ///
 /// Supports in-memory (development) and Redis (production) backends.
@@ -60,6 +70,20 @@ struct IRegistrationStore {
 
     /// Look up registration by IMPU
     virtual auto lookup(std::string_view impu) -> Result<RegistrationBinding> = 0;
+
+    /// Atomically upsert or refresh a single contact within an IMPU binding.
+    virtual auto upsertContact(std::string_view impu,
+                               const ContactBindingSelector& selector,
+                               const ContactBinding& contact,
+                               std::string_view impi,
+                               std::string_view scscf_uri,
+                               RegistrationBinding::State state,
+                               bool require_existing_match = false,
+                               bool reject_older_cseq = false) -> Result<bool> = 0;
+
+    /// Atomically remove a single contact within an IMPU binding.
+    virtual auto removeContact(std::string_view impu,
+                               const ContactBindingSelector& selector) -> Result<bool> = 0;
 
     /// Remove registration binding
     virtual auto remove(std::string_view impu) -> VoidResult = 0;

@@ -11,16 +11,11 @@
 #include "../rtp/rtpengine_client_impl.hpp"
 #include "../sip/memory_store.hpp"
 
+#include <boost/asio/signal_set.hpp>
+
 #include <csignal>
 #include <iostream>
 #include <memory>
-
-namespace {
-    std::function<void()> shutdown_handler;
-    void signal_handler(int) {
-        if (shutdown_handler) shutdown_handler();
-    }
-}
 
 int main(int argc, char* argv[]) {
     std::string config_path = "config/ims.yaml";
@@ -98,15 +93,17 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    shutdown_handler = [&]() {
+    boost::asio::signal_set signals(io_ctx.get(), SIGINT, SIGTERM);
+    signals.async_wait([&](const boost::system::error_code& ec, int) {
+        if (ec) {
+            return;
+        }
         IMS_LOG_INFO("Shutting down IMS All-in-One...");
         pcscf.stop();
         icscf.stop();
         scscf.stop();
         io_ctx.stop();
-    };
-    std::signal(SIGINT, signal_handler);
-    std::signal(SIGTERM, signal_handler);
+    });
 
     IMS_LOG_INFO("IMS All-in-One is running. Press Ctrl+C to stop.");
     io_ctx.run();

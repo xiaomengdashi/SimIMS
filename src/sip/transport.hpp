@@ -6,6 +6,7 @@
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/ip/udp.hpp>
 #include <array>
+#include <atomic>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -52,7 +53,8 @@ private:
     boost::asio::ip::udp::endpoint remote_ep_;
     std::array<char, 65536> recv_buffer_;
     MessageCallback on_message_;
-    bool running_ = false;
+    std::mutex socket_mutex_;
+    std::atomic<bool> running_{false};
 };
 
 class TcpTransport : public ITransport {
@@ -72,17 +74,17 @@ private:
     void doAccept();
     void handleIncomingMessage(const std::string& raw, const Endpoint& src);
     auto getOrCreateConnection(const Endpoint& dest) -> Result<std::shared_ptr<Connection>>;
-    void unregisterConnection(const Endpoint& endpoint);
+    void unregisterConnection(const Endpoint& endpoint, const Connection* connection);
     static auto endpointKey(const Endpoint& endpoint) -> std::string;
 
     boost::asio::io_context& io_;
     boost::asio::ip::tcp::acceptor acceptor_;
     boost::asio::ip::tcp::endpoint local_ep_;
     MessageCallback on_message_;
-    bool running_ = false;
 
     std::mutex connections_mutex_;
-    std::unordered_map<std::string, std::weak_ptr<Connection>> connections_;
+    std::unordered_map<std::string, std::shared_ptr<Connection>> connections_;
+    std::atomic<bool> running_{false};
 };
 
 class DualTransport : public ITransport {

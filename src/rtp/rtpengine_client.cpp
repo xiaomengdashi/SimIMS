@@ -1,17 +1,15 @@
 #include "rtpengine_client_impl.hpp"
 #include "common/logger.hpp"
 
-#include <format>
 #include <array>
-#include <utility>
 #include <chrono>
+#include <format>
 #include <string_view>
-#include <thread>
+#include <utility>
 
 namespace {
 
 constexpr auto kReceiveTimeout = std::chrono::seconds(2);
-constexpr auto kReceivePollInterval = std::chrono::milliseconds(10);
 
 auto findStringField(const ims::media::BencodeDict& dict,
                      std::string_view key) -> ims::Result<std::optional<std::string>>
@@ -34,8 +32,8 @@ auto findStringField(const ims::media::BencodeDict& dict,
 namespace ims::media {
 
 RtpengineClientImpl::RtpengineClientImpl(boost::asio::io_context& io,
-                                          const std::string& rtpengine_host,
-                                          uint16_t rtpengine_port)
+                                         const std::string& rtpengine_host,
+                                         uint16_t rtpengine_port)
     : io_(io)
     , socket_(io, boost::asio::ip::udp::v4())
     , rtpengine_ep_(boost::asio::ip::make_address(rtpengine_host), rtpengine_port)
@@ -44,12 +42,28 @@ RtpengineClientImpl::RtpengineClientImpl(boost::asio::io_context& io,
 }
 
 RtpengineClientImpl::~RtpengineClientImpl() {
+    shutting_down_.store(true);
+
     boost::system::error_code ec;
-    socket_.close(ec);
+    socket_.cancel(ec); // NOLINT(bugprone-unused-return-value)
+    ec.clear();
+    socket_.close(ec); // NOLINT(bugprone-unused-return-value)
+    if (ec) {
+        IMS_LOG_WARN("Failed to close rtpengine socket during shutdown: {}", ec.message());
+    }
+
+    failAllPendingRequests(ErrorInfo{
+        ErrorCode::kMediaRtpengineError,
+        "Rtpengine client is shutting down"
+    });
+
+    if (receiver_thread_.joinable()) {
+        receiver_thread_.join();
+    }
 }
 
 auto RtpengineClientImpl::offer(const MediaSession& session, const std::string& sdp,
-                                 const RtpengineFlags& flags) -> Result<RtpengineResult>
+                                const RtpengineFlags& flags) -> Result<RtpengineResult>
 {
     auto cmd = buildBaseCommand("offer", session);
     cmd["sdp"] = BencodeValue{sdp};
@@ -110,7 +124,7 @@ auto RtpengineClientImpl::offer(const MediaSession& session, const std::string& 
 }
 
 auto RtpengineClientImpl::answer(const MediaSession& session, const std::string& sdp,
-                                  const RtpengineFlags& flags) -> Result<RtpengineResult>
+                                 const RtpengineFlags& flags) -> Result<RtpengineResult>
 {
     auto cmd = buildBaseCommand("answer", session);
     cmd["sdp"] = BencodeValue{sdp};
@@ -192,101 +206,65 @@ auto RtpengineClientImpl::ping() -> VoidResult {
 }
 
 auto RtpengineClientImpl::sendCommand(const BencodeDict& cmd) -> Result<BencodeDict> {
+    if (shutting_down_.load()) {
+        return std::unexpected(ErrorInfo{
+            ErrorCode::kMediaRtpengineError,
+            "Rtpengine client is shutting down"
+        });
+    }
+
+    auto receiver_ready = ensureReceiverRunning();
+    if (!receiver_ready) {
+        return std::unexpected(receiver_ready.error());
+    }
+
     auto cookie = generateCookie();
+    auto pending = std::make_shared<PendingRequest>();
+    {
+        std::scoped_lock lock(pending_mutex_);
+        pending_requests_.emplace(cookie, pending);
+    }
+
     auto encoded = bencode_encode(BencodeValue{cmd});
     auto payload = cookie + " " + encoded;
 
-    boost::system::error_code ec;
-    socket_.send_to(boost::asio::buffer(payload), rtpengine_ep_, 0, ec);
-    if (ec) {
-        return std::unexpected(ErrorInfo{
-            ErrorCode::kMediaRtpengineError,
-            "Failed to send to rtpengine",
-            ec.message()
-        });
-    }
-
-    // Receive response with bounded wait.
-    std::array<char, 65535> recv_buf;
-    boost::asio::ip::udp::endpoint sender_ep;
-    socket_.non_blocking(true, ec);
-    if (ec) {
-        return std::unexpected(ErrorInfo{
-            ErrorCode::kMediaRtpengineError,
-            "Failed to set non-blocking mode",
-            ec.message()
-        });
-    }
-
-    const auto deadline = std::chrono::steady_clock::now() + kReceiveTimeout;
-    size_t bytes = 0;
-    while (true) {
-        bytes = socket_.receive_from(boost::asio::buffer(recv_buf), sender_ep, 0, ec);
-        if (!ec) {
-            break;
-        }
-        if (ec != boost::asio::error::would_block && ec != boost::asio::error::try_again) {
-            boost::system::error_code restore_ec;
-            socket_.non_blocking(false, restore_ec);
+    {
+        std::scoped_lock lock(socket_send_mutex_);
+        boost::system::error_code ec;
+        socket_.send_to(boost::asio::buffer(payload), rtpengine_ep_, 0, ec);
+        if (ec) {
+            {
+                std::scoped_lock pending_lock(pending_mutex_);
+                pending_requests_.erase(cookie);
+            }
             return std::unexpected(ErrorInfo{
                 ErrorCode::kMediaRtpengineError,
-                "Failed to receive from rtpengine",
+                "Failed to send to rtpengine",
                 ec.message()
             });
         }
-        if (std::chrono::steady_clock::now() >= deadline) {
-            boost::system::error_code restore_ec;
-            socket_.non_blocking(false, restore_ec);
-            return std::unexpected(ErrorInfo{
-                ErrorCode::kMediaRtpengineError,
-                "Timed out waiting for rtpengine response"
-            });
-        }
-        std::this_thread::sleep_for(kReceivePollInterval);
     }
-    boost::system::error_code restore_ec;
-    socket_.non_blocking(false, restore_ec);
 
-    if (sender_ep.address() != rtpengine_ep_.address() || sender_ep.port() != rtpengine_ep_.port()) {
+    std::unique_lock lock(pending->mutex);
+    if (!pending->cv.wait_for(lock, kReceiveTimeout, [&pending] {
+            return pending->completed;
+        })) {
+        lock.unlock();
+        {
+            std::scoped_lock pending_lock(pending_mutex_);
+            pending_requests_.erase(cookie);
+        }
         return std::unexpected(ErrorInfo{
             ErrorCode::kMediaRtpengineError,
-            "Received rtpengine response from unexpected endpoint",
-            std::format("{}:{}", sender_ep.address().to_string(), sender_ep.port())
+            "Timed out waiting for rtpengine response"
         });
     }
 
-    std::string response(recv_buf.data(), bytes);
-
-    // Response format: "<cookie> <bencode>"
-    auto space_pos = response.find(' ');
-    if (space_pos == std::string::npos) {
-        return std::unexpected(ErrorInfo{
-            ErrorCode::kMediaRtpengineError, "Invalid rtpengine response format"});
-    }
-
-    auto resp_cookie = response.substr(0, space_pos);
-    if (resp_cookie != cookie) {
-        return std::unexpected(ErrorInfo{
-            ErrorCode::kMediaRtpengineError, "Cookie mismatch in rtpengine response"});
-    }
-
-    auto bencode_data = response.substr(space_pos + 1);
-    try {
-        auto decoded = bencode_decode(bencode_data);
-        auto* dict = std::get_if<BencodeDict>(&decoded);
-        if (!dict) {
-            return std::unexpected(ErrorInfo{
-                ErrorCode::kMediaRtpengineError, "Expected dict in rtpengine response"});
-        }
-        return *dict;
-    } catch (const std::exception& e) {
-        return std::unexpected(ErrorInfo{
-            ErrorCode::kMediaRtpengineError, "Failed to decode rtpengine response", e.what()});
-    }
+    return pending->result;
 }
 
 auto RtpengineClientImpl::buildBaseCommand(const std::string& command,
-                                            const MediaSession& session) -> BencodeDict
+                                           const MediaSession& session) -> BencodeDict
 {
     BencodeDict cmd;
     cmd["command"] = BencodeValue{command};
@@ -300,6 +278,146 @@ auto RtpengineClientImpl::buildBaseCommand(const std::string& command,
 
 auto RtpengineClientImpl::generateCookie() -> std::string {
     return std::to_string(++cookie_counter_);
+}
+
+auto RtpengineClientImpl::ensureReceiverRunning() -> VoidResult {
+    std::scoped_lock lock(receiver_start_mutex_);
+    if (receiver_thread_.joinable()) {
+        return {};
+    }
+    if (shutting_down_.load()) {
+        return std::unexpected(ErrorInfo{
+            ErrorCode::kMediaRtpengineError,
+            "Rtpengine client is shutting down"
+        });
+    }
+
+    try {
+        receiver_thread_ = std::jthread([this] {
+            receiverLoop();
+        });
+    } catch (const std::exception& e) {
+        return std::unexpected(ErrorInfo{
+            ErrorCode::kMediaRtpengineError,
+            "Failed to start rtpengine receiver thread",
+            e.what()
+        });
+    }
+
+    return {};
+}
+
+void RtpengineClientImpl::receiverLoop() {
+    std::array<char, 65535> recv_buf{};
+
+    while (!shutting_down_.load()) {
+        boost::asio::ip::udp::endpoint sender_ep;
+        boost::system::error_code ec;
+        const auto bytes = socket_.receive_from(boost::asio::buffer(recv_buf), sender_ep, 0, ec);
+        if (ec) {
+            if (shutting_down_.load() ||
+                ec == boost::asio::error::operation_aborted ||
+                ec == boost::asio::error::bad_descriptor) {
+                break;
+            }
+
+            IMS_LOG_WARN("Failed to receive from rtpengine: {}", ec.message());
+            failAllPendingRequests(ErrorInfo{
+                ErrorCode::kMediaRtpengineError,
+                "Failed to receive from rtpengine",
+                ec.message()
+            });
+            break;
+        }
+
+        if (sender_ep.address() != rtpengine_ep_.address() || sender_ep.port() != rtpengine_ep_.port()) {
+            IMS_LOG_WARN("Discarding rtpengine response from unexpected endpoint {}:{}",
+                         sender_ep.address().to_string(), sender_ep.port());
+            continue;
+        }
+
+        std::string response(recv_buf.data(), bytes);
+        auto parsed = parseResponsePayload(response);
+        if (!parsed) {
+            IMS_LOG_WARN("Discarding invalid rtpengine response: {} ({})",
+                         parsed.error().message, parsed.error().detail);
+            continue;
+        }
+
+        auto [cookie, dict] = std::move(*parsed);
+        completePendingRequest(cookie, std::move(dict));
+    }
+}
+
+auto RtpengineClientImpl::parseResponsePayload(const std::string& response)
+    -> Result<std::pair<std::string, BencodeDict>>
+{
+    auto space_pos = response.find(' ');
+    if (space_pos == std::string::npos) {
+        return std::unexpected(ErrorInfo{
+            ErrorCode::kMediaRtpengineError,
+            "Invalid rtpengine response format"
+        });
+    }
+
+    auto cookie = response.substr(0, space_pos);
+    auto bencode_data = response.substr(space_pos + 1);
+
+    try {
+        auto decoded = bencode_decode(bencode_data);
+        auto* dict = std::get_if<BencodeDict>(&decoded);
+        if (!dict) {
+            return std::unexpected(ErrorInfo{
+                ErrorCode::kMediaRtpengineError,
+                "Expected dict in rtpengine response"
+            });
+        }
+        return std::pair<std::string, BencodeDict>{std::move(cookie), std::move(*dict)};
+    } catch (const std::exception& e) {
+        return std::unexpected(ErrorInfo{
+            ErrorCode::kMediaRtpengineError,
+            "Failed to decode rtpengine response",
+            e.what()
+        });
+    }
+}
+
+void RtpengineClientImpl::completePendingRequest(const std::string& cookie, Result<BencodeDict> result) {
+    std::shared_ptr<PendingRequest> pending;
+    {
+        std::scoped_lock lock(pending_mutex_);
+        auto it = pending_requests_.find(cookie);
+        if (it == pending_requests_.end()) {
+            IMS_LOG_WARN("Discarding rtpengine response for unknown or expired cookie {}", cookie);
+            return;
+        }
+        pending = it->second;
+        pending_requests_.erase(it);
+    }
+
+    {
+        std::scoped_lock lock(pending->mutex);
+        pending->result = std::move(result);
+        pending->completed = true;
+    }
+    pending->cv.notify_one();
+}
+
+void RtpengineClientImpl::failAllPendingRequests(const ErrorInfo& error) {
+    std::unordered_map<std::string, std::shared_ptr<PendingRequest>> pending_requests;
+    {
+        std::scoped_lock lock(pending_mutex_);
+        pending_requests.swap(pending_requests_);
+    }
+
+    for (auto& [cookie, pending] : pending_requests) {
+        {
+            std::scoped_lock lock(pending->mutex);
+            pending->result = std::unexpected(error);
+            pending->completed = true;
+        }
+        pending->cv.notify_one();
+    }
 }
 
 } // namespace ims::media

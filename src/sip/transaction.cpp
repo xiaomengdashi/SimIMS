@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <utility>
 #include <vector>
 
 #include <osipparser2/osip_parser.h>
@@ -68,6 +69,7 @@ auto ServerTransaction::source() const -> const Endpoint& {
 }
 
 auto ServerTransaction::state() const -> TransactionState {
+    std::lock_guard lock(mutex_);
     return state_;
 }
 
@@ -76,86 +78,159 @@ auto ServerTransaction::branch() const -> const std::string& {
 }
 
 auto ServerTransaction::sendResponse(SipMessage response) -> VoidResult {
-    int code = response.statusCode();
-
     auto response_copy = response.clone();
-    if (response_copy) {
-        last_response_ = std::move(*response_copy);
+    if (!response_copy) {
+        IMS_LOG_ERROR("Failed to clone response for transaction cache: {}",
+                      response_copy.error().message);
+        return std::unexpected(response_copy.error());
     }
 
+    const int code = response.statusCode();
     auto result = transport_->send(response, source_);
     if (!result) {
         IMS_LOG_ERROR("Failed to send response: {}", result.error().message);
         return result;
     }
 
-    if (code >= 100 && code < 200) {
-        state_ = TransactionState::kProceeding;
-    } else if (code >= 200) {
-        bool is_invite = (request_.method() == "INVITE");
-        if (is_invite && code >= 200 && code < 300) {
-            // 2xx INVITE final responses are handled outside INVITE server transaction.
-            state_ = TransactionState::kTerminated;
-            if (on_terminated_) on_terminated_();
-        } else {
-            state_ = TransactionState::kCompleted;
-            startTimers(code);
+    std::function<void()> on_terminated;
+    bool start_timers = false;
+    {
+        std::lock_guard lock(mutex_);
+        last_response_ = std::move(*response_copy);
+
+        if (code >= 100 && code < 200) {
+            state_ = TransactionState::kProceeding;
+        } else if (code >= 200) {
+            const bool is_invite = (request_.method() == "INVITE");
+            if (is_invite && code < 300) {
+                timer_j_.cancel();
+                timer_h_.cancel();
+                state_ = TransactionState::kTerminated;
+                on_terminated = markTerminatedLocked();
+            } else {
+                state_ = TransactionState::kCompleted;
+                start_timers = true;
+            }
         }
     }
 
-    IMS_LOG_DEBUG("Server txn sent {} response, state={}", code, static_cast<int>(state_));
+    if (start_timers) {
+        startTimers(code);
+    }
+    if (on_terminated) {
+        on_terminated();
+    }
+
+    IMS_LOG_DEBUG("Server txn sent {} response, state={}", code, static_cast<int>(state()));
     return {};
 }
 
 auto ServerTransaction::retransmitLastResponse() -> VoidResult {
-    if (!last_response_) {
-        return std::unexpected(ErrorInfo{
-            ErrorCode::kSipTransactionFailed, "No response available for retransmission"});
+    std::optional<SipMessage> response_copy;
+    {
+        std::lock_guard lock(mutex_);
+        if (!last_response_) {
+            return std::unexpected(ErrorInfo{
+                ErrorCode::kSipTransactionFailed, "No response available for retransmission"});
+        }
+
+        auto cloned = last_response_->clone();
+        if (!cloned) {
+            IMS_LOG_ERROR("Failed to clone cached response for retransmission: {}",
+                          cloned.error().message);
+            return std::unexpected(cloned.error());
+        }
+        response_copy = std::move(*cloned);
     }
 
     IMS_LOG_DEBUG("Retransmitting last response for branch={}", branch_);
-    return transport_->send(*last_response_, source_);
+    return transport_->send(*response_copy, source_);
 }
 
 void ServerTransaction::acknowledgeAck() {
-    if (request_.method() != "INVITE") return;
-    if (state_ != TransactionState::kCompleted) return;
+    if (request_.method() != "INVITE") {
+        return;
+    }
 
-    IMS_LOG_DEBUG("ACK matched INVITE server txn, branch={}", branch_);
-    timer_h_.cancel();
-    state_ = TransactionState::kConfirmed;
-    state_ = TransactionState::kTerminated;
-    if (on_terminated_) on_terminated_();
+    std::function<void()> on_terminated;
+    {
+        std::lock_guard lock(mutex_);
+        if (state_ != TransactionState::kCompleted) {
+            return;
+        }
+
+        IMS_LOG_DEBUG("ACK matched INVITE server txn, branch={}", branch_);
+        timer_h_.cancel();
+        state_ = TransactionState::kConfirmed;
+        state_ = TransactionState::kTerminated;
+        on_terminated = markTerminatedLocked();
+    }
+
+    if (on_terminated) {
+        on_terminated();
+    }
 }
 
 void ServerTransaction::onTerminated(std::function<void()> cb) {
+    std::lock_guard lock(mutex_);
     on_terminated_ = std::move(cb);
 }
 
 void ServerTransaction::startTimers(int final_response_code) {
-    bool is_invite = (request_.method() == "INVITE");
+    const bool is_invite = (request_.method() == "INVITE");
+    auto self = shared_from_this();
 
+    std::lock_guard lock(mutex_);
     if (is_invite && final_response_code >= 300) {
-        // Timer H: wait for ACK
-        auto self = shared_from_this();
+        timer_j_.cancel();
         timer_h_.expires_after(kTimerH);
         timer_h_.async_wait([self](boost::system::error_code ec) {
-            if (ec) return;
-            IMS_LOG_DEBUG("Timer H expired, branch={}", self->branch_);
-            self->state_ = TransactionState::kTerminated;
-            if (self->on_terminated_) self->on_terminated_();
+            if (ec) {
+                return;
+            }
+
+            std::function<void()> on_terminated;
+            {
+                std::lock_guard lock(self->mutex_);
+                IMS_LOG_DEBUG("Timer H expired, branch={}", self->branch_);
+                self->state_ = TransactionState::kTerminated;
+                on_terminated = self->markTerminatedLocked();
+            }
+
+            if (on_terminated) {
+                on_terminated();
+            }
         });
     } else {
-        // Timer J: absorb retransmissions
-        auto self = shared_from_this();
+        timer_h_.cancel();
         timer_j_.expires_after(kTimerJ);
         timer_j_.async_wait([self](boost::system::error_code ec) {
-            if (ec) return;
-            IMS_LOG_DEBUG("Timer J expired, branch={}", self->branch_);
-            self->state_ = TransactionState::kTerminated;
-            if (self->on_terminated_) self->on_terminated_();
+            if (ec) {
+                return;
+            }
+
+            std::function<void()> on_terminated;
+            {
+                std::lock_guard lock(self->mutex_);
+                IMS_LOG_DEBUG("Timer J expired, branch={}", self->branch_);
+                self->state_ = TransactionState::kTerminated;
+                on_terminated = self->markTerminatedLocked();
+            }
+
+            if (on_terminated) {
+                on_terminated();
+            }
         });
     }
+}
+
+auto ServerTransaction::markTerminatedLocked() -> std::function<void()> {
+    if (termination_notified_) {
+        return {};
+    }
+
+    termination_notified_ = true;
+    return on_terminated_;
 }
 
 // ========== ClientTransaction ==========
@@ -177,6 +252,7 @@ auto ClientTransaction::request() const -> const SipMessage& {
 }
 
 auto ClientTransaction::state() const -> TransactionState {
+    std::lock_guard lock(mutex_);
     return state_;
 }
 
@@ -185,103 +261,153 @@ auto ClientTransaction::branch() const -> const std::string& {
 }
 
 void ClientTransaction::start() {
-    // Send initial request
     auto result = transport_->send(request_, dest_);
     if (!result) {
+        std::function<void()> on_timeout;
+        {
+            std::lock_guard lock(mutex_);
+            state_ = TransactionState::kTerminated;
+            on_timeout = on_timeout_;
+        }
+
         IMS_LOG_ERROR("Failed to send request: {}", result.error().message);
-        state_ = TransactionState::kTerminated;
-        if (on_timeout_) on_timeout_();
+        if (on_timeout) {
+            on_timeout();
+        }
         return;
     }
-
-    state_ = TransactionState::kTrying;
-    retransmit_count_ = 0;
 
     auto transport = dest_.transport;
     std::transform(transport.begin(), transport.end(), transport.begin(),
                    [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-    if (transport == "udp" || transport.empty()) {
-        // Start Timer A (retransmission) for UDP.
-        timer_a_.expires_after(kTimerT1);
-        timer_a_.async_wait([this](boost::system::error_code ec) {
-            if (ec) return;
-            retransmit();
-        });
-    }
 
-    // Start Timer B (transaction timeout)
-    timer_b_.expires_after(kTimerB);
-    timer_b_.async_wait([this](boost::system::error_code ec) {
-        if (ec) return;
-        if (state_ != TransactionState::kCompleted && state_ != TransactionState::kTerminated) {
-            IMS_LOG_WARN("Client transaction timeout, branch={}", branch_);
-            state_ = TransactionState::kTerminated;
-            timer_a_.cancel();
-            if (on_timeout_) on_timeout_();
+    auto self = shared_from_this();
+    {
+        std::lock_guard lock(mutex_);
+        if (state_ == TransactionState::kTrying) {
+            retransmit_count_ = 0;
         }
-    });
+
+        if ((transport == "udp" || transport.empty()) &&
+            state_ == TransactionState::kTrying) {
+            timer_a_.expires_after(kTimerT1);
+            timer_a_.async_wait([self](boost::system::error_code ec) {
+                if (ec) {
+                    return;
+                }
+                self->retransmit();
+            });
+        }
+
+        if (state_ != TransactionState::kCompleted && state_ != TransactionState::kTerminated) {
+            timer_b_.expires_after(kTimerB);
+            timer_b_.async_wait([self](boost::system::error_code ec) {
+                if (ec) {
+                    return;
+                }
+
+                std::function<void()> on_timeout;
+                bool timed_out = false;
+                {
+                    std::lock_guard lock(self->mutex_);
+                    if (self->state_ != TransactionState::kCompleted &&
+                        self->state_ != TransactionState::kTerminated) {
+                        IMS_LOG_WARN("Client transaction timeout, branch={}", self->branch_);
+                        self->state_ = TransactionState::kTerminated;
+                        self->timer_a_.cancel();
+                        on_timeout = self->on_timeout_;
+                        timed_out = true;
+                    }
+                }
+
+                if (timed_out && on_timeout) {
+                    on_timeout();
+                }
+            });
+        }
+    }
 }
 
 void ClientTransaction::onResponse(ResponseCallback cb) {
+    std::lock_guard lock(mutex_);
     on_response_ = std::move(cb);
 }
 
 void ClientTransaction::onTimeout(std::function<void()> cb) {
+    std::lock_guard lock(mutex_);
     on_timeout_ = std::move(cb);
 }
 
 bool ClientTransaction::matches(const SipMessage& response) const {
-    // RFC 3261 17.1.3: match by Via branch and CSeq method
     return response.viaBranch() == branch_ && response.cseqMethod() == request_.cseqMethod();
 }
 
 void ClientTransaction::processResponse(SipMessage response) {
-    int code = response.statusCode();
+    const int code = response.statusCode();
     IMS_LOG_DEBUG("Client txn received {} response, branch={}", code, branch_);
 
-    const bool is_invite = request_.cseqMethod() == "INVITE";
-    const bool is_invite_2xx = is_invite && code >= 200 && code < 300;
-
-    if (code >= 100 && code < 200) {
-        state_ = TransactionState::kProceeding;
-        // Stop retransmission timer for provisional responses
-        timer_a_.cancel();
-    } else if (code >= 200) {
-        state_ = TransactionState::kCompleted;
-        timer_a_.cancel();
-        if (!is_invite_2xx) {
+    ResponseCallback on_response;
+    {
+        std::lock_guard lock(mutex_);
+        const bool is_invite = request_.cseqMethod() == "INVITE";
+        if (code >= 100 && code < 200) {
+            state_ = TransactionState::kProceeding;
+            timer_a_.cancel();
+        } else if (code >= 200) {
+            state_ = TransactionState::kCompleted;
+            timer_a_.cancel();
             timer_b_.cancel();
+            if (!is_invite || code >= 300) {
+                state_ = TransactionState::kTerminated;
+            }
         }
+
+        on_response = on_response_;
     }
 
-    if (on_response_) {
-        on_response_(response);
-    }
-
-    if (code >= 200 && !is_invite_2xx) {
-        state_ = TransactionState::kTerminated;
+    if (on_response) {
+        on_response(response);
     }
 }
 
 void ClientTransaction::retransmit() {
-    if (state_ == TransactionState::kCompleted || state_ == TransactionState::kTerminated) {
-        return;
+    int retransmit_count = 0;
+    {
+        std::lock_guard lock(mutex_);
+        if (state_ == TransactionState::kCompleted || state_ == TransactionState::kTerminated) {
+            return;
+        }
+
+        ++retransmit_count_;
+        retransmit_count = retransmit_count_;
+        IMS_LOG_DEBUG("Retransmit #{}, branch={}", retransmit_count, branch_);
     }
 
-    ++retransmit_count_;
-    IMS_LOG_DEBUG("Retransmit #{}, branch={}", retransmit_count_, branch_);
+    auto result = transport_->send(request_, dest_);
+    if (!result) {
+        IMS_LOG_WARN("Client transaction retransmit failed, branch={}, error={}",
+                     branch_, result.error().message);
+    }
 
-    transport_->send(request_, dest_);
+    auto interval = kTimerT1 * (1 << retransmit_count);
+    if (interval > kTimerT2) {
+        interval = kTimerT2;
+    }
 
-    // Double the retransmit interval, capped at T2
-    auto interval = kTimerT1 * (1 << retransmit_count_);
-    if (interval > kTimerT2) interval = kTimerT2;
-
-    timer_a_.expires_after(interval);
-    timer_a_.async_wait([this](boost::system::error_code ec) {
-        if (ec) return;
-        retransmit();
-    });
+    auto self = shared_from_this();
+    {
+        std::lock_guard lock(mutex_);
+        if (state_ == TransactionState::kCompleted || state_ == TransactionState::kTerminated) {
+            return;
+        }
+        timer_a_.expires_after(interval);
+        timer_a_.async_wait([self](boost::system::error_code ec) {
+            if (ec) {
+                return;
+            }
+            self->retransmit();
+        });
+    }
 }
 
 // ========== TransactionLayer ==========
@@ -311,9 +437,7 @@ auto TransactionLayer::sendRequest(SipMessage request, const Endpoint& dest,
         if (cb) {
             cb(response);
         }
-        const bool is_invite_2xx = response.cseqMethod() == "INVITE" &&
-                                   response.statusCode() >= 200 && response.statusCode() < 300;
-        if (response.statusCode() >= 200 && !is_invite_2xx) {
+        if (response.statusCode() >= 200) {
             std::lock_guard lock(mutex_);
             client_txns_.erase(key);
         }
@@ -325,7 +449,13 @@ auto TransactionLayer::sendRequest(SipMessage request, const Endpoint& dest,
 
     {
         std::lock_guard lock(mutex_);
-        client_txns_[key] = txn;
+        if (client_txns_.contains(key)) {
+            IMS_LOG_WARN("Duplicate client transaction key={}, method={}", key, method);
+            return std::unexpected(ErrorInfo{
+                ErrorCode::kSipTransactionFailed,
+                std::format("Duplicate client transaction key {}", key)});
+        }
+        client_txns_.emplace(key, txn);
     }
 
     IMS_LOG_INFO("Created client transaction key={} dest={}:{} method={}",
@@ -336,7 +466,6 @@ auto TransactionLayer::sendRequest(SipMessage request, const Endpoint& dest,
 
 void TransactionLayer::processMessage(SipMessage msg, Endpoint source) {
     if (msg.isResponse()) {
-        // Find matching client transaction
         auto txn = findClientTransaction(msg);
         if (txn) {
             txn->processResponse(std::move(msg));
@@ -362,7 +491,6 @@ void TransactionLayer::processMessage(SipMessage msg, Endpoint source) {
 
         auto key = getTransactionKey(msg);
 
-        // Check for retransmission of existing server transaction
         std::shared_ptr<ServerTransaction> existing_txn;
         {
             std::lock_guard lock(mutex_);
@@ -381,7 +509,6 @@ void TransactionLayer::processMessage(SipMessage msg, Endpoint source) {
             return;
         }
 
-        // Create new server transaction
         auto txn = std::make_shared<ServerTransaction>(
             std::move(msg), transport_, std::move(source), io_);
 

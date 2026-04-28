@@ -42,6 +42,18 @@ public:
                      std::shared_ptr<ims::sip::ServerTransaction> txn);
 
 private:
+    struct DialogKey {
+        std::string call_id;
+        std::string caller_tag;
+        std::string callee_tag;
+
+        auto operator==(const DialogKey&) const -> bool = default;
+    };
+
+    struct DialogKeyHash {
+        auto operator()(const DialogKey& key) const -> std::size_t;
+    };
+
     struct SessionInfo {
         std::string call_id;
         std::string caller_tag;
@@ -54,14 +66,22 @@ private:
         bool bye_seen = false;
     };
 
+    using SessionMap = std::unordered_map<DialogKey, SessionInfo, DialogKeyHash>;
+    using SessionIterator = SessionMap::iterator;
+
     auto lookupCallee(const std::string& request_uri)
         -> ims::Result<ims::registration::RegistrationBinding>;
     auto resolveBindingDestination(const ims::registration::RegistrationBinding& binding)
         -> ims::Result<ims::sip::Endpoint>;
-    auto findSessionByCallId(const std::string& call_id) -> SessionInfo*;
-    auto resolveInDialogDestination(const ims::sip::SipMessage& request, SessionInfo& session) const
+    auto findSessionForRequestLocked(const ims::sip::SipMessage& request) -> std::optional<SessionIterator>;
+    auto findInitialSessionLocked(const std::string& call_id, const std::string& caller_tag) -> std::optional<SessionIterator>;
+    auto findCancelSessionLocked(const ims::sip::SipMessage& request) -> std::optional<SessionIterator>;
+    auto resolveInDialogDestination(const ims::sip::SipMessage& request, const SessionInfo& session) const
         -> const ims::sip::Endpoint*;
-    void eraseSession(const std::string& call_id);
+    void recordInviteResponseDialog(const std::string& call_id,
+                                    const std::string& caller_tag,
+                                    const std::string& callee_tag);
+    void eraseSessionLocked(const DialogKey& key);
 
     std::shared_ptr<ims::registration::IRegistrationStore> store_;
     ims::sip::SipStack& sip_stack_;
@@ -69,7 +89,7 @@ private:
     std::optional<ims::sip::Endpoint> peer_icscf_;
 
     std::mutex sessions_mutex_;
-    std::unordered_map<std::string, SessionInfo> sessions_;
+    SessionMap sessions_;
 };
 
 } // namespace ims::scscf

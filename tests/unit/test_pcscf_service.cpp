@@ -1,6 +1,3 @@
-#include <any>
-#include <sstream>
-
 #define private public
 #include "p-cscf/pcscf_service.hpp"
 #undef private
@@ -23,8 +20,6 @@
 namespace {
 
 using ::testing::_;
-using ::testing::AnyNumber;
-using ::testing::Invoke;
 using ::testing::StrictMock;
 using ::testing::Truly;
 
@@ -103,10 +98,50 @@ TEST_F(PcscfServiceTest, Invite183WithSdpTriggersRtpengineAnswerAndRewritesSdp) 
     ASSERT_TRUE(body.has_value());
     EXPECT_EQ(*body, kRewrittenSdp);
 
-    auto state = service_->media_sessions_.getSession(kCallId);
+    auto state = service_->media_sessions_.getSession(ims::media::MediaSessionKey{
+        .call_id = kCallId,
+        .from_tag = kFromTag,
+        .to_tag = kToTag,
+    });
     ASSERT_TRUE(state.has_value());
     EXPECT_EQ(state->session.to_tag, kToTag);
     EXPECT_EQ(state->callee_sdp, kOriginalSdp);
+}
+
+TEST_F(PcscfServiceTest, InviteResponsesWithSameCallIdUseMatchingFromTag) {
+    static const std::string kCallId = "forked-call";
+    static const std::string kOriginalSdp = "v=0\r\no=- 1 1 IN IP4 10.0.0.1\r\ns=-\r\n";
+    static const std::string kRewrittenSdp = "v=0\r\no=- 2 2 IN IP4 127.0.0.1\r\ns=-\r\n";
+
+    service_->media_sessions_.createSession(ims::media::MediaSessionKey{.call_id = kCallId, .from_tag = "from-a"});
+    service_->media_sessions_.createSession(ims::media::MediaSessionKey{.call_id = kCallId, .from_tag = "from-b"});
+    service_->media_sessions_.updateCallerSdp(ims::media::MediaSessionKey{.call_id = kCallId, .from_tag = "from-a"}, "caller-a-sdp");
+    service_->media_sessions_.updateCallerSdp(ims::media::MediaSessionKey{.call_id = kCallId, .from_tag = "from-b"}, "caller-b-sdp");
+
+    auto response = makeInviteResponse(183, "Session Progress", kCallId, "from-b", "to-b", kOriginalSdp);
+
+    EXPECT_CALL(
+        *rtpengine_,
+        answer(Truly([](const ims::media::MediaSession& session) {
+                   return session.call_id == "forked-call" &&
+                          session.from_tag == "from-b" &&
+                          session.to_tag == "to-b";
+               }),
+               kOriginalSdp, _))
+        .WillOnce([&](const ims::media::MediaSession&, const std::string&, const ims::media::RtpengineFlags&) {
+            return ims::media::RtpengineResult{.sdp = kRewrittenSdp};
+        });
+
+    service_->onInviteResponse(response);
+
+    auto state_a = service_->media_sessions_.getSession(ims::media::MediaSessionKey{.call_id = kCallId, .from_tag = "from-a"});
+    auto state_b = service_->media_sessions_.getSession(ims::media::MediaSessionKey{.call_id = kCallId, .from_tag = "from-b", .to_tag = "to-b"});
+    ASSERT_TRUE(state_a.has_value());
+    ASSERT_TRUE(state_b.has_value());
+    EXPECT_EQ(state_a->caller_sdp, "caller-a-sdp");
+    EXPECT_EQ(state_a->session.to_tag, "");
+    EXPECT_EQ(state_b->caller_sdp, "caller-b-sdp");
+    EXPECT_EQ(state_b->callee_sdp, kOriginalSdp);
 }
 
 TEST_F(PcscfServiceTest, Invite486DoesNotCallRtpengineAnswer) {
@@ -189,6 +224,32 @@ TEST_F(PcscfServiceTest, ResolveCoreDestinationUsesStoredTopologyToken) {
     EXPECT_EQ(resolved.address, expected.address);
     EXPECT_EQ(resolved.port, expected.port);
     EXPECT_EQ(resolved.transport, expected.transport);
+}
+
+TEST_F(PcscfServiceTest, ResolveCoreDestinationDropsExpiredTopologyToken) {
+    ims::sip::Endpoint expected{
+        .address = "10.10.10.10",
+        .port = 6060,
+        .transport = "udp",
+    };
+    service_->rememberTopologyRoute("thexpired", expected);
+    service_->topology_routes_["thexpired"].expires_at = std::chrono::steady_clock::now() - std::chrono::seconds{1};
+
+    auto parsed = ims::sip::SipMessage::parse(
+        "BYE sip:alice@ims.local SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP 10.0.0.9:5099;branch=z9hG4bKabc;rport\r\n"
+        "Route: <sip:127.0.0.1:5060;lr;th=thexpired>\r\n"
+        "From: <sip:bob@ims.local>;tag=f1\r\n"
+        "To: <sip:alice@ims.local>;tag=t1\r\n"
+        "Call-ID: token-expired\r\n"
+        "CSeq: 3 BYE\r\n"
+        "Content-Length: 0\r\n\r\n");
+    ASSERT_TRUE(parsed.has_value()) << parsed.error().message;
+
+    auto resolved = service_->resolveCoreDestination(*parsed);
+    EXPECT_EQ(resolved.address, "127.0.0.1");
+    EXPECT_EQ(resolved.port, 5062);
+    EXPECT_FALSE(service_->topology_routes_.contains("thexpired"));
 }
 
 TEST_F(PcscfServiceTest, ResolveCoreDestinationFallsBackToConfiguredCoreEntryWhenNoToken) {

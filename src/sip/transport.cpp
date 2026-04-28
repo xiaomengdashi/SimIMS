@@ -107,7 +107,14 @@ auto UdpTransport::send(const SipMessage& msg, const Endpoint& dest) -> VoidResu
             ErrorCode::kSipTransportError, "Invalid destination address", ec.message()));
     }
 
-    socket_.send_to(boost::asio::buffer(*data), ep, 0, ec);
+    {
+        std::lock_guard lock(socket_mutex_);
+        if (!running_ || !socket_.is_open()) {
+            return std::unexpected(ErrorInfo{
+                ErrorCode::kSipTransportError, "UDP transport is stopped"});
+        }
+        socket_.send_to(boost::asio::buffer(*data), ep, 0, ec);
+    }
     if (ec) {
         return std::unexpected(ErrorInfo{
             ErrorCode::kSipTransportError, "UDP send failed", ec.message()});
@@ -148,8 +155,13 @@ auto UdpTransport::start() -> VoidResult {
 }
 
 void UdpTransport::stop() {
-    running_ = false;
+    bool expected = true;
+    if (!running_.compare_exchange_strong(expected, false)) {
+        return;
+    }
+
     boost::system::error_code ec;
+    std::lock_guard lock(socket_mutex_);
     if (socket_.is_open()) {
         socket_.cancel(ec);
         socket_.close(ec);
@@ -245,7 +257,7 @@ struct TcpTransport::Connection : public std::enable_shared_from_this<TcpTranspo
                         IMS_LOG_WARN("TCP receive error from {}:{}: {}",
                                      self->remote.address, self->remote.port, ec.message());
                     }
-                    self->owner.unregisterConnection(self->remote);
+                    self->owner.unregisterConnection(self->remote, self.get());
                     self->close();
                     return;
                 }
@@ -293,7 +305,7 @@ auto TcpTransport::send(const SipMessage& msg, const Endpoint& dest) -> VoidResu
 
     auto send_result = (*conn_result)->send(*data);
     if (!send_result) {
-        unregisterConnection(dest);
+        unregisterConnection((*conn_result)->remote, conn_result->get());
         return send_result;
     }
 
@@ -342,7 +354,11 @@ auto TcpTransport::start() -> VoidResult {
 }
 
 void TcpTransport::stop() {
-    running_ = false;
+    bool expected = true;
+    if (!running_.compare_exchange_strong(expected, false)) {
+        return;
+    }
+
     boost::system::error_code ec;
     acceptor_.cancel(ec);
     acceptor_.close(ec);
@@ -350,10 +366,8 @@ void TcpTransport::stop() {
     std::vector<std::shared_ptr<Connection>> active;
     {
         std::lock_guard lock(connections_mutex_);
-        for (auto it = connections_.begin(); it != connections_.end(); ++it) {
-            if (auto conn = it->second.lock()) {
-                active.push_back(std::move(conn));
-            }
+        for (auto& [_, conn] : connections_) {
+            active.push_back(conn);
         }
         connections_.clear();
     }
@@ -425,15 +439,9 @@ void TcpTransport::handleIncomingMessage(const std::string& raw, const Endpoint&
 
 auto TcpTransport::getOrCreateConnection(const Endpoint& dest) -> Result<std::shared_ptr<Connection>> {
     auto key = endpointKey(dest);
-    {
-        std::lock_guard lock(connections_mutex_);
-        auto it = connections_.find(key);
-        if (it != connections_.end()) {
-            if (auto existing = it->second.lock()) {
-                return existing;
-            }
-            connections_.erase(it);
-        }
+    std::lock_guard lock(connections_mutex_);
+    if (auto it = connections_.find(key); it != connections_.end()) {
+        return it->second;
     }
 
     boost::system::error_code ec;
@@ -456,18 +464,16 @@ auto TcpTransport::getOrCreateConnection(const Endpoint& dest) -> Result<std::sh
         .transport = "tcp"
     };
     auto conn = std::make_shared<Connection>(std::move(socket), *this, remote);
-    {
-        std::lock_guard lock(connections_mutex_);
-        connections_[key] = conn;
-    }
-
+    connections_[key] = conn;
     conn->start();
     return conn;
 }
 
-void TcpTransport::unregisterConnection(const Endpoint& endpoint) {
+void TcpTransport::unregisterConnection(const Endpoint& endpoint, const Connection* connection) {
     std::lock_guard lock(connections_mutex_);
-    connections_.erase(endpointKey(endpoint));
+    if (auto it = connections_.find(endpointKey(endpoint)); it != connections_.end() && it->second.get() == connection) {
+        connections_.erase(it);
+    }
 }
 
 auto TcpTransport::endpointKey(const Endpoint& endpoint) -> std::string {

@@ -3,17 +3,12 @@
 #include "common/logger.hpp"
 #include "common/io_context.hpp"
 #include "db/mongo_subscriber_repository.hpp"
+
+#include <boost/asio/signal_set.hpp>
 #include "diameter/mongo_hss_client.hpp"
 
 #include <csignal>
 #include <iostream>
-
-namespace {
-    std::function<void()> shutdown_handler;
-    void signal_handler(int) {
-        if (shutdown_handler) shutdown_handler();
-    }
-}
 
 int main(int argc, char* argv[]) {
     std::string config_path = "config/ims.yaml";
@@ -49,12 +44,14 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    shutdown_handler = [&]() {
+    boost::asio::signal_set signals(io_ctx.get(), SIGINT, SIGTERM);
+    signals.async_wait([&](const boost::system::error_code& ec, int) {
+        if (ec) {
+            return;
+        }
         service.stop();
         io_ctx.stop();
-    };
-    std::signal(SIGINT, signal_handler);
-    std::signal(SIGTERM, signal_handler);
+    });
 
     IMS_LOG_INFO("I-CSCF running on {}:{}", config.icscf.listen_addr, config.icscf.listen_port);
     io_ctx.run();

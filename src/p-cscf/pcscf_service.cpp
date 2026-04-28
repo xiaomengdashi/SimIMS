@@ -42,6 +42,8 @@ auto random_hex(int length) -> std::string {
     return oss.str();
 }
 
+constexpr auto kTopologyRouteTtl = std::chrono::minutes{30};
+
 } // namespace
 
 PcscfService::PcscfService(const ims::PcscfConfig& config,
@@ -102,10 +104,10 @@ void PcscfService::onInvite(std::shared_ptr<ims::sip::ServerTransaction> txn,
     }
 
     auto call_id = request.callId();
-    auto from_tag = request.fromTag();
+    auto media_key = mediaKeyForRequest(request);
 
     // Create media session tracking
-    auto media_session = media_sessions_.createSession(call_id, from_tag);
+    auto media_session = media_sessions_.createSession(media_key);
 
     // Process SDP through rtpengine (offer)
     auto sdp = request.body();
@@ -118,7 +120,7 @@ void PcscfService::onInvite(std::shared_ptr<ims::sip::ServerTransaction> txn,
 
         auto offer_result = rtpengine_->offer(media_session, *sdp, flags);
         if (offer_result) {
-            media_sessions_.updateCallerSdp(call_id, *sdp);
+            media_sessions_.updateCallerSdp(media_key, *sdp);
             if (!offer_result->sdp.empty()) {
                 // Replace SDP with rtpengine's version
                 request.setBody(offer_result->sdp, "application/sdp");
@@ -145,10 +147,15 @@ void PcscfService::onBye(std::shared_ptr<ims::sip::ServerTransaction> txn,
         return;
     }
 
+    auto media_key = mediaKeyForRequest(request);
+
     // Clean up rtpengine session
-    auto session_state = media_sessions_.getSession(call_id);
+    auto session_state = media_sessions_.getSession(media_key);
     if (session_state && rtpengine_) {
-        rtpengine_->deleteSession(session_state->session);
+        auto result = rtpengine_->deleteSession(session_state->session);
+        if (!result) {
+            IMS_LOG_WARN("rtpengine delete failed for call={}: {}", call_id, result.error().message);
+        }
     }
 
     // Release QoS via Rx STR
@@ -157,10 +164,13 @@ void PcscfService::onBye(std::shared_ptr<ims::sip::ServerTransaction> txn,
             .session_id = session_state->rx_session_id,
             .termination_cause = 1,  // DIAMETER_LOGOUT
         };
-        pcf_->terminateSession(str);
+        auto result = pcf_->terminateSession(str);
+        if (!result) {
+            IMS_LOG_WARN("PCF STR failed for call={}: {}", call_id, result.error().message);
+        }
     }
 
-    media_sessions_.removeSession(call_id);
+    media_sessions_.removeSession(media_key);
 
     // Forward BYE along signaling path
     forwardStatefulToCore(std::move(txn), request);
@@ -189,12 +199,17 @@ void PcscfService::onCancel(std::shared_ptr<ims::sip::ServerTransaction> txn,
         return;
     }
 
+    auto media_key = mediaKeyForRequest(request);
+
     // Clean up media session
-    auto session_state = media_sessions_.getSession(call_id);
+    auto session_state = media_sessions_.getSession(media_key);
     if (session_state && rtpengine_) {
-        rtpengine_->deleteSession(session_state->session);
+        auto result = rtpengine_->deleteSession(session_state->session);
+        if (!result) {
+            IMS_LOG_WARN("rtpengine delete failed for call={}: {}", call_id, result.error().message);
+        }
     }
-    media_sessions_.removeSession(call_id);
+    media_sessions_.removeSession(media_key);
 
     forwardStatefulToCore(std::move(txn), request);
 }
@@ -242,16 +257,22 @@ void PcscfService::onInviteResponse(ims::sip::SipMessage& response) {
     }
 
     const auto call_id = response.callId();
-    auto session_state = media_sessions_.getSession(call_id);
+    auto media_key = mediaKeyForResponse(response);
+    auto session_state = media_sessions_.getSession(media_key);
+    if (!session_state && !media_key.to_tag.empty()) {
+        media_key.to_tag.clear();
+        session_state = media_sessions_.getSession(media_key);
+    }
     if (!session_state) {
         IMS_LOG_DEBUG("No media session found while handling INVITE response call={}", call_id);
         return;
     }
 
     auto to_tag = response.toTag();
-    if (!to_tag.empty()) {
-        media_sessions_.updateToTag(call_id, to_tag);
-        session_state->session.to_tag = std::move(to_tag);
+    if (!to_tag.empty() && session_state->session.to_tag.empty()) {
+        media_sessions_.updateToTag(media_key, to_tag);
+        session_state->session.to_tag = to_tag;
+        media_key.to_tag = std::move(to_tag);
     }
 
     ims::media::RtpengineFlags flags{
@@ -266,7 +287,7 @@ void PcscfService::onInviteResponse(ims::sip::SipMessage& response) {
         return;
     }
 
-    media_sessions_.updateCalleeSdp(call_id, *sdp);
+    media_sessions_.updateCalleeSdp(media_key, *sdp);
     if (!answer_result->sdp.empty()) {
         response.setBody(answer_result->sdp, "application/sdp");
         IMS_LOG_DEBUG("SDP answer rewritten by rtpengine for call={}", call_id);
@@ -367,9 +388,10 @@ auto PcscfService::resolveUeDestination(const ims::sip::SipMessage& request) con
 auto PcscfService::resolveCoreDestination(const ims::sip::SipMessage& request) const -> ims::sip::Endpoint {
     if (auto token = extractTopologyToken(request)) {
         std::lock_guard<std::mutex> lock(topology_mutex_);
+        purgeExpiredTopologyRoutesLocked();
         auto it = topology_routes_.find(*token);
         if (it != topology_routes_.end()) {
-            return it->second;
+            return it->second.endpoint;
         }
     }
     return ims::sip::Endpoint{
@@ -407,9 +429,20 @@ auto PcscfService::createTopologyToken() -> std::string {
     return "th" + random_hex(20);
 }
 
+void PcscfService::purgeExpiredTopologyRoutesLocked() const {
+    auto now = std::chrono::steady_clock::now();
+    std::erase_if(topology_routes_, [now](const auto& item) {
+        return item.second.expires_at <= now;
+    });
+}
+
 void PcscfService::rememberTopologyRoute(const std::string& token, const ims::sip::Endpoint& endpoint) {
     std::lock_guard<std::mutex> lock(topology_mutex_);
-    topology_routes_[token] = endpoint;
+    purgeExpiredTopologyRoutesLocked();
+    topology_routes_[token] = TopologyRouteEntry{
+        .endpoint = endpoint,
+        .expires_at = std::chrono::steady_clock::now() + kTopologyRouteTtl,
+    };
 }
 
 void PcscfService::addTopologyRecordRoute(ims::sip::SipMessage& request, const std::string& token) const {
@@ -424,6 +457,22 @@ void PcscfService::sanitizeForUeEgress(ims::sip::SipMessage& request) {
         request.removeTopVia();
         via_count = request.viaCount();
     }
+}
+
+auto PcscfService::mediaKeyForRequest(const ims::sip::SipMessage& request) const -> ims::media::MediaSessionKey {
+    return ims::media::MediaSessionKey{
+        .call_id = request.callId(),
+        .from_tag = request.fromTag(),
+        .to_tag = request.toTag(),
+    };
+}
+
+auto PcscfService::mediaKeyForResponse(const ims::sip::SipMessage& response) const -> ims::media::MediaSessionKey {
+    return ims::media::MediaSessionKey{
+        .call_id = response.callId(),
+        .from_tag = response.fromTag(),
+        .to_tag = response.toTag(),
+    };
 }
 
 void PcscfService::forwardStatefulToCore(std::shared_ptr<ims::sip::ServerTransaction> txn,
@@ -456,7 +505,10 @@ void PcscfService::forwardStatefulToUe(std::shared_ptr<ims::sip::ServerTransacti
         IMS_LOG_WARN("Failed to resolve UE destination from Via chain");
         auto resp = ims::sip::createResponse(request, 500, "Internal Server Error");
         if (resp) {
-            txn->sendResponse(std::move(*resp));
+            auto send_result = txn->sendResponse(std::move(*resp));
+            if (!send_result) {
+                IMS_LOG_WARN("Failed to send UE resolution error response: {}", send_result.error().message);
+            }
         }
         return;
     }

@@ -39,7 +39,9 @@ public:
 
 private:
     void startTimers(int final_response_code);
+    auto markTerminatedLocked() -> std::function<void()>;
 
+    mutable std::mutex mutex_;
     SipMessage request_;
     std::shared_ptr<ITransport> transport_;
     Endpoint source_;
@@ -48,11 +50,12 @@ private:
     std::string branch_;
     std::optional<SipMessage> last_response_;
     std::function<void()> on_terminated_;
+    bool termination_notified_ = false;
     boost::asio::steady_timer timer_j_;
     boost::asio::steady_timer timer_h_;
 };
 
-class ClientTransaction {
+class ClientTransaction : public std::enable_shared_from_this<ClientTransaction> {
 public:
     using ResponseCallback = std::function<void(const SipMessage&)>;
 
@@ -72,6 +75,7 @@ public:
 private:
     void retransmit();
 
+    mutable std::mutex mutex_;
     SipMessage request_;
     std::shared_ptr<ITransport> transport_;
     Endpoint dest_;

@@ -7,6 +7,7 @@
 #include "rtp/rtpengine_client.hpp"
 #include "rtp/media_session.hpp"
 
+#include <chrono>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -38,9 +39,12 @@ private:
     auto resolveCoreDestination(const ims::sip::SipMessage& request) const -> ims::sip::Endpoint;
     auto extractTopologyToken(const ims::sip::SipMessage& request) const -> std::optional<std::string>;
     auto createTopologyToken() -> std::string;
+    void purgeExpiredTopologyRoutesLocked() const;
     void rememberTopologyRoute(const std::string& token, const ims::sip::Endpoint& endpoint);
     void addTopologyRecordRoute(ims::sip::SipMessage& request, const std::string& token) const;
     void sanitizeForUeEgress(ims::sip::SipMessage& request);
+    auto mediaKeyForRequest(const ims::sip::SipMessage& request) const -> ims::media::MediaSessionKey;
+    auto mediaKeyForResponse(const ims::sip::SipMessage& response) const -> ims::media::MediaSessionKey;
 
     void onRegister(std::shared_ptr<ims::sip::ServerTransaction> txn,
                     ims::sip::SipMessage& request);
@@ -80,8 +84,13 @@ private:
     ims::Port core_entry_port_;
     std::string proxy_public_addr_;
 
+    struct TopologyRouteEntry {
+        ims::sip::Endpoint endpoint;
+        std::chrono::steady_clock::time_point expires_at;
+    };
+
     mutable std::mutex topology_mutex_;
-    std::unordered_map<std::string, ims::sip::Endpoint> topology_routes_;
+    mutable std::unordered_map<std::string, TopologyRouteEntry> topology_routes_;
 };
 
 } // namespace ims::pcscf

@@ -21,11 +21,30 @@ target_link_libraries(test_proxy_core PRIVATE ims_sip ims_common GTest::gtest_ma
 ims_configure_test_target(test_proxy_core)
 gtest_discover_tests(test_proxy_core)
 
+# Transaction layer test
+add_executable(test_transaction_layer test_transaction_layer.cpp)
+target_link_libraries(test_transaction_layer PRIVATE ims_sip ims_common GTest::gtest_main GTest::gmock)
+target_include_directories(test_transaction_layer PRIVATE ${CMAKE_SOURCE_DIR}/tests ${CMAKE_SOURCE_DIR}/src)
+ims_configure_test_target(test_transaction_layer)
+gtest_discover_tests(test_transaction_layer)
+
+add_executable(test_sip_stack test_sip_stack.cpp)
+target_link_libraries(test_sip_stack PRIVATE ims_sip ims_common GTest::gtest_main)
+target_include_directories(test_sip_stack PRIVATE ${CMAKE_SOURCE_DIR}/src)
+ims_configure_test_target(test_sip_stack)
+gtest_discover_tests(test_sip_stack)
+
 # eXosip adapter test
 add_executable(test_exosip_adapter test_exosip_adapter.cpp)
 target_link_libraries(test_exosip_adapter PRIVATE ims_sip GTest::gtest_main)
 ims_configure_test_target(test_exosip_adapter)
 gtest_discover_tests(test_exosip_adapter)
+
+add_executable(test_transport test_transport.cpp)
+target_link_libraries(test_transport PRIVATE ims_sip GTest::gtest_main)
+target_include_directories(test_transport PRIVATE ${CMAKE_SOURCE_DIR}/src)
+ims_configure_test_target(test_transport)
+gtest_discover_tests(test_transport)
 
 # DNS resolver test
 add_executable(test_dns_resolver test_dns_resolver.cpp)
@@ -38,6 +57,18 @@ add_executable(test_bencode test_bencode.cpp)
 target_link_libraries(test_bencode PRIVATE ims_rtp GTest::gtest_main)
 ims_configure_test_target(test_bencode)
 gtest_discover_tests(test_bencode)
+
+# Rtpengine client test
+add_executable(test_rtpengine_client test_rtpengine_client.cpp)
+target_link_libraries(test_rtpengine_client PRIVATE ims_rtp GTest::gtest_main)
+ims_configure_test_target(test_rtpengine_client)
+gtest_discover_tests(test_rtpengine_client)
+
+# Media session test
+add_executable(test_media_session test_media_session.cpp)
+target_link_libraries(test_media_session PRIVATE ims_rtp ims_common GTest::gtest_main)
+ims_configure_test_target(test_media_session)
+gtest_discover_tests(test_media_session)
 
 # Milenage test
 add_executable(test_milenage test_milenage.cpp)
@@ -71,6 +102,12 @@ target_include_directories(test_registrar PRIVATE ${CMAKE_SOURCE_DIR}/tests ${CM
 ims_configure_test_target(test_registrar)
 gtest_discover_tests(test_registrar)
 
+add_executable(test_registration_store test_registration_store.cpp)
+target_link_libraries(test_registration_store PRIVATE ims_sip ims_common GTest::gtest_main)
+target_include_directories(test_registration_store PRIVATE ${CMAKE_SOURCE_DIR}/src)
+ims_configure_test_target(test_registration_store)
+gtest_discover_tests(test_registration_store)
+
 # S-CSCF auth manager test
 add_executable(test_auth_manager
     test_auth_manager.cpp
@@ -93,6 +130,15 @@ target_link_libraries(test_auth_providers PRIVATE ims_sip ims_common ims_diamete
 target_include_directories(test_auth_providers PRIVATE ${CMAKE_SOURCE_DIR}/tests ${CMAKE_SOURCE_DIR}/src)
 ims_configure_test_target(test_auth_providers)
 gtest_discover_tests(test_auth_providers)
+
+add_executable(test_session_router
+    test_session_router.cpp
+    ${CMAKE_SOURCE_DIR}/src/s-cscf/session_router.cpp
+)
+target_link_libraries(test_session_router PRIVATE ims_sip ims_common GTest::gtest_main)
+target_include_directories(test_session_router PRIVATE ${CMAKE_SOURCE_DIR}/src)
+ims_configure_test_target(test_session_router)
+gtest_discover_tests(test_session_router)
 
 # S-CSCF service test
 add_executable(test_scscf_service

@@ -1,8 +1,6 @@
 #include "../mocks/mock_hss_client.hpp"
 #include "../mocks/mock_subscriber_repository.hpp"
-#include "s-cscf/auth_manager.hpp"
 #include "s-cscf/digest_auth_provider.hpp"
-#include "s-cscf/digest_credential_store.hpp"
 #include "s-cscf/ims_aka_auth_provider.hpp"
 #include "s-cscf/mongo_digest_credential_store.hpp"
 #include "sip/message.hpp"
@@ -10,13 +8,17 @@
 #include <boost/uuid/detail/md5.hpp>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
+#include <chrono>
+#include <future>
 #include <iomanip>
+#include <mutex>
 #include <optional>
 #include <sstream>
 
 namespace {
 
 using ::testing::_;
+using ::testing::Between;
 using ::testing::Return;
 using ::testing::StrEq;
 
@@ -434,6 +436,61 @@ TEST(ImsAkaAuthProviderTest, DuplicateInitialRegisterReusesPendingChallenge) {
     auto verified = provider.verifyAuthorization(authorized_register);
     ASSERT_TRUE(verified.has_value()) << verified.error().message;
     EXPECT_EQ(verified->scheme, "Digest-AKAv1-MD5");
+}
+
+TEST(ImsAkaAuthProviderTest, ConcurrentInitialRegisterReusesPendingChallengeAfterUnlockedHssCall) {
+    auto hss = std::make_shared<ims::test::MockHssClient>();
+    ims::scscf::ImsAkaAuthProvider provider(hss, "ims.example.com");
+
+    ims::diameter::AuthVector av{
+        .rand = {0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28,
+                 0x29, 0x2A, 0x2B, 0x2C, 0x2D, 0x2E, 0x2F, 0x30},
+        .autn = {0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38,
+                 0x39, 0x3A, 0x3B, 0x3C, 0x3D, 0x3E, 0x3F, 0x40},
+        .xres = {0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48},
+    };
+
+    auto entered_hss = std::make_shared<std::promise<void>>();
+    auto allow_hss_to_return = std::make_shared<std::promise<void>>();
+    auto entered_hss_future = entered_hss->get_future().share();
+    auto allow_hss_future = allow_hss_to_return->get_future().share();
+    auto entered_hss_once = std::make_shared<std::once_flag>();
+
+    EXPECT_CALL(*hss, multimediaAuth(_))
+        .Times(Between(1, 2))
+        .WillRepeatedly([&, entered_hss, allow_hss_future, entered_hss_once](const auto&) {
+            std::call_once(*entered_hss_once, [&] { entered_hss->set_value(); });
+            EXPECT_EQ(allow_hss_future.wait_for(std::chrono::seconds(1)), std::future_status::ready);
+            return ims::Result<ims::diameter::MaaResult>{ims::diameter::MaaResult{
+                .result_code = 2001,
+                .sip_auth_scheme = "Digest-AKAv1-MD5",
+                .auth_vector = av,
+            }};
+        });
+
+    auto first_register = makeRegister("sip:ims.example.com",
+                                       "<sip:testuser@ims.example.com>;tag=from-1",
+                                       "<sip:testuser@ims.example.com>",
+                                       "call-aka-concurrent");
+    auto duplicate_register = makeRegister("sip:ims.example.com",
+                                           "<sip:testuser@ims.example.com>;tag=from-1",
+                                           "<sip:testuser@ims.example.com>",
+                                           "call-aka-concurrent");
+
+    auto first_future = std::async(std::launch::async, [&] { return provider.createChallenge(first_register); });
+    ASSERT_EQ(entered_hss_future.wait_for(std::chrono::seconds(1)), std::future_status::ready);
+
+    auto duplicate_future = std::async(std::launch::async,
+                                       [&] { return provider.createChallenge(duplicate_register); });
+
+    allow_hss_to_return->set_value();
+
+    auto first_challenge = first_future.get();
+    auto duplicate_challenge = duplicate_future.get();
+    ASSERT_TRUE(first_challenge.has_value()) << first_challenge.error().message;
+    ASSERT_TRUE(duplicate_challenge.has_value()) << duplicate_challenge.error().message;
+    EXPECT_EQ(extractNonce(duplicate_challenge->www_authenticate),
+              extractNonce(first_challenge->www_authenticate));
 }
 
 TEST(ImsAkaAuthProviderTest, FailedAuthorizationDoesNotConsumePendingChallenge) {

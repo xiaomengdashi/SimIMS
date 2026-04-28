@@ -47,6 +47,53 @@ auto determineRegisterExpires(const ims::sip::SipMessage& request) -> uint32_t {
     return 3600;
 }
 
+auto makeContactSelector(const ims::sip::SipMessage& request,
+                         const std::optional<std::string>& contact)
+    -> ims::registration::ContactBindingSelector
+{
+    ims::registration::ContactBindingSelector selector{
+        .normalized_contact_uri = contact ? ims::sip::extract_uri_from_name_addr(*contact) : std::string{},
+        .instance_id = request.contact_param("+sip.instance").value_or(""),
+        .reg_id = request.contact_param("reg-id").value_or(""),
+    };
+
+    if (!selector.uses_instance_and_reg_id()) {
+        selector.instance_id.clear();
+        selector.reg_id.clear();
+    }
+
+    return selector;
+}
+
+auto makeContactBinding(const ims::sip::SipMessage& request,
+                        const std::optional<std::string>& contact,
+                        uint32_t expires,
+                        const ims::registration::ContactBinding* previous = nullptr)
+    -> ims::registration::ContactBinding
+{
+    auto path_headers = request.getHeaders("Path");
+    auto path = path_headers.empty()
+                    ? (previous ? previous->path : std::string{})
+                    : path_headers.front();
+    auto user_agent = request.getHeader("User-Agent")
+                          .value_or(previous ? previous->user_agent : std::string{});
+    auto instance_id = request.contact_param("+sip.instance")
+                           .value_or(previous ? previous->instance_id : std::string{});
+    auto reg_id = request.contact_param("reg-id")
+                      .value_or(previous ? previous->reg_id : std::string{});
+
+    return {
+        .contact_uri = contact.value_or(previous ? previous->contact_uri : std::string{}),
+        .instance_id = instance_id,
+        .reg_id = reg_id,
+        .path = path,
+        .expires = std::chrono::steady_clock::now() + std::chrono::seconds(expires),
+        .user_agent = user_agent,
+        .call_id = request.callId(),
+        .cseq = request.cseq(),
+    };
+}
+
 } // namespace
 
 Registrar::Registrar(std::shared_ptr<ims::registration::IRegistrationStore> store,
@@ -91,7 +138,9 @@ void Registrar::sendChallenge(ims::sip::SipMessage& request,
         IMS_LOG_ERROR("Challenge creation failed for {}: no auth provider available",
                       extractImpi(request));
         auto resp = ims::sip::createResponse(request, 501, "Not Implemented");
-        if (resp) txn->sendResponse(std::move(*resp));
+        if (resp) {
+            (void)txn->sendResponse(std::move(*resp));
+        }
         return;
     }
 
@@ -100,7 +149,9 @@ void Registrar::sendChallenge(ims::sip::SipMessage& request,
         IMS_LOG_ERROR("Challenge creation failed for {}: {}",
                       extractImpi(request), challenge.error().message);
         auto resp = ims::sip::createResponse(request, 501, "Not Implemented");
-        if (resp) txn->sendResponse(std::move(*resp));
+        if (resp) {
+            (void)txn->sendResponse(std::move(*resp));
+        }
         return;
     }
 
@@ -116,7 +167,7 @@ void Registrar::sendChallenge(ims::sip::SipMessage& request,
     resp->addHeader("Date", formatGmtDate());
 
     IMS_LOG_DEBUG("Sending 401 challenge to {}", challenge->impi);
-    txn->sendResponse(std::move(*resp));
+    (void)txn->sendResponse(std::move(*resp));
 }
 
 bool Registrar::tryHandleReregister(ims::sip::SipMessage& request,
@@ -138,65 +189,44 @@ bool Registrar::tryHandleReregister(ims::sip::SipMessage& request,
         return false;
     }
 
-    auto requested_contact_uri = ims::sip::extract_uri_from_name_addr(*contact);
-    auto requested_instance_id = request.contact_param("+sip.instance").value_or("");
-    auto requested_reg_id = request.contact_param("reg-id").value_or("");
-    auto now = std::chrono::steady_clock::now();
-
-    auto matches_contact = [&](const ims::registration::ContactBinding& candidate) -> bool {
-        if (candidate.expires <= now) {
-            return false;
-        }
-        if (!requested_instance_id.empty() && candidate.instance_id != requested_instance_id) {
-            return false;
-        }
-        if (!requested_reg_id.empty() && candidate.reg_id != requested_reg_id) {
-            return false;
-        }
-
-        // If flow identifiers are present, they are the primary matching keys.
-        if (!requested_instance_id.empty() || !requested_reg_id.empty()) {
-            return true;
-        }
-
-        return ims::sip::extract_uri_from_name_addr(candidate.contact_uri) == requested_contact_uri;
-    };
-
-    auto active_contacts = binding.active_contacts();
-    if (active_contacts.empty()) {
-        return false;
-    }
-
-    auto it = std::find_if(binding.contacts.begin(), binding.contacts.end(), matches_contact);
-    if (it == binding.contacts.end()) {
+    auto selector = makeContactSelector(request, contact);
+    auto existing = std::find_if(binding.contacts.begin(), binding.contacts.end(),
+                                 [&](const ims::registration::ContactBinding& candidate) {
+                                     if (candidate.expires <= std::chrono::steady_clock::now()) {
+                                         return false;
+                                     }
+                                     if (selector.uses_instance_and_reg_id()) {
+                                         return candidate.instance_id == selector.instance_id
+                                                && candidate.reg_id == selector.reg_id;
+                                     }
+                                     return ims::sip::extract_uri_from_name_addr(candidate.contact_uri)
+                                            == selector.normalized_contact_uri;
+                                 });
+    if (existing == binding.contacts.end()) {
         return false;
     }
 
     auto expires = determineRegisterExpires(request);
-    auto path_headers = request.getHeaders("Path");
-    auto user_agent = request.getHeader("User-Agent").value_or(it->user_agent);
+    auto refreshed_contact = makeContactBinding(request, contact, expires, &*existing);
 
-    it->contact_uri = *contact;
-    if (!requested_instance_id.empty()) {
-        it->instance_id = requested_instance_id;
-    }
-    if (!requested_reg_id.empty()) {
-        it->reg_id = requested_reg_id;
-    }
-    if (!path_headers.empty()) {
-        it->path = path_headers.front();
-    }
-    it->expires = now + std::chrono::seconds(expires);
-    it->user_agent = user_agent;
-    it->call_id = request.callId();
-    it->cseq = request.cseq();
-
-    auto store_result = store_->store(binding);
+    auto store_result = store_->upsertContact(binding.impu,
+                                              selector,
+                                              refreshed_contact,
+                                              binding.impi,
+                                              binding.scscf_uri,
+                                              ims::registration::RegistrationBinding::State::kRegistered,
+                                              true,
+                                              true);
     if (!store_result) {
         IMS_LOG_ERROR("Failed to update re-registration for {}: {}", impu, store_result.error().message);
         auto resp = ims::sip::createResponse(request, 500, "Internal Server Error");
-        if (resp) txn->sendResponse(std::move(*resp));
+        if (resp) {
+            (void)txn->sendResponse(std::move(*resp));
+        }
         return true;
+    }
+    if (!*store_result) {
+        return false;
     }
 
     // Re-registration can refresh user profile; do not fail REGISTER if HSS refresh fails.
@@ -221,9 +251,14 @@ bool Registrar::tryHandleReregister(ims::sip::SipMessage& request,
             continue;
         }
 
-        auto alias_binding = binding;
-        alias_binding.impu = identity;
-        auto alias_store_result = store_->store(alias_binding);
+        auto alias_store_result = store_->upsertContact(identity,
+                                                        selector,
+                                                        refreshed_contact,
+                                                        binding.impi,
+                                                        binding.scscf_uri,
+                                                        ims::registration::RegistrationBinding::State::kRegistered,
+                                                        false,
+                                                        true);
         if (!alias_store_result) {
             IMS_LOG_WARN("Failed to update alias binding {} during re-registration: {}",
                          identity, alias_store_result.error().message);
@@ -262,7 +297,7 @@ void Registrar::sendRegisterOk(ims::sip::SipMessage& request,
         resp->addHeader("P-Associated-URI", std::format("<{}>", extractImpu(request)));
     }
 
-    txn->sendResponse(std::move(*resp));
+    (void)txn->sendResponse(std::move(*resp));
 }
 
 void Registrar::verifyAndRegister(ims::sip::SipMessage& request,
@@ -273,7 +308,9 @@ void Registrar::verifyAndRegister(ims::sip::SipMessage& request,
     if (!provider) {
         IMS_LOG_WARN("No auth provider can verify Authorization for Call-ID={}", call_id);
         auto resp = ims::sip::createResponse(request, 400, "Bad Request");
-        if (resp) txn->sendResponse(std::move(*resp));
+        if (resp) {
+            (void)txn->sendResponse(std::move(*resp));
+        }
         return;
     }
 
@@ -287,7 +324,9 @@ void Registrar::verifyAndRegister(ims::sip::SipMessage& request,
         }
 
         auto resp = ims::sip::createResponse(request, 403, "Forbidden");
-        if (resp) txn->sendResponse(std::move(*resp));
+        if (resp) {
+            (void)txn->sendResponse(std::move(*resp));
+        }
         return;
     }
 
@@ -305,36 +344,18 @@ void Registrar::verifyAndRegister(ims::sip::SipMessage& request,
     if (!saa) {
         IMS_LOG_ERROR("SAR failed for {}: {}", verification->impi, saa.error().message);
         auto resp = ims::sip::createResponse(request, 500, "Internal Server Error");
-        if (resp) txn->sendResponse(std::move(*resp));
+        if (resp) {
+            (void)txn->sendResponse(std::move(*resp));
+        }
         return;
     }
 
     // Store registration binding
     auto contact = request.contact();
     auto expires = determineRegisterExpires(request);
-
-    auto path_headers = request.getHeaders("Path");
-    auto path = path_headers.empty() ? std::string{} : path_headers.front();
-    auto user_agent = request.getHeader("User-Agent").value_or("");
-    auto instance_id = request.contact_param("+sip.instance").value_or("");
-    auto reg_id = request.contact_param("reg-id").value_or("");
-
-    ims::registration::RegistrationBinding binding{
-        .impu = verification->impu,
-        .impi = verification->impi,
-        .scscf_uri = std::format("sip:scscf.{}", domain_),
-        .contacts = {{
-            .contact_uri = contact.value_or(""),
-            .instance_id = instance_id,
-            .reg_id = reg_id,
-            .path = path,
-            .expires = std::chrono::steady_clock::now() + std::chrono::seconds(expires),
-            .user_agent = user_agent,
-            .call_id = call_id,
-            .cseq = request.cseq(),
-        }},
-        .state = ims::registration::RegistrationBinding::State::kRegistered,
-    };
+    auto selector = makeContactSelector(request, contact);
+    auto contact_binding = makeContactBinding(request, contact, expires);
+    auto scscf_uri = std::format("sip:scscf.{}", domain_);
 
     std::unordered_set<std::string> all_impus;
     all_impus.insert(verification->impu);
@@ -343,10 +364,14 @@ void Registrar::verifyAndRegister(ims::sip::SipMessage& request,
     }
 
     for (const auto& identity : all_impus) {
-        auto identity_binding = binding;
-        identity_binding.impu = identity;
-
-        auto store_result = store_->store(identity_binding);
+        auto store_result = store_->upsertContact(identity,
+                                                  selector,
+                                                  contact_binding,
+                                                  verification->impi,
+                                                  scscf_uri,
+                                                  ims::registration::RegistrationBinding::State::kRegistered,
+                                                  false,
+                                                  true);
         if (!store_result) {
             IMS_LOG_ERROR("Failed to store registration for {}: {}",
                           identity, store_result.error().message);
@@ -388,60 +413,31 @@ void Registrar::handleDeregister(ims::sip::SipMessage& request,
 
     auto wildcard_deregister = contact && *contact == "*";
     auto has_specific_contact = contact.has_value() && !wildcard_deregister;
-    auto requested_contact_uri = has_specific_contact ? ims::sip::extract_uri_from_name_addr(*contact) : "";
-    auto requested_instance_id = has_specific_contact ? request.contact_param("+sip.instance").value_or("") : "";
-    auto requested_reg_id = has_specific_contact ? request.contact_param("reg-id").value_or("") : "";
+    auto selector = has_specific_contact
+                        ? makeContactSelector(request, contact)
+                        : ims::registration::ContactBindingSelector{};
 
     for (const auto& identity : target_impus) {
-        auto lookup = store_->lookup(identity);
-        if (!lookup) {
-            continue;
-        }
-
-        auto binding = *lookup;
         if (wildcard_deregister || !has_specific_contact) {
-            store_->remove(identity);
+            auto remove_result = store_->remove(identity);
+            if (!remove_result) {
+                IMS_LOG_WARN("Failed to remove registration for {}: {}",
+                             identity, remove_result.error().message);
+            }
             continue;
         }
 
-        auto matches_contact = [&](const ims::registration::ContactBinding& candidate) -> bool {
-            if (!requested_instance_id.empty() && candidate.instance_id != requested_instance_id) {
-                return false;
-            }
-            if (!requested_reg_id.empty() && candidate.reg_id != requested_reg_id) {
-                return false;
-            }
-
-            if (!requested_instance_id.empty() || !requested_reg_id.empty()) {
-                return true;
-            }
-
-            return ims::sip::extract_uri_from_name_addr(candidate.contact_uri) == requested_contact_uri;
-        };
-
-        auto old_size = binding.contacts.size();
-        std::erase_if(binding.contacts, matches_contact);
-        if (binding.contacts.size() == old_size) {
-            continue;
-        }
-
-        if (binding.contacts.empty()) {
-            store_->remove(identity);
-            continue;
-        }
-
-        binding.state = ims::registration::RegistrationBinding::State::kRegistered;
-        auto store_result = store_->store(binding);
-        if (!store_result) {
+        auto remove_contact_result = store_->removeContact(identity, selector);
+        if (!remove_contact_result) {
             IMS_LOG_WARN("Failed to persist partial de-registration for {}: {}",
-                         identity, store_result.error().message);
+                         identity, remove_contact_result.error().message);
         }
     }
 
     auto resp = ims::sip::createResponse(request, 200, "OK");
     if (resp) {
         resp->addHeader("Date", formatGmtDate());
-        txn->sendResponse(std::move(*resp));
+        (void)txn->sendResponse(std::move(*resp));
     }
 }
 
