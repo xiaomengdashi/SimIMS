@@ -38,6 +38,9 @@ auto SipStack::start() -> VoidResult {
 }
 
 void SipStack::stop() {
+    if (txn_layer_) {
+        (void)txn_layer_->shutdown();
+    }
     transport_->stop();
     IMS_LOG_INFO("SIP stack stopped");
 }

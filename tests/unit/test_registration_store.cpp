@@ -152,6 +152,143 @@ TEST(MemoryRegistrationStoreAtomicTest, RemoveContactDeletesEmptyBinding) {
     EXPECT_EQ(lookup.error().code, ims::ErrorCode::kRegistrationNotFound);
 }
 
+TEST(MemoryRegistrationStoreAtomicTest, BatchUpsertWritesAllAssociatedImpus) {
+    MemoryRegistrationStore store;
+
+    auto contact = makeContact("sip:user@10.0.0.1:5060", "urn:uuid:ue-a", "1", "call-a", 1);
+    auto result = store.upsertContacts(ContactBatchUpsert{
+        .impus = {"sip:user@ims.example.com", "tel:+8613800000000"},
+        .selector = makeSelector(contact),
+        .contact = contact,
+        .impi = "user@ims.example.com",
+        .scscf_uri = "sip:scscf.ims.example.com",
+        .state = RegistrationBinding::State::kRegistered,
+        .reject_older_cseq = true,
+    });
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+    EXPECT_EQ(*result, 2u);
+
+    auto sip_lookup = store.lookup("sip:user@ims.example.com");
+    auto tel_lookup = store.lookup("tel:+8613800000000");
+    ASSERT_TRUE(sip_lookup.has_value()) << sip_lookup.error().message;
+    ASSERT_TRUE(tel_lookup.has_value()) << tel_lookup.error().message;
+    ASSERT_EQ(sip_lookup->contacts.size(), 1u);
+    ASSERT_EQ(tel_lookup->contacts.size(), 1u);
+    EXPECT_EQ(sip_lookup->contacts[0].instance_id, "urn:uuid:ue-a");
+    EXPECT_EQ(tel_lookup->contacts[0].instance_id, "urn:uuid:ue-a");
+}
+
+TEST(MemoryRegistrationStoreAtomicTest, BatchRemoveContactDeletesAllAssociatedImpus) {
+    MemoryRegistrationStore store;
+
+    auto contact = makeContact("sip:user@10.0.0.1:5060", "urn:uuid:ue-a", "1", "call-a", 1);
+    ASSERT_TRUE(store.upsertContacts(ContactBatchUpsert{
+        .impus = {"sip:user@ims.example.com", "tel:+8613800000000"},
+        .selector = makeSelector(contact),
+        .contact = contact,
+        .impi = "user@ims.example.com",
+        .scscf_uri = "sip:scscf.ims.example.com",
+        .state = RegistrationBinding::State::kRegistered,
+    }).has_value());
+
+    auto removed = store.removeContacts(ContactBatchRemove{
+        .impus = {"sip:user@ims.example.com", "tel:+8613800000000"},
+        .selector = makeSelector(contact),
+    });
+    ASSERT_TRUE(removed.has_value()) << removed.error().message;
+    EXPECT_EQ(*removed, 2u);
+    EXPECT_FALSE(store.lookup("sip:user@ims.example.com").has_value());
+    EXPECT_FALSE(store.lookup("tel:+8613800000000").has_value());
+}
+
+TEST(MemoryRegistrationStoreAtomicTest, BatchUpsertRequireExistingMatchDoesNotPartiallyWrite) {
+    MemoryRegistrationStore store;
+
+    auto existing = makeContact("sip:user@10.0.0.1:5060", "urn:uuid:ue-a", "1", "call-a", 1);
+    ASSERT_TRUE(store.upsertContact("sip:user@ims.example.com", makeSelector(existing), existing,
+                                    "user@ims.example.com", "sip:scscf.ims.example.com",
+                                    RegistrationBinding::State::kRegistered)
+                    .has_value());
+
+    auto refreshed = existing;
+    refreshed.path = "<sip:new-pcscf.ims.example.com;lr>";
+    refreshed.cseq = 2;
+    auto result = store.upsertContacts(ContactBatchUpsert{
+        .impus = {"sip:user@ims.example.com", "tel:+8613800000000"},
+        .selector = makeSelector(existing),
+        .contact = refreshed,
+        .impi = "user@ims.example.com",
+        .scscf_uri = "sip:scscf.ims.example.com",
+        .state = RegistrationBinding::State::kRegistered,
+        .require_existing_match = true,
+        .reject_older_cseq = true,
+    });
+
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+    EXPECT_EQ(*result, 0u);
+    auto binding = store.lookup("sip:user@ims.example.com");
+    ASSERT_TRUE(binding.has_value()) << binding.error().message;
+    ASSERT_EQ(binding->contacts.size(), 1u);
+    EXPECT_EQ(binding->contacts[0].path, existing.path);
+    EXPECT_FALSE(store.lookup("tel:+8613800000000").has_value());
+}
+
+TEST(MemoryRegistrationStoreAtomicTest, BatchUpsertRequireExistingMatchDoesNotReviveRemovedContact) {
+    MemoryRegistrationStore store;
+
+    auto contact = makeContact("sip:user@10.0.0.1:5060", "urn:uuid:ue-a", "1", "call-a", 1);
+    ASSERT_TRUE(store.upsertContacts(ContactBatchUpsert{
+        .impus = {"sip:user@ims.example.com", "tel:+8613800000000"},
+        .selector = makeSelector(contact),
+        .contact = contact,
+        .impi = "user@ims.example.com",
+        .scscf_uri = "sip:scscf.ims.example.com",
+        .state = RegistrationBinding::State::kRegistered,
+    }).has_value());
+    ASSERT_TRUE(store.removeContacts(ContactBatchRemove{
+        .impus = {"sip:user@ims.example.com", "tel:+8613800000000"},
+        .selector = makeSelector(contact),
+    }).has_value());
+
+    auto refreshed = contact;
+    refreshed.cseq = 2;
+    auto result = store.upsertContacts(ContactBatchUpsert{
+        .impus = {"sip:user@ims.example.com", "tel:+8613800000000"},
+        .selector = makeSelector(contact),
+        .contact = refreshed,
+        .impi = "user@ims.example.com",
+        .scscf_uri = "sip:scscf.ims.example.com",
+        .state = RegistrationBinding::State::kRegistered,
+        .require_existing_match = true,
+        .reject_older_cseq = true,
+    });
+
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+    EXPECT_EQ(*result, 0u);
+    EXPECT_FALSE(store.lookup("sip:user@ims.example.com").has_value());
+    EXPECT_FALSE(store.lookup("tel:+8613800000000").has_value());
+}
+
+TEST(MemoryRegistrationStoreAtomicTest, BatchRemoveBindingsDeletesAllAssociatedImpus) {
+    MemoryRegistrationStore store;
+
+    auto contact = makeContact("sip:user@10.0.0.1:5060", "urn:uuid:ue-a", "1", "call-a", 1);
+    ASSERT_TRUE(store.upsertContacts(ContactBatchUpsert{
+        .impus = {"sip:user@ims.example.com", "tel:+8613800000000"},
+        .selector = makeSelector(contact),
+        .contact = contact,
+        .impi = "user@ims.example.com",
+        .scscf_uri = "sip:scscf.ims.example.com",
+        .state = RegistrationBinding::State::kRegistered,
+    }).has_value());
+
+    auto removed = store.removeBindings({"sip:user@ims.example.com", "tel:+8613800000000"});
+    ASSERT_TRUE(removed.has_value()) << removed.error().message;
+    EXPECT_EQ(*removed, 2u);
+    EXPECT_FALSE(store.lookup("sip:user@ims.example.com").has_value());
+    EXPECT_FALSE(store.lookup("tel:+8613800000000").has_value());
+}
+
 TEST(MemoryRegistrationStoreAtomicTest, OlderCseqDoesNotOverwriteMatchedContact) {
     MemoryRegistrationStore store;
 

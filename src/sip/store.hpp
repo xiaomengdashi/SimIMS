@@ -5,6 +5,7 @@
 #include <chrono>
 #include <optional>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace ims::registration {
@@ -58,6 +59,22 @@ struct ContactBindingSelector {
     }
 };
 
+struct ContactBatchUpsert {
+    std::unordered_set<std::string> impus;
+    ContactBindingSelector selector;
+    ContactBinding contact;
+    std::string impi;
+    std::string scscf_uri;
+    RegistrationBinding::State state = RegistrationBinding::State::kRegistered;
+    bool require_existing_match = false;
+    bool reject_older_cseq = false;
+};
+
+struct ContactBatchRemove {
+    std::unordered_set<std::string> impus;
+    ContactBindingSelector selector;
+};
+
 /// Abstract registration storage interface
 ///
 /// Supports in-memory (development) and Redis (production) backends.
@@ -84,6 +101,15 @@ struct IRegistrationStore {
     /// Atomically remove a single contact within an IMPU binding.
     virtual auto removeContact(std::string_view impu,
                                const ContactBindingSelector& selector) -> Result<bool> = 0;
+
+    /// Atomically upsert or refresh the same contact across associated IMPU bindings.
+    virtual auto upsertContacts(const ContactBatchUpsert& batch) -> Result<size_t> = 0;
+
+    /// Atomically remove one contact across associated IMPU bindings.
+    virtual auto removeContacts(const ContactBatchRemove& batch) -> Result<size_t> = 0;
+
+    /// Atomically remove associated IMPU bindings.
+    virtual auto removeBindings(const std::unordered_set<std::string>& impus) -> Result<size_t> = 0;
 
     /// Remove registration binding
     virtual auto remove(std::string_view impu) -> VoidResult = 0;

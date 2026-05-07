@@ -398,8 +398,8 @@ TEST(RegistrarAuthTest, DuplicateInitialRegisterDoesNotInvalidateFirstChallenge)
                     .ifcs = {},
                 },
             }}));
-    EXPECT_CALL(*store, upsertContact(_, _, _, _, _, _, _, _))
-        .WillOnce(Return(ims::Result<bool>{true}));
+    EXPECT_CALL(*store, upsertContacts(_))
+        .WillOnce(Return(ims::Result<size_t>{1}));
 
     auto first_register = makeRegister("register-race-call", 1);
     registrar.handleRegister(first_register, makeTxn(first_register, transport, io));
@@ -417,6 +417,31 @@ TEST(RegistrarAuthTest, DuplicateInitialRegisterDoesNotInvalidateFirstChallenge)
     registrar.handleRegister(authorized_register, makeTxn(authorized_register, transport, io));
     ASSERT_EQ(transport->sent_messages.size(), 3u);
     EXPECT_EQ(transport->sent_messages[2].statusCode(), 200);
+}
+
+TEST_F(RegistrarAtomicStoreTest, InitialRegisterWritesAllAssociatedImpus) {
+    EXPECT_CALL(*hss_, serverAssignment(_))
+        .WillOnce(Return(successSaa({
+            "sip:460112024122023@ims.example.com",
+            "tel:+8613824122023",
+            "sip:+8613824122023@ims.example.com",
+        })));
+
+    auto request = makeAuthorizedRegister(
+        "assoc-init", 1, "nonce-a",
+        "<sip:460112024122023@127.0.0.1:5060>;expires=600;+sip.instance=\"urn:uuid:ue-a\";reg-id=1",
+        600,
+        {{"User-Agent", "UE-A"}});
+    registrar_->handleRegister(request, makeTxn(request, transport_, io_));
+
+    for (const auto& impu : {"sip:460112024122023@ims.example.com",
+                             "tel:+8613824122023",
+                             "sip:+8613824122023@ims.example.com"}) {
+        auto binding = store_->lookup(impu);
+        ASSERT_TRUE(binding.has_value()) << binding.error().message;
+        ASSERT_EQ(binding->contacts.size(), 1u);
+        EXPECT_EQ(binding->contacts[0].instance_id, "urn:uuid:ue-a");
+    }
 }
 
 TEST_F(RegistrarAtomicStoreTest, InitialRegisterDoesNotOverwriteExistingContact) {
@@ -516,6 +541,43 @@ TEST_F(RegistrarAtomicStoreTest, PartialDeregisterRemovesOnlyTargetContact) {
     ASSERT_TRUE(binding.has_value()) << binding.error().message;
     ASSERT_EQ(binding->contacts.size(), 1u);
     EXPECT_NE(binding->contacts[0].contact_uri.find(":5070"), std::string::npos);
+}
+
+TEST_F(RegistrarAtomicStoreTest, PartialDeregisterRemovesAllAssociatedImpus) {
+    std::vector<std::string> associated{
+        "sip:460112024122023@ims.example.com",
+        "tel:+8613824122023",
+    };
+    EXPECT_CALL(*hss_, serverAssignment(_))
+        .WillOnce(Return(successSaa(associated)))
+        .WillOnce(Return(successSaa(associated)))
+        .WillOnce(Return(successSaa(associated)));
+
+    auto first = makeAuthorizedRegister(
+        "assoc-dereg-a", 1, "nonce-a",
+        "<sip:460112024122023@127.0.0.1:5060>;expires=600;+sip.instance=\"urn:uuid:ue-a\";reg-id=1",
+        600,
+        {{"User-Agent", "UE-A"}});
+    auto second = makeAuthorizedRegister(
+        "assoc-dereg-b", 1, "nonce-b",
+        "<sip:460112024122023@127.0.0.1:5070>;expires=600;+sip.instance=\"urn:uuid:ue-b\";reg-id=2",
+        600,
+        {{"User-Agent", "UE-B"}});
+    registrar_->handleRegister(first, makeTxn(first, transport_, io_));
+    registrar_->handleRegister(second, makeTxn(second, transport_, io_));
+
+    auto dereg = makeRegister(
+        "assoc-dereg-a", 2,
+        "<sip:460112024122023@127.0.0.1:5060>;expires=0;+sip.instance=\"urn:uuid:ue-a\";reg-id=1",
+        0);
+    registrar_->handleRegister(dereg, makeTxn(dereg, transport_, io_));
+
+    for (const auto& impu : associated) {
+        auto binding = store_->lookup(impu);
+        ASSERT_TRUE(binding.has_value()) << binding.error().message;
+        ASSERT_EQ(binding->contacts.size(), 1u);
+        EXPECT_NE(binding->contacts[0].contact_uri.find(":5070"), std::string::npos);
+    }
 }
 
 TEST_F(RegistrarAtomicStoreTest, WildcardDeregisterRemovesEntireBinding) {

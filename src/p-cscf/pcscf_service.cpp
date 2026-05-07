@@ -142,37 +142,13 @@ void PcscfService::onBye(std::shared_ptr<ims::sip::ServerTransaction> txn,
     auto call_id = request.callId();
     IMS_LOG_DEBUG("P-CSCF received BYE for call={}", call_id);
 
+    terminateMediaForRequest(request);
+
     if (isCoreFacingRequest(*txn)) {
         forwardStatefulToUe(std::move(txn), request);
         return;
     }
 
-    auto media_key = mediaKeyForRequest(request);
-
-    // Clean up rtpengine session
-    auto session_state = media_sessions_.getSession(media_key);
-    if (session_state && rtpengine_) {
-        auto result = rtpengine_->deleteSession(session_state->session);
-        if (!result) {
-            IMS_LOG_WARN("rtpengine delete failed for call={}: {}", call_id, result.error().message);
-        }
-    }
-
-    // Release QoS via Rx STR
-    if (session_state && !session_state->rx_session_id.empty() && pcf_) {
-        ims::diameter::StrParams str{
-            .session_id = session_state->rx_session_id,
-            .termination_cause = 1,  // DIAMETER_LOGOUT
-        };
-        auto result = pcf_->terminateSession(str);
-        if (!result) {
-            IMS_LOG_WARN("PCF STR failed for call={}: {}", call_id, result.error().message);
-        }
-    }
-
-    media_sessions_.removeSession(media_key);
-
-    // Forward BYE along signaling path
     forwardStatefulToCore(std::move(txn), request);
 }
 
@@ -194,22 +170,12 @@ void PcscfService::onCancel(std::shared_ptr<ims::sip::ServerTransaction> txn,
     auto call_id = request.callId();
     IMS_LOG_DEBUG("P-CSCF received CANCEL for call={}", call_id);
 
+    terminateMediaForRequest(request);
+
     if (isCoreFacingRequest(*txn)) {
         forwardStatefulToUe(std::move(txn), request);
         return;
     }
-
-    auto media_key = mediaKeyForRequest(request);
-
-    // Clean up media session
-    auto session_state = media_sessions_.getSession(media_key);
-    if (session_state && rtpengine_) {
-        auto result = rtpengine_->deleteSession(session_state->session);
-        if (!result) {
-            IMS_LOG_WARN("rtpengine delete failed for call={}: {}", call_id, result.error().message);
-        }
-    }
-    media_sessions_.removeSession(media_key);
 
     forwardStatefulToCore(std::move(txn), request);
 }
@@ -257,22 +223,10 @@ void PcscfService::onInviteResponse(ims::sip::SipMessage& response) {
     }
 
     const auto call_id = response.callId();
-    auto media_key = mediaKeyForResponse(response);
-    auto session_state = media_sessions_.getSession(media_key);
-    if (!session_state && !media_key.to_tag.empty()) {
-        media_key.to_tag.clear();
-        session_state = media_sessions_.getSession(media_key);
-    }
-    if (!session_state) {
+    auto media_update = media_sessions_.beginInviteResponse(mediaKeyForResponse(response));
+    if (!media_update) {
         IMS_LOG_DEBUG("No media session found while handling INVITE response call={}", call_id);
         return;
-    }
-
-    auto to_tag = response.toTag();
-    if (!to_tag.empty() && session_state->session.to_tag.empty()) {
-        media_sessions_.updateToTag(media_key, to_tag);
-        session_state->session.to_tag = to_tag;
-        media_key.to_tag = std::move(to_tag);
     }
 
     ims::media::RtpengineFlags flags{
@@ -281,13 +235,13 @@ void PcscfService::onInviteResponse(ims::sip::SipMessage& response) {
         .ice_remove = true,
     };
 
-    auto answer_result = rtpengine_->answer(session_state->session, *sdp, flags);
+    auto answer_result = rtpengine_->answer(media_update->session, *sdp, flags);
     if (!answer_result) {
         IMS_LOG_WARN("rtpengine answer failed for call={}: {}", call_id, answer_result.error().message);
         return;
     }
 
-    media_sessions_.updateCalleeSdp(media_key, *sdp);
+    media_sessions_.commitInviteResponse(media_update->key, *sdp);
     if (!answer_result->sdp.empty()) {
         response.setBody(answer_result->sdp, "application/sdp");
         IMS_LOG_DEBUG("SDP answer rewritten by rtpengine for call={}", call_id);
@@ -473,6 +427,34 @@ auto PcscfService::mediaKeyForResponse(const ims::sip::SipMessage& response) con
         .from_tag = response.fromTag(),
         .to_tag = response.toTag(),
     };
+}
+
+void PcscfService::terminateMediaForRequest(const ims::sip::SipMessage& request) {
+    const auto call_id = request.callId();
+    auto termination = media_sessions_.markTerminating(mediaKeyForRequest(request));
+    if (!termination) {
+        return;
+    }
+
+    if (rtpengine_) {
+        auto result = rtpengine_->deleteSession(termination->session);
+        if (!result) {
+            IMS_LOG_WARN("rtpengine delete failed for call={}: {}", call_id, result.error().message);
+        }
+    }
+
+    if (!termination->rx_session_id.empty() && pcf_) {
+        ims::diameter::StrParams str{
+            .session_id = termination->rx_session_id,
+            .termination_cause = 1,
+        };
+        auto result = pcf_->terminateSession(str);
+        if (!result) {
+            IMS_LOG_WARN("PCF STR failed for call={}: {}", call_id, result.error().message);
+        }
+    }
+
+    media_sessions_.completeTermination(termination->key);
 }
 
 void PcscfService::forwardStatefulToCore(std::shared_ptr<ims::sip::ServerTransaction> txn,

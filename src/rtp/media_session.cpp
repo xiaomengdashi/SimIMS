@@ -127,6 +127,95 @@ void MediaSessionManager::updateCalleeSdp(const std::string& call_id, const std:
     }
 }
 
+auto MediaSessionManager::beginInviteResponse(const MediaSessionKey& response_key)
+    -> std::optional<InviteResponseMediaUpdate>
+{
+    std::lock_guard lock(mutex_);
+    auto key = response_key;
+    auto it = sessions_.find(key);
+    if (it == sessions_.end() && !key.to_tag.empty()) {
+        key.to_tag.clear();
+        it = sessions_.find(key);
+    }
+    if (it == sessions_.end() || it->second.lifecycle == MediaSessionLifecycle::kTerminating) {
+        return std::nullopt;
+    }
+
+    if (!response_key.to_tag.empty() && it->second.session.to_tag.empty()) {
+        auto state = std::move(it->second);
+        sessions_.erase(it);
+        key.to_tag = response_key.to_tag;
+        state.session.to_tag = response_key.to_tag;
+        state.lifecycle = MediaSessionLifecycle::kEstablished;
+        auto [updated_it, inserted] = sessions_.emplace(key, std::move(state));
+        (void)inserted;
+        it = updated_it;
+    } else if (!it->second.session.to_tag.empty()) {
+        key = it->first;
+    }
+
+    return InviteResponseMediaUpdate{
+        .key = key,
+        .session = it->second.session,
+    };
+}
+
+void MediaSessionManager::commitInviteResponse(const MediaSessionKey& key, const std::string& callee_sdp) {
+    std::lock_guard lock(mutex_);
+    auto it = sessions_.find(key);
+    if (it == sessions_.end() || it->second.lifecycle == MediaSessionLifecycle::kTerminating) {
+        return;
+    }
+    it->second.callee_sdp = callee_sdp;
+    it->second.lifecycle = MediaSessionLifecycle::kEstablished;
+}
+
+auto MediaSessionManager::markTerminating(const MediaSessionKey& key) -> std::optional<MediaTerminationPlan> {
+    std::lock_guard lock(mutex_);
+
+    auto find_session = [this](const MediaSessionKey& candidate) {
+        return sessions_.find(candidate);
+    };
+
+    auto it = find_session(key);
+    if (it == sessions_.end() && !key.to_tag.empty()) {
+        auto fallback_key = key;
+        fallback_key.to_tag.clear();
+        it = find_session(fallback_key);
+    }
+    if (it == sessions_.end() && !key.to_tag.empty()) {
+        auto reverse_key = MediaSessionKey{
+            .call_id = key.call_id,
+            .from_tag = key.to_tag,
+            .to_tag = key.from_tag,
+        };
+        it = find_session(reverse_key);
+        if (it == sessions_.end()) {
+            reverse_key.to_tag.clear();
+            it = find_session(reverse_key);
+        }
+    }
+    if (it == sessions_.end() || it->second.lifecycle == MediaSessionLifecycle::kTerminating) {
+        return std::nullopt;
+    }
+
+    it->second.lifecycle = MediaSessionLifecycle::kTerminating;
+    return MediaTerminationPlan{
+        .key = it->first,
+        .session = it->second.session,
+        .rx_session_id = it->second.rx_session_id,
+        .qos_active = it->second.qos_active,
+    };
+}
+
+void MediaSessionManager::completeTermination(const MediaSessionKey& key) {
+    std::lock_guard lock(mutex_);
+    auto it = sessions_.find(key);
+    if (it != sessions_.end() && it->second.lifecycle == MediaSessionLifecycle::kTerminating) {
+        sessions_.erase(it);
+    }
+}
+
 void MediaSessionManager::setRxSession(const MediaSessionKey& key,
                                         const std::string& rx_session_id) {
     std::lock_guard lock(mutex_);

@@ -13,6 +13,13 @@ namespace ims::scscf {
 
 namespace {
 
+auto makeImpuSet(const std::vector<std::string>& associated_impus,
+                 const std::string& primary_impu) -> std::unordered_set<std::string> {
+    std::unordered_set<std::string> impus(associated_impus.begin(), associated_impus.end());
+    impus.insert(primary_impu);
+    return impus;
+}
+
 auto formatGmtDate() -> std::string {
     std::time_t now = std::time(nullptr);
     std::tm gm{};
@@ -209,26 +216,6 @@ bool Registrar::tryHandleReregister(ims::sip::SipMessage& request,
     auto expires = determineRegisterExpires(request);
     auto refreshed_contact = makeContactBinding(request, contact, expires, &*existing);
 
-    auto store_result = store_->upsertContact(binding.impu,
-                                              selector,
-                                              refreshed_contact,
-                                              binding.impi,
-                                              binding.scscf_uri,
-                                              ims::registration::RegistrationBinding::State::kRegistered,
-                                              true,
-                                              true);
-    if (!store_result) {
-        IMS_LOG_ERROR("Failed to update re-registration for {}: {}", impu, store_result.error().message);
-        auto resp = ims::sip::createResponse(request, 500, "Internal Server Error");
-        if (resp) {
-            (void)txn->sendResponse(std::move(*resp));
-        }
-        return true;
-    }
-    if (!*store_result) {
-        return false;
-    }
-
     // Re-registration can refresh user profile; do not fail REGISTER if HSS refresh fails.
     std::vector<std::string> associated_impus{binding.impu};
     ims::diameter::SarParams sar{
@@ -244,25 +231,25 @@ bool Registrar::tryHandleReregister(ims::sip::SipMessage& request,
         IMS_LOG_WARN("SAR re-registration refresh failed for {}: {}", impu, saa.error().message);
     }
 
-    std::unordered_set<std::string> all_impus(associated_impus.begin(), associated_impus.end());
-    all_impus.insert(binding.impu);
-    for (const auto& identity : all_impus) {
-        if (identity == binding.impu) {
-            continue;
+    auto all_impus = makeImpuSet(associated_impus, binding.impu);
+    auto batch_result = store_->upsertContacts(ims::registration::ContactBatchUpsert{
+        .impus = std::move(all_impus),
+        .selector = selector,
+        .contact = refreshed_contact,
+        .impi = binding.impi,
+        .scscf_uri = binding.scscf_uri,
+        .state = ims::registration::RegistrationBinding::State::kRegistered,
+        .require_existing_match = true,
+        .reject_older_cseq = true,
+    });
+    if (!batch_result) {
+        IMS_LOG_ERROR("Failed to update associated bindings during re-registration for {}: {}",
+                      impu, batch_result.error().message);
+        auto resp = ims::sip::createResponse(request, 500, "Internal Server Error");
+        if (resp) {
+            (void)txn->sendResponse(std::move(*resp));
         }
-
-        auto alias_store_result = store_->upsertContact(identity,
-                                                        selector,
-                                                        refreshed_contact,
-                                                        binding.impi,
-                                                        binding.scscf_uri,
-                                                        ims::registration::RegistrationBinding::State::kRegistered,
-                                                        false,
-                                                        true);
-        if (!alias_store_result) {
-            IMS_LOG_WARN("Failed to update alias binding {} during re-registration: {}",
-                         identity, alias_store_result.error().message);
-        }
+        return true;
     }
 
     IMS_LOG_INFO("Re-registration refreshed for {} (expires={}s)", impu, expires);
@@ -357,25 +344,25 @@ void Registrar::verifyAndRegister(ims::sip::SipMessage& request,
     auto contact_binding = makeContactBinding(request, contact, expires);
     auto scscf_uri = std::format("sip:scscf.{}", domain_);
 
-    std::unordered_set<std::string> all_impus;
-    all_impus.insert(verification->impu);
-    for (const auto& associated : saa->user_profile.associated_impus) {
-        all_impus.insert(associated);
-    }
-
-    for (const auto& identity : all_impus) {
-        auto store_result = store_->upsertContact(identity,
-                                                  selector,
-                                                  contact_binding,
-                                                  verification->impi,
-                                                  scscf_uri,
-                                                  ims::registration::RegistrationBinding::State::kRegistered,
-                                                  false,
-                                                  true);
-        if (!store_result) {
-            IMS_LOG_ERROR("Failed to store registration for {}: {}",
-                          identity, store_result.error().message);
+    auto all_impus = makeImpuSet(saa->user_profile.associated_impus, verification->impu);
+    auto store_result = store_->upsertContacts(ims::registration::ContactBatchUpsert{
+        .impus = std::move(all_impus),
+        .selector = selector,
+        .contact = contact_binding,
+        .impi = verification->impi,
+        .scscf_uri = scscf_uri,
+        .state = ims::registration::RegistrationBinding::State::kRegistered,
+        .require_existing_match = false,
+        .reject_older_cseq = true,
+    });
+    if (!store_result) {
+        IMS_LOG_ERROR("Failed to store associated registrations for {}: {}",
+                      verification->impu, store_result.error().message);
+        auto resp = ims::sip::createResponse(request, 500, "Internal Server Error");
+        if (resp) {
+            (void)txn->sendResponse(std::move(*resp));
         }
+        return;
     }
 
     IMS_LOG_INFO("Registration complete for {} (expires={}s)", verification->impu, expires);
@@ -404,12 +391,10 @@ void Registrar::handleDeregister(ims::sip::SipMessage& request,
     };
     auto saa = hss_->serverAssignment(sar);  // Best effort
 
-    std::unordered_set<std::string> target_impus;
-    target_impus.insert(impu);
-    if (saa && !saa->user_profile.associated_impus.empty()) {
-        target_impus.insert(saa->user_profile.associated_impus.begin(),
-                            saa->user_profile.associated_impus.end());
-    }
+    auto target_impus = makeImpuSet(saa && !saa->user_profile.associated_impus.empty()
+                                        ? saa->user_profile.associated_impus
+                                        : std::vector<std::string>{},
+                                    impu);
 
     auto wildcard_deregister = contact && *contact == "*";
     auto has_specific_contact = contact.has_value() && !wildcard_deregister;
@@ -417,21 +402,15 @@ void Registrar::handleDeregister(ims::sip::SipMessage& request,
                         ? makeContactSelector(request, contact)
                         : ims::registration::ContactBindingSelector{};
 
-    for (const auto& identity : target_impus) {
-        if (wildcard_deregister || !has_specific_contact) {
-            auto remove_result = store_->remove(identity);
-            if (!remove_result) {
-                IMS_LOG_WARN("Failed to remove registration for {}: {}",
-                             identity, remove_result.error().message);
-            }
-            continue;
-        }
-
-        auto remove_contact_result = store_->removeContact(identity, selector);
-        if (!remove_contact_result) {
-            IMS_LOG_WARN("Failed to persist partial de-registration for {}: {}",
-                         identity, remove_contact_result.error().message);
-        }
+    ims::Result<size_t> remove_result = has_specific_contact
+        ? store_->removeContacts(ims::registration::ContactBatchRemove{
+              .impus = std::move(target_impus),
+              .selector = selector,
+          })
+        : store_->removeBindings(target_impus);
+    if (!remove_result) {
+        IMS_LOG_WARN("Failed to persist de-registration for {}: {}",
+                     impu, remove_result.error().message);
     }
 
     auto resp = ims::sip::createResponse(request, 200, "OK");

@@ -3,7 +3,9 @@
 #include "sip/store.hpp"
 
 #include <mutex>
+#include <string>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace ims::registration {
 
@@ -25,6 +27,9 @@ public:
                        bool reject_older_cseq = false) -> Result<bool> override;
     auto removeContact(std::string_view impu,
                        const ContactBindingSelector& selector) -> Result<bool> override;
+    auto upsertContacts(const ContactBatchUpsert& batch) -> Result<size_t> override;
+    auto removeContacts(const ContactBatchRemove& batch) -> Result<size_t> override;
+    auto removeBindings(const std::unordered_set<std::string>& impus) -> Result<size_t> override;
     auto remove(std::string_view impu) -> VoidResult override;
     auto purgeExpired() -> Result<size_t> override;
     auto isRegistered(std::string_view impu) -> Result<bool> override;
@@ -36,6 +41,18 @@ private:
 
     auto pruneExpiredLocked(std::string_view impu)
         -> std::unordered_map<std::string, RegistrationBinding>::iterator;
+    auto upsertContactLocked(std::unordered_map<std::string, RegistrationBinding>& bindings,
+                             std::string_view impu,
+                             const ContactBindingSelector& selector,
+                             const ContactBinding& contact,
+                             std::string_view impi,
+                             std::string_view scscf_uri,
+                             RegistrationBinding::State state,
+                             bool require_existing_match,
+                             bool reject_older_cseq) -> bool;
+    auto removeContactLocked(std::unordered_map<std::string, RegistrationBinding>& bindings,
+                             std::string_view impu,
+                             const ContactBindingSelector& selector) -> bool;
 
     mutable std::mutex mutex_;
     std::unordered_map<std::string, RegistrationBinding> bindings_;

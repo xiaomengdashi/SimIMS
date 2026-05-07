@@ -2,12 +2,21 @@
 #include "message.hpp"
 #include "common/logger.hpp"
 
+#include <boost/asio/ip/tcp.hpp>
+#include <boost/asio/ip/udp.hpp>
+#include <boost/asio/socket_base.hpp>
 #include <boost/asio/write.hpp>
 
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <cctype>
+#include <condition_variable>
+#include <mutex>
 #include <optional>
+#include <set>
 #include <sstream>
+#include <unordered_map>
 #include <vector>
 
 namespace ims::sip {
@@ -83,10 +92,25 @@ auto tryExtractSipMessage(std::string& buffer) -> std::optional<std::string> {
 
 } // namespace
 
+struct UdpTransport::State {
+    State(boost::asio::io_context& io_in, const std::string& bind_addr, Port port)
+        : io(io_in)
+        , socket(io_in)
+        , local_ep(boost::asio::ip::make_address(bind_addr), port) {}
+
+    boost::asio::io_context& io;
+    boost::asio::ip::udp::socket socket;
+    boost::asio::ip::udp::endpoint local_ep;
+    boost::asio::ip::udp::endpoint remote_ep;
+    std::array<char, 65536> recv_buffer{};
+    MessageCallback on_message;
+    std::mutex callback_mutex;
+    std::mutex socket_mutex;
+    std::atomic<bool> running{false};
+};
+
 UdpTransport::UdpTransport(boost::asio::io_context& io, const std::string& bind_addr, Port port)
-    : io_(io)
-    , socket_(io)
-    , local_ep_(boost::asio::ip::make_address(bind_addr), port) {}
+    : state_(std::make_shared<State>(io, bind_addr, port)) {}
 
 UdpTransport::~UdpTransport() {
     stop();
@@ -108,12 +132,12 @@ auto UdpTransport::send(const SipMessage& msg, const Endpoint& dest) -> VoidResu
     }
 
     {
-        std::lock_guard lock(socket_mutex_);
-        if (!running_ || !socket_.is_open()) {
+        std::lock_guard lock(state_->socket_mutex);
+        if (!state_->running || !state_->socket.is_open()) {
             return std::unexpected(ErrorInfo{
                 ErrorCode::kSipTransportError, "UDP transport is stopped"});
         }
-        socket_.send_to(boost::asio::buffer(*data), ep, 0, ec);
+        state_->socket.send_to(boost::asio::buffer(*data), ep, 0, ec);
     }
     if (ec) {
         return std::unexpected(ErrorInfo{
@@ -125,102 +149,140 @@ auto UdpTransport::send(const SipMessage& msg, const Endpoint& dest) -> VoidResu
 }
 
 void UdpTransport::setMessageCallback(MessageCallback cb) {
-    on_message_ = std::move(cb);
+    std::lock_guard lock(state_->callback_mutex);
+    state_->on_message = std::move(cb);
 }
 
 auto UdpTransport::start() -> VoidResult {
     boost::system::error_code ec;
 
-    socket_.open(local_ep_.protocol(), ec);
-    if (ec) {
-        return std::unexpected(ErrorInfo{
-            ErrorCode::kSipTransportError, "Failed to open UDP socket", ec.message()});
+    {
+        std::lock_guard lock(state_->socket_mutex);
+        state_->socket.open(state_->local_ep.protocol(), ec);
+        if (ec) {
+            return std::unexpected(ErrorInfo{
+                ErrorCode::kSipTransportError, "Failed to open UDP socket", ec.message()});
+        }
+
+        state_->socket.set_option(boost::asio::socket_base::reuse_address(true), ec);
+        state_->socket.bind(state_->local_ep, ec);
+        if (ec) {
+            return std::unexpected(ErrorInfo{
+                ErrorCode::kSipTransportError, "Failed to bind UDP socket", ec.message()});
+        }
+
+        state_->local_ep = state_->socket.local_endpoint(ec);
+        state_->running = true;
     }
-
-    socket_.set_option(boost::asio::socket_base::reuse_address(true), ec);
-    socket_.bind(local_ep_, ec);
-    if (ec) {
-        return std::unexpected(ErrorInfo{
-            ErrorCode::kSipTransportError, "Failed to bind UDP socket", ec.message()});
-    }
-
-    local_ep_ = socket_.local_endpoint(ec);
-
-    running_ = true;
-    doReceive();
+    doReceive(state_);
 
     IMS_LOG_INFO("UDP transport started on {}:{}",
-                 local_ep_.address().to_string(), local_ep_.port());
+                 state_->local_ep.address().to_string(), state_->local_ep.port());
     return {};
 }
 
 void UdpTransport::stop() {
+    auto state = state_;
     bool expected = true;
-    if (!running_.compare_exchange_strong(expected, false)) {
+    if (!state->running.compare_exchange_strong(expected, false)) {
         return;
     }
 
     boost::system::error_code ec;
-    std::lock_guard lock(socket_mutex_);
-    if (socket_.is_open()) {
-        socket_.cancel(ec);
-        socket_.close(ec);
+    std::lock_guard lock(state->socket_mutex);
+    if (state->socket.is_open()) {
+        state->socket.cancel(ec);
+        state->socket.close(ec);
     }
     IMS_LOG_INFO("UDP transport stopped");
 }
 
 auto UdpTransport::localEndpoint() const -> Endpoint {
+    std::lock_guard lock(state_->socket_mutex);
     return Endpoint{
-        .address = local_ep_.address().to_string(),
-        .port = local_ep_.port(),
+        .address = state_->local_ep.address().to_string(),
+        .port = state_->local_ep.port(),
         .transport = "udp"
     };
 }
 
 void UdpTransport::doReceive() {
-    if (!running_) return;
+    doReceive(state_);
+}
 
-    socket_.async_receive_from(
-        boost::asio::buffer(recv_buffer_), remote_ep_,
-        [this](boost::system::error_code ec, std::size_t bytes_received) {
+void UdpTransport::doReceive(std::shared_ptr<State> state) {
+    if (!state->running) return;
+
+    std::lock_guard lock(state->socket_mutex);
+    if (!state->running || !state->socket.is_open()) {
+        return;
+    }
+    state->socket.async_receive_from(
+        boost::asio::buffer(state->recv_buffer), state->remote_ep,
+        [state](boost::system::error_code ec, std::size_t bytes_received) {
             if (ec) {
                 if (ec != boost::asio::error::operation_aborted) {
                     IMS_LOG_WARN("UDP receive error: {}", ec.message());
                 }
-                if (running_) doReceive();
+                if (state->running) doReceive(state);
                 return;
             }
 
             IMS_LOG_DEBUG("SIP RX/UDP from {}:{} ({} bytes)",
-                remote_ep_.address().to_string(), remote_ep_.port(), bytes_received);
+                state->remote_ep.address().to_string(), state->remote_ep.port(), bytes_received);
 
-            std::string raw(recv_buffer_.data(), bytes_received);
+            std::string raw(state->recv_buffer.data(), bytes_received);
             auto msg_result = SipMessage::parse(raw);
             if (!msg_result) {
                 IMS_LOG_WARN("Failed to parse SIP message: {}", msg_result.error().message);
-                doReceive();
+                doReceive(state);
                 return;
             }
 
-            if (on_message_) {
+            MessageCallback on_message;
+            {
+                std::lock_guard lock(state->callback_mutex);
+                on_message = state->on_message;
+            }
+            if (on_message) {
                 Endpoint src{
-                    .address = remote_ep_.address().to_string(),
-                    .port = static_cast<Port>(remote_ep_.port()),
+                    .address = state->remote_ep.address().to_string(),
+                    .port = static_cast<Port>(state->remote_ep.port()),
                     .transport = "udp"
                 };
-                on_message_(std::move(*msg_result), std::move(src));
+                on_message(std::move(*msg_result), std::move(src));
             }
 
-            doReceive();
+            doReceive(state);
         });
 }
 
+struct TcpTransport::State {
+    State(boost::asio::io_context& io_in, const std::string& bind_addr, Port port)
+        : io(io_in)
+        , acceptor(io_in)
+        , local_ep(boost::asio::ip::make_address(bind_addr), port) {}
+
+    boost::asio::io_context& io;
+    boost::asio::ip::tcp::acceptor acceptor;
+    boost::asio::ip::tcp::endpoint local_ep;
+    MessageCallback on_message;
+    std::mutex callback_mutex;
+    std::mutex acceptor_mutex;
+    std::mutex connections_mutex;
+    std::condition_variable connections_cv;
+    std::unordered_map<std::string, std::shared_ptr<Connection>> connections;
+    std::set<std::string> connecting;
+    std::atomic<bool> running{false};
+    std::atomic<bool> stopped{false};
+};
+
 struct TcpTransport::Connection : public std::enable_shared_from_this<TcpTransport::Connection> {
     Connection(boost::asio::ip::tcp::socket socket_in,
-               TcpTransport& owner_in,
+               std::shared_ptr<State> state_in,
                Endpoint remote_in)
         : socket(std::move(socket_in))
-        , owner(owner_in)
+        , state(std::move(state_in))
         , remote(std::move(remote_in)) {}
 
     void start() {
@@ -228,9 +290,12 @@ struct TcpTransport::Connection : public std::enable_shared_from_this<TcpTranspo
     }
 
     auto send(const std::string& payload) -> VoidResult {
-        std::lock_guard lock(send_mutex);
-
         boost::system::error_code ec;
+        std::lock_guard lock(socket_mutex);
+        if (!open || state->stopped || !socket.is_open()) {
+            return std::unexpected(ErrorInfo{
+                ErrorCode::kSipTransportError, "TCP connection is closed"});
+        }
         boost::asio::write(socket, boost::asio::buffer(payload), ec);
         if (ec) {
             return std::unexpected(ErrorInfo{
@@ -240,52 +305,69 @@ struct TcpTransport::Connection : public std::enable_shared_from_this<TcpTranspo
     }
 
     void close() {
+        bool expected = true;
+        if (!open.compare_exchange_strong(expected, false)) {
+            return;
+        }
+
         boost::system::error_code ec;
-        socket.shutdown(boost::asio::ip::tcp::socket::shutdown_both, ec);
-        socket.close(ec);
+        std::lock_guard lock(socket_mutex);
+        if (socket.is_open()) {
+            socket.shutdown(boost::asio::ip::tcp::socket::shutdown_both, ec);
+            socket.close(ec);
+        }
     }
 
     void doRead() {
+        if (!open || !state->running) {
+            return;
+        }
+
         auto self = shared_from_this();
-        socket.async_read_some(
-            boost::asio::buffer(recv_buffer),
-            [self](boost::system::error_code ec, std::size_t bytes_received) {
-                if (ec) {
-                    if (ec != boost::asio::error::operation_aborted
-                        && ec != boost::asio::error::eof)
-                    {
-                        IMS_LOG_WARN("TCP receive error from {}:{}: {}",
-                                     self->remote.address, self->remote.port, ec.message());
+        {
+            std::lock_guard lock(socket_mutex);
+            if (!open || state->stopped || !socket.is_open()) {
+                return;
+            }
+            socket.async_read_some(
+                boost::asio::buffer(recv_buffer),
+                [self](boost::system::error_code ec, std::size_t bytes_received) {
+                    if (ec) {
+                        if (ec != boost::asio::error::operation_aborted
+                            && ec != boost::asio::error::eof)
+                        {
+                            IMS_LOG_WARN("TCP receive error from {}:{}: {}",
+                                         self->remote.address, self->remote.port, ec.message());
+                        }
+                        unregisterConnection(self->state, self->remote, self.get());
+                        self->close();
+                        return;
                     }
-                    self->owner.unregisterConnection(self->remote, self.get());
-                    self->close();
-                    return;
-                }
 
-                self->read_buffer.append(self->recv_buffer.data(), bytes_received);
+                    self->read_buffer.append(self->recv_buffer.data(), bytes_received);
 
-                while (true) {
-                    auto raw = tryExtractSipMessage(self->read_buffer);
-                    if (!raw) break;
-                    self->owner.handleIncomingMessage(*raw, self->remote);
-                }
+                    while (true) {
+                        auto raw = tryExtractSipMessage(self->read_buffer);
+                        if (!raw) break;
+                        handleIncomingMessage(self->state, *raw, self->remote);
+                    }
 
-                self->doRead();
-            });
+                    self->doRead();
+                });
+        }
     }
 
     boost::asio::ip::tcp::socket socket;
-    TcpTransport& owner;
+    std::shared_ptr<State> state;
     Endpoint remote;
     std::array<char, 8192> recv_buffer{};
     std::string read_buffer;
-    std::mutex send_mutex;
+    std::mutex socket_mutex;
+    std::atomic<bool> open{true};
 };
 
 TcpTransport::TcpTransport(boost::asio::io_context& io, const std::string& bind_addr, Port port)
-    : io_(io)
-    , acceptor_(io)
-    , local_ep_(boost::asio::ip::make_address(bind_addr), port) {}
+    : state_(std::make_shared<State>(io, bind_addr, port)) {}
 
 TcpTransport::~TcpTransport() {
     stop();
@@ -305,7 +387,7 @@ auto TcpTransport::send(const SipMessage& msg, const Endpoint& dest) -> VoidResu
 
     auto send_result = (*conn_result)->send(*data);
     if (!send_result) {
-        unregisterConnection((*conn_result)->remote, conn_result->get());
+        unregisterConnection(state_, (*conn_result)->remote, conn_result->get());
         return send_result;
     }
 
@@ -314,63 +396,77 @@ auto TcpTransport::send(const SipMessage& msg, const Endpoint& dest) -> VoidResu
 }
 
 void TcpTransport::setMessageCallback(MessageCallback cb) {
-    on_message_ = std::move(cb);
+    std::lock_guard lock(state_->callback_mutex);
+    state_->on_message = std::move(cb);
 }
 
 auto TcpTransport::start() -> VoidResult {
     boost::system::error_code ec;
 
-    acceptor_.open(local_ep_.protocol(), ec);
-    if (ec) {
-        return std::unexpected(ErrorInfo{
-            ErrorCode::kSipTransportError, "Failed to open TCP acceptor", ec.message()});
-    }
+    {
+        std::lock_guard lock(state_->acceptor_mutex);
+        state_->acceptor.open(state_->local_ep.protocol(), ec);
+        if (ec) {
+            return std::unexpected(ErrorInfo{
+                ErrorCode::kSipTransportError, "Failed to open TCP acceptor", ec.message()});
+        }
 
-    acceptor_.set_option(boost::asio::socket_base::reuse_address(true), ec);
-    if (ec) {
-        return std::unexpected(ErrorInfo{
-            ErrorCode::kSipTransportError, "Failed to set TCP reuse_address", ec.message()});
-    }
+        state_->acceptor.set_option(boost::asio::socket_base::reuse_address(true), ec);
+        if (ec) {
+            return std::unexpected(ErrorInfo{
+                ErrorCode::kSipTransportError, "Failed to set TCP reuse_address", ec.message()});
+        }
 
-    acceptor_.bind(local_ep_, ec);
-    if (ec) {
-        return std::unexpected(ErrorInfo{
-            ErrorCode::kSipTransportError, "Failed to bind TCP acceptor", ec.message()});
-    }
+        state_->acceptor.bind(state_->local_ep, ec);
+        if (ec) {
+            return std::unexpected(ErrorInfo{
+                ErrorCode::kSipTransportError, "Failed to bind TCP acceptor", ec.message()});
+        }
 
-    acceptor_.listen(boost::asio::socket_base::max_listen_connections, ec);
-    if (ec) {
-        return std::unexpected(ErrorInfo{
-            ErrorCode::kSipTransportError, "Failed to listen on TCP acceptor", ec.message()});
-    }
+        state_->acceptor.listen(boost::asio::socket_base::max_listen_connections, ec);
+        if (ec) {
+            return std::unexpected(ErrorInfo{
+                ErrorCode::kSipTransportError, "Failed to listen on TCP acceptor", ec.message()});
+        }
 
-    local_ep_ = acceptor_.local_endpoint(ec);
-    running_ = true;
-    doAccept();
+        state_->local_ep = state_->acceptor.local_endpoint(ec);
+        state_->stopped = false;
+        state_->running = true;
+    }
+    doAccept(state_);
 
     IMS_LOG_INFO("TCP transport started on {}:{}",
-                 local_ep_.address().to_string(), local_ep_.port());
+                 state_->local_ep.address().to_string(), state_->local_ep.port());
     return {};
 }
 
 void TcpTransport::stop() {
-    bool expected = true;
-    if (!running_.compare_exchange_strong(expected, false)) {
+    auto state = state_;
+    bool expected = false;
+    if (!state->stopped.compare_exchange_strong(expected, true)) {
         return;
     }
+    state->running = false;
 
     boost::system::error_code ec;
-    acceptor_.cancel(ec);
-    acceptor_.close(ec);
+    {
+        std::lock_guard lock(state->acceptor_mutex);
+        if (state->acceptor.is_open()) {
+            state->acceptor.cancel(ec);
+            state->acceptor.close(ec);
+        }
+    }
 
     std::vector<std::shared_ptr<Connection>> active;
     {
-        std::lock_guard lock(connections_mutex_);
-        for (auto& [_, conn] : connections_) {
+        std::lock_guard lock(state->connections_mutex);
+        state->connecting.clear();
+        for (auto& [_, conn] : state->connections) {
             active.push_back(conn);
         }
-        connections_.clear();
+        state->connections.clear();
     }
+    state->connections_cv.notify_all();
 
     for (auto& conn : active) {
         conn->close();
@@ -380,17 +476,27 @@ void TcpTransport::stop() {
 }
 
 auto TcpTransport::localEndpoint() const -> Endpoint {
+    std::lock_guard lock(state_->acceptor_mutex);
     return Endpoint{
-        .address = local_ep_.address().to_string(),
-        .port = local_ep_.port(),
+        .address = state_->local_ep.address().to_string(),
+        .port = state_->local_ep.port(),
         .transport = "tcp"
     };
 }
 
 void TcpTransport::doAccept() {
-    if (!running_) return;
+    doAccept(state_);
+}
 
-    acceptor_.async_accept([this](boost::system::error_code ec, boost::asio::ip::tcp::socket socket) {
+void TcpTransport::doAccept(std::shared_ptr<State> state) {
+    if (!state->running) return;
+
+    std::lock_guard lock(state->acceptor_mutex);
+    if (!state->running || !state->acceptor.is_open()) {
+        return;
+    }
+
+    state->acceptor.async_accept([state](boost::system::error_code ec, boost::asio::ip::tcp::socket socket) {
         if (!ec) {
             boost::system::error_code ep_ec;
             auto remote_ep = socket.remote_endpoint(ep_ec);
@@ -401,10 +507,10 @@ void TcpTransport::doAccept() {
                     .transport = "tcp"
                 };
 
-                auto conn = std::make_shared<Connection>(std::move(socket), *this, remote);
+                auto conn = std::make_shared<Connection>(std::move(socket), state, remote);
                 {
-                    std::lock_guard lock(connections_mutex_);
-                    connections_[endpointKey(remote)] = conn;
+                    std::lock_guard lock(state->connections_mutex);
+                    state->connections[endpointKey(remote)] = conn;
                 }
 
                 IMS_LOG_DEBUG("TCP connection accepted from {}:{}",
@@ -415,13 +521,15 @@ void TcpTransport::doAccept() {
             IMS_LOG_WARN("TCP accept error: {}", ec.message());
         }
 
-        if (running_) {
-            doAccept();
+        if (state->running) {
+            doAccept(state);
         }
     });
 }
 
-void TcpTransport::handleIncomingMessage(const std::string& raw, const Endpoint& src) {
+void TcpTransport::handleIncomingMessage(const std::shared_ptr<State>& state,
+                                         const std::string& raw,
+                                         const Endpoint& src) {
     auto msg_result = SipMessage::parse(raw);
     if (!msg_result) {
         IMS_LOG_WARN("Failed to parse SIP/TCP message from {}:{}: {}",
@@ -432,28 +540,63 @@ void TcpTransport::handleIncomingMessage(const std::string& raw, const Endpoint&
     IMS_LOG_DEBUG("SIP RX/TCP from {}:{} ({} bytes)",
                   src.address, src.port, raw.size());
 
-    if (on_message_) {
-        on_message_(std::move(*msg_result), src);
+    MessageCallback on_message;
+    {
+        std::lock_guard lock(state->callback_mutex);
+        on_message = state->on_message;
+    }
+    if (on_message) {
+        on_message(std::move(*msg_result), src);
     }
 }
 
 auto TcpTransport::getOrCreateConnection(const Endpoint& dest) -> Result<std::shared_ptr<Connection>> {
+    return getOrCreateConnection(state_, dest);
+}
+
+auto TcpTransport::getOrCreateConnection(const std::shared_ptr<State>& state,
+                                         const Endpoint& dest) -> Result<std::shared_ptr<Connection>> {
+    if (state->stopped) {
+        return std::unexpected(ErrorInfo{
+            ErrorCode::kSipTransportError, "TCP transport is stopped"});
+    }
+
     auto key = endpointKey(dest);
-    std::lock_guard lock(connections_mutex_);
-    if (auto it = connections_.find(key); it != connections_.end()) {
-        return it->second;
+    {
+        std::unique_lock lock(state->connections_mutex);
+        state->connections_cv.wait(lock, [&] {
+            return state->stopped || !state->connecting.contains(key);
+        });
+        if (state->stopped) {
+            return std::unexpected(ErrorInfo{
+                ErrorCode::kSipTransportError, "TCP transport is stopped"});
+        }
+        if (auto it = state->connections.find(key); it != state->connections.end()) {
+            return it->second;
+        }
+        state->connecting.insert(key);
     }
 
     boost::system::error_code ec;
-    boost::asio::ip::tcp::socket socket(io_);
+    boost::asio::ip::tcp::socket socket(state->io);
     boost::asio::ip::tcp::endpoint remote_ep(boost::asio::ip::make_address(dest.address, ec), dest.port);
     if (ec) {
+        {
+            std::lock_guard lock(state->connections_mutex);
+            state->connecting.erase(key);
+        }
+        state->connections_cv.notify_all();
         return std::unexpected(ErrorInfo{
             ErrorCode::kSipTransportError, "Invalid TCP destination address", ec.message()});
     }
 
     socket.connect(remote_ep, ec);
     if (ec) {
+        {
+            std::lock_guard lock(state->connections_mutex);
+            state->connecting.erase(key);
+        }
+        state->connections_cv.notify_all();
         return std::unexpected(ErrorInfo{
             ErrorCode::kSipTransportError, "TCP connect failed", ec.message()});
     }
@@ -463,16 +606,35 @@ auto TcpTransport::getOrCreateConnection(const Endpoint& dest) -> Result<std::sh
         .port = static_cast<Port>(remote_ep.port()),
         .transport = "tcp"
     };
-    auto conn = std::make_shared<Connection>(std::move(socket), *this, remote);
-    connections_[key] = conn;
+    auto conn = std::make_shared<Connection>(std::move(socket), state, remote);
+    {
+        std::lock_guard lock(state->connections_mutex);
+        state->connecting.erase(key);
+        if (state->stopped) {
+            conn->close();
+            state->connections_cv.notify_all();
+            return std::unexpected(ErrorInfo{
+                ErrorCode::kSipTransportError, "TCP transport is stopped"});
+        }
+        if (auto it = state->connections.find(key); it != state->connections.end()) {
+            conn->close();
+            state->connections_cv.notify_all();
+            return it->second;
+        }
+        state->connections[key] = conn;
+    }
+    state->connections_cv.notify_all();
     conn->start();
     return conn;
 }
 
-void TcpTransport::unregisterConnection(const Endpoint& endpoint, const Connection* connection) {
-    std::lock_guard lock(connections_mutex_);
-    if (auto it = connections_.find(endpointKey(endpoint)); it != connections_.end() && it->second.get() == connection) {
-        connections_.erase(it);
+void TcpTransport::unregisterConnection(const std::shared_ptr<State>& state,
+                                        const Endpoint& endpoint,
+                                        const Connection* connection) {
+    std::lock_guard lock(state->connections_mutex);
+    if (auto it = state->connections.find(endpointKey(endpoint));
+        it != state->connections.end() && it->second.get() == connection) {
+        state->connections.erase(it);
     }
 }
 
@@ -480,9 +642,19 @@ auto TcpTransport::endpointKey(const Endpoint& endpoint) -> std::string {
     return endpoint.address + ":" + std::to_string(endpoint.port);
 }
 
+struct DualTransport::State {
+    State(boost::asio::io_context& io, const std::string& bind_addr, Port port)
+        : udp(std::make_shared<UdpTransport>(io, bind_addr, port))
+        , tcp(std::make_shared<TcpTransport>(io, bind_addr, port)) {}
+
+    std::shared_ptr<UdpTransport> udp;
+    std::shared_ptr<TcpTransport> tcp;
+    MessageCallback on_message;
+    std::mutex callback_mutex;
+};
+
 DualTransport::DualTransport(boost::asio::io_context& io, const std::string& bind_addr, Port port)
-    : udp_(std::make_shared<UdpTransport>(io, bind_addr, port))
-    , tcp_(std::make_shared<TcpTransport>(io, bind_addr, port)) {}
+    : state_(std::make_shared<State>(io, bind_addr, port)) {}
 
 DualTransport::~DualTransport() {
     stop();
@@ -491,9 +663,9 @@ DualTransport::~DualTransport() {
 auto DualTransport::send(const SipMessage& msg, const Endpoint& dest) -> VoidResult {
     auto transport = toLower(dest.transport);
     if (transport == "tcp") {
-        return tcp_->send(msg, dest);
+        return state_->tcp->send(msg, dest);
     }
-    return udp_->send(msg, Endpoint{
+    return state_->udp->send(msg, Endpoint{
         .address = dest.address,
         .port = dest.port,
         .transport = "udp"
@@ -501,37 +673,51 @@ auto DualTransport::send(const SipMessage& msg, const Endpoint& dest) -> VoidRes
 }
 
 void DualTransport::setMessageCallback(MessageCallback cb) {
-    on_message_ = std::move(cb);
+    {
+        std::lock_guard lock(state_->callback_mutex);
+        state_->on_message = std::move(cb);
+    }
 
-    udp_->setMessageCallback([this](SipMessage msg, Endpoint src) {
-        if (on_message_) on_message_(std::move(msg), std::move(src));
+    auto state = state_;
+    state_->udp->setMessageCallback([state](SipMessage msg, Endpoint src) {
+        MessageCallback on_message;
+        {
+            std::lock_guard lock(state->callback_mutex);
+            on_message = state->on_message;
+        }
+        if (on_message) on_message(std::move(msg), std::move(src));
     });
-    tcp_->setMessageCallback([this](SipMessage msg, Endpoint src) {
-        if (on_message_) on_message_(std::move(msg), std::move(src));
+    state_->tcp->setMessageCallback([state](SipMessage msg, Endpoint src) {
+        MessageCallback on_message;
+        {
+            std::lock_guard lock(state->callback_mutex);
+            on_message = state->on_message;
+        }
+        if (on_message) on_message(std::move(msg), std::move(src));
     });
 }
 
 auto DualTransport::start() -> VoidResult {
-    auto udp_result = udp_->start();
+    auto udp_result = state_->udp->start();
     if (!udp_result) {
         return udp_result;
     }
 
-    auto tcp_result = tcp_->start();
+    auto tcp_result = state_->tcp->start();
     if (!tcp_result) {
-        udp_->stop();
+        state_->udp->stop();
         return tcp_result;
     }
     return {};
 }
 
 void DualTransport::stop() {
-    tcp_->stop();
-    udp_->stop();
+    state_->tcp->stop();
+    state_->udp->stop();
 }
 
 auto DualTransport::localEndpoint() const -> Endpoint {
-    return udp_->localEndpoint();
+    return state_->udp->localEndpoint();
 }
 
 } // namespace ims::sip

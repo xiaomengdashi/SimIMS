@@ -20,6 +20,7 @@
 namespace {
 
 using ::testing::_;
+using ::testing::Return;
 using ::testing::StrictMock;
 using ::testing::Truly;
 
@@ -182,6 +183,64 @@ TEST_F(PcscfServiceTest, Invite183WithoutTrackedSessionDoesNotCallRtpengineAnswe
     EXPECT_CALL(*rtpengine_, answer(_, _, _)).Times(0);
 
     service_->onInviteResponse(response);
+}
+
+TEST_F(PcscfServiceTest, TerminateMediaForReverseByeDeletesRtpengineAndRxSession) {
+    static const std::string kCallId = "reverse-bye";
+    service_->media_sessions_.createSession(ims::media::MediaSessionKey{.call_id = kCallId, .from_tag = "caller"});
+    auto update = service_->media_sessions_.beginInviteResponse(ims::media::MediaSessionKey{
+        .call_id = kCallId,
+        .from_tag = "caller",
+        .to_tag = "callee",
+    });
+    ASSERT_TRUE(update.has_value());
+    service_->media_sessions_.commitInviteResponse(update->key, "callee-sdp");
+    service_->media_sessions_.setRxSession(update->key, "rx-reverse-bye");
+
+    auto bye = ims::sip::SipMessage::parse(
+        "BYE sip:caller@ims.local SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP 127.0.0.1:5062;branch=z9hG4bKbye\r\n"
+        "From: <sip:callee@ims.local>;tag=callee\r\n"
+        "To: <sip:caller@ims.local>;tag=caller\r\n"
+        "Call-ID: reverse-bye\r\n"
+        "CSeq: 2 BYE\r\n"
+        "Content-Length: 0\r\n\r\n");
+    ASSERT_TRUE(bye.has_value()) << bye.error().message;
+
+    EXPECT_CALL(*rtpengine_, deleteSession(Truly([](const ims::media::MediaSession& session) {
+        return session.call_id == "reverse-bye" && session.from_tag == "caller" && session.to_tag == "callee";
+    }))).WillOnce(Return(ims::VoidResult{}));
+    EXPECT_CALL(*pcf_, terminateSession(Truly([](const ims::diameter::StrParams& params) {
+        return params.session_id == "rx-reverse-bye";
+    }))).WillOnce(Return(ims::diameter::StaResult{.result_code = 2001}));
+
+    service_->terminateMediaForRequest(*bye);
+
+    EXPECT_EQ(service_->media_sessions_.sessionCount(), 0u);
+}
+
+TEST_F(PcscfServiceTest, TerminateMediaForCancelWithoutRxOnlyDeletesRtpengineSession) {
+    static const std::string kCallId = "cancel-no-rx";
+    service_->media_sessions_.createSession(ims::media::MediaSessionKey{.call_id = kCallId, .from_tag = "caller"});
+
+    auto cancel = ims::sip::SipMessage::parse(
+        "CANCEL sip:callee@ims.local SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKcancel\r\n"
+        "From: <sip:caller@ims.local>;tag=caller\r\n"
+        "To: <sip:callee@ims.local>\r\n"
+        "Call-ID: cancel-no-rx\r\n"
+        "CSeq: 1 CANCEL\r\n"
+        "Content-Length: 0\r\n\r\n");
+    ASSERT_TRUE(cancel.has_value()) << cancel.error().message;
+
+    EXPECT_CALL(*rtpengine_, deleteSession(Truly([](const ims::media::MediaSession& session) {
+        return session.call_id == "cancel-no-rx" && session.from_tag == "caller";
+    }))).WillOnce(Return(ims::VoidResult{}));
+    EXPECT_CALL(*pcf_, terminateSession(_)).Times(0);
+
+    service_->terminateMediaForRequest(*cancel);
+
+    EXPECT_EQ(service_->media_sessions_.sessionCount(), 0u);
 }
 
 TEST_F(PcscfServiceTest, ExtractTopologyTokenFromTopRoute) {

@@ -64,6 +64,7 @@ private:
         ims::sip::Endpoint callee_endpoint;
         std::string callee_invite_branch;
         bool bye_seen = false;
+        bool cancel_seen = false;
     };
 
     using SessionMap = std::unordered_map<DialogKey, SessionInfo, DialogKeyHash>;
@@ -81,6 +82,7 @@ private:
     void recordInviteResponseDialog(const std::string& call_id,
                                     const std::string& caller_tag,
                                     const std::string& callee_tag);
+    void eraseCanceledSessionsLocked(const DialogKey& key);
     void eraseSessionLocked(const DialogKey& key);
 
     std::shared_ptr<ims::registration::IRegistrationStore> store_;

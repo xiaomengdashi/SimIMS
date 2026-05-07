@@ -97,6 +97,102 @@ TEST(MediaSessionManagerTest, RemovingOneDialogDoesNotRemoveAnother) {
     EXPECT_EQ(remaining->session.to_tag, "to-b");
 }
 
+TEST(MediaSessionManagerTest, TerminatingSessionRejectsLateInviteResponse) {
+    MediaSessionManager manager;
+
+    manager.createSession(MediaSessionKey{.call_id = "call-1", .from_tag = "from-a"});
+    auto termination = manager.markTerminating(MediaSessionKey{.call_id = "call-1", .from_tag = "from-a"});
+    ASSERT_TRUE(termination.has_value());
+
+    auto update = manager.beginInviteResponse(MediaSessionKey{
+        .call_id = "call-1",
+        .from_tag = "from-a",
+        .to_tag = "to-a",
+    });
+    EXPECT_FALSE(update.has_value());
+
+    manager.commitInviteResponse(MediaSessionKey{.call_id = "call-1", .from_tag = "from-a", .to_tag = "to-a"},
+                                  "callee-sdp");
+    EXPECT_FALSE(manager.getSession(MediaSessionKey{
+        .call_id = "call-1",
+        .from_tag = "from-a",
+        .to_tag = "to-a",
+    }).has_value());
+}
+
+TEST(MediaSessionManagerTest, DuplicateTerminationIsIdempotent) {
+    MediaSessionManager manager;
+
+    manager.createSession(MediaSessionKey{.call_id = "call-1", .from_tag = "from-a"});
+    auto first = manager.markTerminating(MediaSessionKey{.call_id = "call-1", .from_tag = "from-a"});
+    auto second = manager.markTerminating(MediaSessionKey{.call_id = "call-1", .from_tag = "from-a"});
+
+    ASSERT_TRUE(first.has_value());
+    EXPECT_FALSE(second.has_value());
+    manager.completeTermination(first->key);
+    EXPECT_EQ(manager.sessionCount(), 0u);
+}
+
+TEST(MediaSessionManagerTest, ReverseDialogTerminationFindsEstablishedSession) {
+    MediaSessionManager manager;
+
+    manager.createSession(MediaSessionKey{.call_id = "call-1", .from_tag = "caller"});
+    auto update = manager.beginInviteResponse(MediaSessionKey{
+        .call_id = "call-1",
+        .from_tag = "caller",
+        .to_tag = "callee",
+    });
+    ASSERT_TRUE(update.has_value());
+    manager.commitInviteResponse(update->key, "callee-sdp");
+    manager.setRxSession(update->key, "rx-session-1");
+
+    auto termination = manager.markTerminating(MediaSessionKey{
+        .call_id = "call-1",
+        .from_tag = "callee",
+        .to_tag = "caller",
+    });
+
+    ASSERT_TRUE(termination.has_value());
+    EXPECT_EQ(termination->key.from_tag, "caller");
+    EXPECT_EQ(termination->key.to_tag, "callee");
+    EXPECT_EQ(termination->rx_session_id, "rx-session-1");
+}
+
+TEST(MediaSessionManagerTest, ReverseEarlyTerminationFindsInitialSession) {
+    MediaSessionManager manager;
+
+    manager.createSession(MediaSessionKey{.call_id = "call-1", .from_tag = "caller"});
+    auto termination = manager.markTerminating(MediaSessionKey{
+        .call_id = "call-1",
+        .from_tag = "callee",
+        .to_tag = "caller",
+    });
+
+    ASSERT_TRUE(termination.has_value());
+    EXPECT_EQ(termination->key.from_tag, "caller");
+    EXPECT_TRUE(termination->key.to_tag.empty());
+}
+
+TEST(MediaSessionManagerTest, BeginInviteResponseMigratesToTagAndCommitStoresSdp) {
+    MediaSessionManager manager;
+
+    manager.createSession(MediaSessionKey{.call_id = "call-1", .from_tag = "from-a"});
+    auto update = manager.beginInviteResponse(MediaSessionKey{
+        .call_id = "call-1",
+        .from_tag = "from-a",
+        .to_tag = "to-a",
+    });
+    ASSERT_TRUE(update.has_value());
+    EXPECT_EQ(update->session.to_tag, "to-a");
+    manager.commitInviteResponse(update->key, "callee-sdp");
+
+    EXPECT_FALSE(manager.getSession(MediaSessionKey{.call_id = "call-1", .from_tag = "from-a"}).has_value());
+    auto state = manager.getSession(MediaSessionKey{.call_id = "call-1", .from_tag = "from-a", .to_tag = "to-a"});
+    ASSERT_TRUE(state.has_value());
+    EXPECT_EQ(state->callee_sdp, "callee-sdp");
+    EXPECT_EQ(state->lifecycle, MediaSessionLifecycle::kEstablished);
+}
+
 TEST(MediaSessionManagerTest, CallIdOnlyCompatibilityWorksForSingleSession) {
     MediaSessionManager manager;
 

@@ -6,6 +6,7 @@
 
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/steady_timer.hpp>
+#include <atomic>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -36,6 +37,7 @@ public:
     auto retransmitLastResponse() -> VoidResult;
     void acknowledgeAck();
     void onTerminated(std::function<void()> cb);
+    void shutdown();
 
 private:
     void startTimers(int final_response_code);
@@ -66,11 +68,12 @@ public:
     auto state() const -> TransactionState;
     auto branch() const -> const std::string&;
 
-    void start();
+    auto start() -> VoidResult;
     void onResponse(ResponseCallback cb);
     void onTimeout(std::function<void()> cb);
     bool matches(const SipMessage& response) const;
     void processResponse(SipMessage response);
+    void shutdown();
 
 private:
     void retransmit();
@@ -93,12 +96,22 @@ class TransactionLayer {
 public:
     using RequestHandler = std::function<void(std::shared_ptr<ServerTransaction>)>;
 
+    struct SharedState {
+        std::atomic_bool shutting_down{false};
+        RequestHandler request_handler;
+        std::mutex mutex;
+        std::unordered_map<std::string, std::shared_ptr<ServerTransaction>> server_txns;
+        std::unordered_map<std::string, std::shared_ptr<ClientTransaction>> client_txns;
+    };
+
     TransactionLayer(boost::asio::io_context& io, std::shared_ptr<ITransport> transport);
+    ~TransactionLayer();
 
     void setRequestHandler(RequestHandler handler);
     auto sendRequest(SipMessage request, const Endpoint& dest,
                      ClientTransaction::ResponseCallback on_response) -> Result<std::string>;
     void processMessage(SipMessage msg, Endpoint source);
+    auto shutdown() -> VoidResult;
 
 private:
     auto findClientTransaction(const SipMessage& response) -> std::shared_ptr<ClientTransaction>;
@@ -106,10 +119,7 @@ private:
 
     boost::asio::io_context& io_;
     std::shared_ptr<ITransport> transport_;
-    RequestHandler request_handler_;
-    std::mutex mutex_;
-    std::unordered_map<std::string, std::shared_ptr<ServerTransaction>> server_txns_;
-    std::unordered_map<std::string, std::shared_ptr<ClientTransaction>> client_txns_;
+    std::shared_ptr<SharedState> state_;
 };
 
 } // namespace ims::sip

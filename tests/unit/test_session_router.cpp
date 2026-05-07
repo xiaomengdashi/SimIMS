@@ -63,6 +63,11 @@ public:
                        bool) -> ims::Result<bool> override { return false; }
     auto removeContact(std::string_view,
                        const ims::registration::ContactBindingSelector&) -> ims::Result<bool> override { return false; }
+    auto upsertContacts(const ims::registration::ContactBatchUpsert& batch) -> ims::Result<size_t> override {
+        return batch.impus.size();
+    }
+    auto removeContacts(const ims::registration::ContactBatchRemove&) -> ims::Result<size_t> override { return size_t{0}; }
+    auto removeBindings(const std::unordered_set<std::string>&) -> ims::Result<size_t> override { return size_t{0}; }
     auto remove(std::string_view) -> ims::VoidResult override { return {}; }
     auto purgeExpired() -> ims::Result<size_t> override { return size_t{0}; }
     auto isRegistered(std::string_view) -> ims::Result<bool> override { return false; }
@@ -169,6 +174,57 @@ TEST_F(SessionRouterTest, UnknownDialogByeReturns481) {
 
     ASSERT_EQ(transport->sent_messages.size(), 1u);
     EXPECT_EQ(transport->sent_messages[0].statusCode(), 481);
+}
+
+TEST_F(SessionRouterTest, CancelKeepsInitialSessionUntilAckRoutes) {
+    router->sessions_.emplace(key("call-cancel", "caller", ""),
+                              makeSession("call-cancel", "caller", "", 5070));
+
+    auto cancel = makeRequest("CANCEL", "call-cancel", "caller", "");
+    router->handleCancel(cancel, makeTxn(cancel, transport, io));
+
+    ASSERT_TRUE(router->sessions_.contains(key("call-cancel", "caller", "")));
+    EXPECT_TRUE(router->sessions_.at(key("call-cancel", "caller", "")).cancel_seen);
+    ASSERT_EQ(transport->sent_destinations.size(), 2u);
+    EXPECT_EQ(transport->sent_messages[0].statusCode(), 200);
+    EXPECT_EQ(transport->sent_destinations[1].port, 5070);
+
+    auto ack = makeRequest("ACK", "call-cancel", "caller", "");
+    router->handleAck(ack, makeTxn(ack, transport, io));
+
+    ASSERT_EQ(transport->sent_destinations.size(), 3u);
+    EXPECT_EQ(transport->sent_destinations[2].port, 5070);
+    EXPECT_FALSE(router->sessions_.contains(key("call-cancel", "caller", "")));
+}
+
+TEST_F(SessionRouterTest, CancelAckWithToTagClearsInitialAndDialogSessions) {
+    auto initial = makeSession("call-cancel", "caller", "", 5070);
+    initial.cancel_seen = true;
+    auto dialog = makeSession("call-cancel", "caller", "callee", 5070);
+    dialog.cancel_seen = true;
+    router->sessions_.emplace(key("call-cancel", "caller", ""), initial);
+    router->sessions_.emplace(key("call-cancel", "caller", "callee"), dialog);
+
+    auto ack = makeRequest("ACK", "call-cancel", "caller", "callee");
+    router->handleAck(ack, makeTxn(ack, transport, io));
+
+    ASSERT_EQ(transport->sent_destinations.size(), 1u);
+    EXPECT_EQ(transport->sent_destinations[0].port, 5070);
+    EXPECT_FALSE(router->sessions_.contains(key("call-cancel", "caller", "")));
+    EXPECT_FALSE(router->sessions_.contains(key("call-cancel", "caller", "callee")));
+}
+
+TEST_F(SessionRouterTest, CancelAckWithMissingDialogStillRoutesAndClearsInitialSession) {
+    auto initial = makeSession("call-cancel", "caller", "", 5070);
+    initial.cancel_seen = true;
+    router->sessions_.emplace(key("call-cancel", "caller", ""), initial);
+
+    auto ack = makeRequest("ACK", "call-cancel", "caller", "callee");
+    router->handleAck(ack, makeTxn(ack, transport, io));
+
+    ASSERT_EQ(transport->sent_destinations.size(), 1u);
+    EXPECT_EQ(transport->sent_destinations[0].port, 5070);
+    EXPECT_FALSE(router->sessions_.contains(key("call-cancel", "caller", "")));
 }
 
 TEST_F(SessionRouterTest, InviteResponseCreatesSeparateDialogWithoutReplacingExistingOne) {

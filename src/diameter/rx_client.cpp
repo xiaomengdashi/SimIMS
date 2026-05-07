@@ -15,7 +15,8 @@ auto StubPcfClient::authorizeSession(const AarParams& params) -> Result<AaaResul
     IMS_LOG_INFO("Stub AAR: subscriber={} media_components={}",
                  params.subscription_id, params.media_components.size());
 
-    auto session_id = std::format("stub-rx-session-{}", ++session_counter_);
+    const auto session_number = session_counter_.fetch_add(1, std::memory_order_relaxed) + 1;
+    auto session_id = std::format("stub-rx-session-{}", session_number);
 
     return AaaResult{
         .result_code = 2001,

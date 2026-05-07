@@ -137,7 +137,13 @@ auto ImsAkaAuthProvider::verifyAuthorization(const ims::sip::SipMessage& request
 
     {
         std::lock_guard lock(auth_mutex_);
-        pending_auth_.erase(key);
+        auto it = pending_auth_.find(key);
+        if (it == pending_auth_.end()
+            || it->second.vector.rand != pending.vector.rand
+            || it->second.vector.autn != pending.vector.autn) {
+            return std::unexpected(ErrorInfo{ErrorCode::kDiameterAuthFailed, "no pending auth state"});
+        }
+        pending_auth_.erase(it);
     }
 
     return AuthVerificationResult{

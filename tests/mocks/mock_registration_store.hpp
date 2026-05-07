@@ -2,6 +2,8 @@
 
 #include "sip/store.hpp"
 #include <gmock/gmock.h>
+#include <string>
+#include <unordered_set>
 
 namespace ims::test {
 
@@ -24,6 +26,15 @@ public:
     MOCK_METHOD(Result<bool>, removeContact,
                 (std::string_view,
                  const registration::ContactBindingSelector&),
+                (override));
+    MOCK_METHOD(Result<size_t>, upsertContacts,
+                (const registration::ContactBatchUpsert&),
+                (override));
+    MOCK_METHOD(Result<size_t>, removeContacts,
+                (const registration::ContactBatchRemove&),
+                (override));
+    MOCK_METHOD(Result<size_t>, removeBindings,
+                (const std::unordered_set<std::string>&),
                 (override));
     MOCK_METHOD(VoidResult, remove,
                 (std::string_view), (override));

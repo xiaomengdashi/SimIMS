@@ -92,6 +92,49 @@ TEST(TransportTest, UdpSendSerializesConcurrentSocketAccess) {
     transport.stop();
 }
 
+TEST(TransportTest, UdpSendAfterStopReturnsError) {
+    boost::asio::io_context io;
+    ims::sip::UdpTransport transport(io, "127.0.0.1", 0);
+    ASSERT_TRUE(transport.start().has_value());
+
+    boost::asio::ip::udp::socket receiver(io, {boost::asio::ip::udp::v4(), 0});
+    ims::sip::Endpoint dest{
+        .address = "127.0.0.1",
+        .port = static_cast<ims::Port>(receiver.local_endpoint().port()),
+        .transport = "udp",
+    };
+
+    auto message = ims::sip::SipMessage::parse(kOptionsMessage);
+    ASSERT_TRUE(message.has_value()) << message.error().message;
+
+    transport.stop();
+    auto result = transport.send(*message, dest);
+
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().code, ims::ErrorCode::kSipTransportError);
+}
+
+TEST(TransportTest, TcpSendAfterStopReturnsError) {
+    boost::asio::io_context io;
+    ims::sip::TcpTransport transport(io, "127.0.0.1", 0);
+    ASSERT_TRUE(transport.start().has_value());
+
+    auto message = ims::sip::SipMessage::parse(kOptionsMessage);
+    ASSERT_TRUE(message.has_value()) << message.error().message;
+
+    ims::sip::Endpoint dest{
+        .address = "127.0.0.1",
+        .port = transport.localEndpoint().port,
+        .transport = "tcp",
+    };
+
+    transport.stop();
+    auto result = transport.send(*message, dest);
+
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().code, ims::ErrorCode::kSipTransportError);
+}
+
 TEST(TransportTest, TcpConcurrentSendReusesSingleConnectionPerEndpoint) {
     boost::asio::io_context server_io;
     TcpCountingServer server(server_io);

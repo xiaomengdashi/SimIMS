@@ -114,7 +114,7 @@ TEST_F(TransactionLayerTest, ServerInvite2xxTerminationCallbackFiresOnce) {
     EXPECT_EQ(terminated_count, 1);
 }
 
-TEST_F(TransactionLayerTest, ClientTransactionSendFailureInvokesTimeoutCallbackSafely) {
+TEST_F(TransactionLayerTest, ClientTransactionSendFailureReturnsErrorWithoutTimeoutCallback) {
     auto invite = parseMessage(kInviteMsg);
     auto txn = std::make_shared<ClientTransaction>(std::move(invite), transport, dest, io);
     int timeout_count = 0;
@@ -123,10 +123,90 @@ TEST_F(TransactionLayerTest, ClientTransactionSendFailureInvokesTimeoutCallbackS
         .WillOnce(Return(std::unexpected(ErrorInfo{ErrorCode::kSipTransportError, "send failed"})));
 
     txn->onTimeout([&timeout_count]() { ++timeout_count; });
-    txn->start();
+    auto start_result = txn->start();
+
+    ASSERT_FALSE(start_result.has_value());
+    EXPECT_EQ(start_result.error().code, ErrorCode::kSipTransportError);
+    EXPECT_EQ(txn->state(), TransactionState::kTerminated);
+    EXPECT_EQ(timeout_count, 0);
+}
+
+TEST_F(TransactionLayerTest, SendRequestFailureCleansClientTransactionForRetry) {
+    TransactionLayer layer(io, transport);
+    auto first = parseMessage(kRegisterMsg);
+
+    EXPECT_CALL(*transport, send(_, _))
+        .WillOnce(Return(std::unexpected(ErrorInfo{ErrorCode::kSipTransportError, "send failed"})))
+        .WillOnce(Return(VoidResult{}));
+
+    auto first_result = layer.sendRequest(std::move(first), dest, {});
+    ASSERT_FALSE(first_result.has_value());
+    EXPECT_EQ(first_result.error().code, ErrorCode::kSipTransportError);
+
+    auto retry = parseMessage(kRegisterMsg);
+    auto retry_result = layer.sendRequest(std::move(retry), dest, {});
+    EXPECT_TRUE(retry_result.has_value()) << retry_result.error().message;
+}
+
+TEST_F(TransactionLayerTest, SendRequestRejectedAfterShutdown) {
+    TransactionLayer layer(io, transport);
+    auto shutdown_result = layer.shutdown();
+    ASSERT_TRUE(shutdown_result.has_value()) << shutdown_result.error().message;
+
+    auto invite = parseMessage(kInviteMsg);
+    auto result = layer.sendRequest(std::move(invite), dest, {});
+
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().code, ErrorCode::kSipTransactionFailed);
+    EXPECT_NE(result.error().message.find("shutting down"), std::string::npos);
+}
+
+TEST_F(TransactionLayerTest, ShutdownClearsTransactionsAndRejectsDuplicateAsShutdown) {
+    TransactionLayer layer(io, transport);
+    auto first = parseMessage(kRegisterMsg);
+
+    EXPECT_CALL(*transport, send(_, _)).Times(1).WillOnce(Return(VoidResult{}));
+
+    auto first_result = layer.sendRequest(std::move(first), dest, {});
+    ASSERT_TRUE(first_result.has_value()) << first_result.error().message;
+
+    auto shutdown_result = layer.shutdown();
+    ASSERT_TRUE(shutdown_result.has_value()) << shutdown_result.error().message;
+
+    auto second = parseMessage(kRegisterMsg);
+    auto second_result = layer.sendRequest(std::move(second), dest, {});
+
+    ASSERT_FALSE(second_result.has_value());
+    EXPECT_EQ(second_result.error().code, ErrorCode::kSipTransactionFailed);
+    EXPECT_NE(second_result.error().message.find("shutting down"), std::string::npos);
+}
+
+TEST_F(TransactionLayerTest, ShutdownCancelsClientTransactionWithoutTimeoutCallback) {
+    auto invite = parseMessage(kInviteMsg);
+    auto txn = std::make_shared<ClientTransaction>(std::move(invite), transport, dest, io);
+    int timeout_count = 0;
+
+    EXPECT_CALL(*transport, send(_, _)).Times(0);
+
+    txn->onTimeout([&timeout_count]() { ++timeout_count; });
+    txn->shutdown();
+    io.poll();
 
     EXPECT_EQ(txn->state(), TransactionState::kTerminated);
-    EXPECT_EQ(timeout_count, 1);
+    EXPECT_EQ(timeout_count, 0);
+}
+
+TEST_F(TransactionLayerTest, ShutdownCancelsServerTransactionWithoutTerminationCallback) {
+    auto invite = parseMessage(kInviteMsg);
+    auto txn = std::make_shared<ServerTransaction>(std::move(invite), transport, source, io);
+    int terminated_count = 0;
+
+    txn->onTerminated([&terminated_count]() { ++terminated_count; });
+    txn->shutdown();
+    io.poll();
+
+    EXPECT_EQ(txn->state(), TransactionState::kTerminated);
+    EXPECT_EQ(terminated_count, 0);
 }
 
 } // namespace

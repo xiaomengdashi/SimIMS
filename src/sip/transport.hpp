@@ -3,15 +3,9 @@
 #include "common/types.hpp"
 
 #include <boost/asio/io_context.hpp>
-#include <boost/asio/ip/tcp.hpp>
-#include <boost/asio/ip/udp.hpp>
-#include <array>
-#include <atomic>
 #include <functional>
 #include <memory>
-#include <mutex>
 #include <string>
-#include <unordered_map>
 
 namespace ims::sip {
 
@@ -45,16 +39,12 @@ public:
     auto localEndpoint() const -> Endpoint override;
 
 private:
-    void doReceive();
+    struct State;
 
-    boost::asio::io_context& io_;
-    boost::asio::ip::udp::socket socket_;
-    boost::asio::ip::udp::endpoint local_ep_;
-    boost::asio::ip::udp::endpoint remote_ep_;
-    std::array<char, 65536> recv_buffer_;
-    MessageCallback on_message_;
-    std::mutex socket_mutex_;
-    std::atomic<bool> running_{false};
+    void doReceive();
+    static void doReceive(std::shared_ptr<State> state);
+
+    std::shared_ptr<State> state_;
 };
 
 class TcpTransport : public ITransport {
@@ -70,21 +60,22 @@ public:
 
 private:
     struct Connection;
+    struct State;
 
     void doAccept();
-    void handleIncomingMessage(const std::string& raw, const Endpoint& src);
+    static void doAccept(std::shared_ptr<State> state);
+    static void handleIncomingMessage(const std::shared_ptr<State>& state,
+                                      const std::string& raw,
+                                      const Endpoint& src);
     auto getOrCreateConnection(const Endpoint& dest) -> Result<std::shared_ptr<Connection>>;
-    void unregisterConnection(const Endpoint& endpoint, const Connection* connection);
+    static auto getOrCreateConnection(const std::shared_ptr<State>& state,
+                                      const Endpoint& dest) -> Result<std::shared_ptr<Connection>>;
+    static void unregisterConnection(const std::shared_ptr<State>& state,
+                                     const Endpoint& endpoint,
+                                     const Connection* connection);
     static auto endpointKey(const Endpoint& endpoint) -> std::string;
 
-    boost::asio::io_context& io_;
-    boost::asio::ip::tcp::acceptor acceptor_;
-    boost::asio::ip::tcp::endpoint local_ep_;
-    MessageCallback on_message_;
-
-    std::mutex connections_mutex_;
-    std::unordered_map<std::string, std::shared_ptr<Connection>> connections_;
-    std::atomic<bool> running_{false};
+    std::shared_ptr<State> state_;
 };
 
 class DualTransport : public ITransport {
@@ -99,9 +90,9 @@ public:
     auto localEndpoint() const -> Endpoint override;
 
 private:
-    std::shared_ptr<UdpTransport> udp_;
-    std::shared_ptr<TcpTransport> tcp_;
-    MessageCallback on_message_;
+    struct State;
+
+    std::shared_ptr<State> state_;
 };
 
 } // namespace ims::sip

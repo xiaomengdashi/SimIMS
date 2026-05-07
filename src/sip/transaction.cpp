@@ -176,6 +176,15 @@ void ServerTransaction::onTerminated(std::function<void()> cb) {
     on_terminated_ = std::move(cb);
 }
 
+void ServerTransaction::shutdown() {
+    std::lock_guard lock(mutex_);
+    state_ = TransactionState::kTerminated;
+    termination_notified_ = true;
+    on_terminated_ = nullptr;
+    timer_j_.cancel();
+    timer_h_.cancel();
+}
+
 void ServerTransaction::startTimers(int final_response_code) {
     const bool is_invite = (request_.method() == "INVITE");
     auto self = shared_from_this();
@@ -260,21 +269,18 @@ auto ClientTransaction::branch() const -> const std::string& {
     return branch_;
 }
 
-void ClientTransaction::start() {
+auto ClientTransaction::start() -> VoidResult {
     auto result = transport_->send(request_, dest_);
     if (!result) {
-        std::function<void()> on_timeout;
         {
             std::lock_guard lock(mutex_);
             state_ = TransactionState::kTerminated;
-            on_timeout = on_timeout_;
+            timer_a_.cancel();
+            timer_b_.cancel();
         }
 
         IMS_LOG_ERROR("Failed to send request: {}", result.error().message);
-        if (on_timeout) {
-            on_timeout();
-        }
-        return;
+        return std::unexpected(result.error());
     }
 
     auto transport = dest_.transport;
@@ -326,6 +332,8 @@ void ClientTransaction::start() {
             });
         }
     }
+
+    return {};
 }
 
 void ClientTransaction::onResponse(ResponseCallback cb) {
@@ -336,6 +344,15 @@ void ClientTransaction::onResponse(ResponseCallback cb) {
 void ClientTransaction::onTimeout(std::function<void()> cb) {
     std::lock_guard lock(mutex_);
     on_timeout_ = std::move(cb);
+}
+
+void ClientTransaction::shutdown() {
+    std::lock_guard lock(mutex_);
+    state_ = TransactionState::kTerminated;
+    on_response_ = nullptr;
+    on_timeout_ = nullptr;
+    timer_a_.cancel();
+    timer_b_.cancel();
 }
 
 bool ClientTransaction::matches(const SipMessage& response) const {
@@ -414,14 +431,25 @@ void ClientTransaction::retransmit() {
 
 TransactionLayer::TransactionLayer(boost::asio::io_context& io, std::shared_ptr<ITransport> transport)
     : io_(io)
-    , transport_(std::move(transport)) {}
+    , transport_(std::move(transport))
+    , state_(std::make_shared<SharedState>()) {}
+
+TransactionLayer::~TransactionLayer() {
+    (void)shutdown();
+}
 
 void TransactionLayer::setRequestHandler(RequestHandler handler) {
-    request_handler_ = std::move(handler);
+    std::lock_guard lock(state_->mutex);
+    state_->request_handler = std::move(handler);
 }
 
 auto TransactionLayer::sendRequest(SipMessage request, const Endpoint& dest,
                                    ClientTransaction::ResponseCallback on_response) -> Result<std::string> {
+    if (state_->shutting_down.load(std::memory_order_acquire)) {
+        return std::unexpected(ErrorInfo{
+            ErrorCode::kSipTransactionFailed, "Transaction layer is shutting down"});
+    }
+
     auto branch = request.viaBranch();
     if (branch.empty()) {
         return std::unexpected(ErrorInfo{
@@ -433,38 +461,59 @@ auto TransactionLayer::sendRequest(SipMessage request, const Endpoint& dest,
 
     auto txn = std::make_shared<ClientTransaction>(
         std::move(request), transport_, dest, io_);
-    txn->onResponse([this, key, cb = std::move(on_response)](const SipMessage& response) {
+    auto state = state_;
+    txn->onResponse([state, key, cb = std::move(on_response)](const SipMessage& response) {
+        if (state->shutting_down.load(std::memory_order_acquire)) {
+            return;
+        }
         if (cb) {
             cb(response);
         }
         if (response.statusCode() >= 200) {
-            std::lock_guard lock(mutex_);
-            client_txns_.erase(key);
+            std::lock_guard lock(state->mutex);
+            state->client_txns.erase(key);
         }
     });
-    txn->onTimeout([this, key]() {
-        std::lock_guard lock(mutex_);
-        client_txns_.erase(key);
+    txn->onTimeout([state, key]() {
+        if (state->shutting_down.load(std::memory_order_acquire)) {
+            return;
+        }
+        std::lock_guard lock(state->mutex);
+        state->client_txns.erase(key);
     });
 
     {
-        std::lock_guard lock(mutex_);
-        if (client_txns_.contains(key)) {
+        std::lock_guard lock(state_->mutex);
+        if (state_->shutting_down.load(std::memory_order_acquire)) {
+            return std::unexpected(ErrorInfo{
+                ErrorCode::kSipTransactionFailed, "Transaction layer is shutting down"});
+        }
+        if (state_->client_txns.contains(key)) {
             IMS_LOG_WARN("Duplicate client transaction key={}, method={}", key, method);
             return std::unexpected(ErrorInfo{
                 ErrorCode::kSipTransactionFailed,
                 std::format("Duplicate client transaction key {}", key)});
         }
-        client_txns_.emplace(key, txn);
+        state_->client_txns.emplace(key, txn);
     }
 
     IMS_LOG_INFO("Created client transaction key={} dest={}:{} method={}",
                  key, dest.address, dest.port, method);
-    txn->start();
+    auto start_result = txn->start();
+    if (!start_result) {
+        std::lock_guard lock(state_->mutex);
+        state_->client_txns.erase(key);
+        return std::unexpected(start_result.error());
+    }
     return key;
 }
 
 void TransactionLayer::processMessage(SipMessage msg, Endpoint source) {
+    if (state_->shutting_down.load(std::memory_order_acquire)) {
+        IMS_LOG_DEBUG("Dropping SIP message while transaction layer is shutting down");
+        return;
+    }
+
     if (msg.isResponse()) {
         auto txn = findClientTransaction(msg);
         if (txn) {
@@ -477,9 +526,9 @@ void TransactionLayer::processMessage(SipMessage msg, Endpoint source) {
             auto ack_invite_key = msg.viaBranch() + ":INVITE";
             std::shared_ptr<ServerTransaction> invite_txn;
             {
-                std::lock_guard lock(mutex_);
-                auto it = server_txns_.find(ack_invite_key);
-                if (it != server_txns_.end()) {
+                std::lock_guard lock(state_->mutex);
+                auto it = state_->server_txns.find(ack_invite_key);
+                if (it != state_->server_txns.end()) {
                     invite_txn = it->second;
                 }
             }
@@ -493,9 +542,9 @@ void TransactionLayer::processMessage(SipMessage msg, Endpoint source) {
 
         std::shared_ptr<ServerTransaction> existing_txn;
         {
-            std::lock_guard lock(mutex_);
-            auto it = server_txns_.find(key);
-            if (it != server_txns_.end()) {
+            std::lock_guard lock(state_->mutex);
+            auto it = state_->server_txns.find(key);
+            if (it != state_->server_txns.end()) {
                 existing_txn = it->second;
             }
         }
@@ -512,21 +561,55 @@ void TransactionLayer::processMessage(SipMessage msg, Endpoint source) {
         auto txn = std::make_shared<ServerTransaction>(
             std::move(msg), transport_, std::move(source), io_);
 
-        txn->onTerminated([this, key]() {
-            std::lock_guard lock(mutex_);
-            server_txns_.erase(key);
+        auto state = state_;
+        txn->onTerminated([state, key]() {
+            if (state->shutting_down.load(std::memory_order_acquire)) {
+                return;
+            }
+            std::lock_guard lock(state->mutex);
+            state->server_txns.erase(key);
             IMS_LOG_DEBUG("Server transaction terminated, key={}", key);
         });
 
         {
-            std::lock_guard lock(mutex_);
-            server_txns_[key] = txn;
+            std::lock_guard lock(state_->mutex);
+            if (state_->shutting_down.load(std::memory_order_acquire)) {
+                return;
+            }
+            state_->server_txns[key] = txn;
         }
 
-        if (request_handler_) {
-            request_handler_(txn);
+        RequestHandler request_handler;
+        {
+            std::lock_guard lock(state_->mutex);
+            request_handler = state_->request_handler;
+        }
+        if (request_handler) {
+            request_handler(txn);
         }
     }
+}
+
+auto TransactionLayer::shutdown() -> VoidResult {
+    state_->shutting_down.store(true, std::memory_order_release);
+
+    std::unordered_map<std::string, std::shared_ptr<ClientTransaction>> client_txns;
+    std::unordered_map<std::string, std::shared_ptr<ServerTransaction>> server_txns;
+    {
+        std::lock_guard lock(state_->mutex);
+        client_txns = std::move(state_->client_txns);
+        server_txns = std::move(state_->server_txns);
+        state_->request_handler = nullptr;
+    }
+
+    for (const auto& [_, txn] : client_txns) {
+        txn->shutdown();
+    }
+    for (const auto& [_, txn] : server_txns) {
+        txn->shutdown();
+    }
+
+    return {};
 }
 
 auto TransactionLayer::findClientTransaction(const SipMessage& response)
@@ -538,10 +621,10 @@ auto TransactionLayer::findClientTransaction(const SipMessage& response)
         IMS_LOG_INFO("Response candidate key={}", key);
     }
 
-    std::lock_guard lock(mutex_);
+    std::lock_guard lock(state_->mutex);
     for (const auto& key : keys) {
-        auto it = client_txns_.find(key);
-        if (it != client_txns_.end()) {
+        auto it = state_->client_txns.find(key);
+        if (it != state_->client_txns.end()) {
             IMS_LOG_INFO("Matched client transaction key={}", key);
             return it->second;
         }

@@ -172,7 +172,11 @@ auto DigestAuthProvider::verifyAuthorization(const ims::sip::SipMessage& request
 
     {
         std::lock_guard lock(mutex_);
-        pending_auth_.erase(key);
+        auto it = pending_auth_.find(key);
+        if (it == pending_auth_.end() || it->second.nonce != pending.nonce) {
+            return std::unexpected(ErrorInfo{ErrorCode::kDiameterAuthFailed, "no pending auth state"});
+        }
+        pending_auth_.erase(it);
     }
 
     return AuthVerificationResult{

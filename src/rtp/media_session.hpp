@@ -18,6 +18,12 @@ struct MediaSessionKey {
     auto operator==(const MediaSessionKey&) const -> bool = default;
 };
 
+enum class MediaSessionLifecycle {
+    kEarly,
+    kEstablished,
+    kTerminating,
+};
+
 struct MediaSessionKeyHash {
     auto operator()(const MediaSessionKey& key) const -> std::size_t;
 };
@@ -29,6 +35,19 @@ struct MediaSessionState {
     std::string caller_sdp;
     std::string callee_sdp;
     TimePoint created;
+    bool qos_active = false;
+    MediaSessionLifecycle lifecycle = MediaSessionLifecycle::kEarly;
+};
+
+struct InviteResponseMediaUpdate {
+    MediaSessionKey key;
+    MediaSession session;
+};
+
+struct MediaTerminationPlan {
+    MediaSessionKey key;
+    MediaSession session;
+    std::string rx_session_id;
     bool qos_active = false;
 };
 
@@ -47,6 +66,10 @@ public:
     void updateCallerSdp(const std::string& call_id, const std::string& sdp);
     void updateCalleeSdp(const MediaSessionKey& key, const std::string& sdp);
     void updateCalleeSdp(const std::string& call_id, const std::string& sdp);
+    auto beginInviteResponse(const MediaSessionKey& response_key) -> std::optional<InviteResponseMediaUpdate>;
+    void commitInviteResponse(const MediaSessionKey& key, const std::string& callee_sdp);
+    auto markTerminating(const MediaSessionKey& key) -> std::optional<MediaTerminationPlan>;
+    void completeTermination(const MediaSessionKey& key);
     void setRxSession(const MediaSessionKey& key, const std::string& rx_session_id);
     void setRxSession(const std::string& call_id, const std::string& rx_session_id);
     void setQosActive(const MediaSessionKey& key, bool active);

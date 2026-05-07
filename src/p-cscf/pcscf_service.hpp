@@ -45,6 +45,7 @@ private:
     void sanitizeForUeEgress(ims::sip::SipMessage& request);
     auto mediaKeyForRequest(const ims::sip::SipMessage& request) const -> ims::media::MediaSessionKey;
     auto mediaKeyForResponse(const ims::sip::SipMessage& response) const -> ims::media::MediaSessionKey;
+    void terminateMediaForRequest(const ims::sip::SipMessage& request);
 
     void onRegister(std::shared_ptr<ims::sip::ServerTransaction> txn,
                     ims::sip::SipMessage& request);

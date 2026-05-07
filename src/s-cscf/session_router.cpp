@@ -275,15 +275,24 @@ void SessionRouter::handleAck(const ims::sip::SipMessage& request,
         std::lock_guard lock(sessions_mutex_);
         auto session = findSessionForRequestLocked(request);
         if (!session) {
-            IMS_LOG_WARN("No session found for ACK, Call-ID={} from_tag={} to_tag={}", call_id, request.fromTag(), request.toTag());
-            return;
+            auto initial = findInitialSessionLocked(call_id, request.fromTag());
+            if (!initial || !(*initial)->second.cancel_seen) {
+                IMS_LOG_WARN("No session found for ACK, Call-ID={} from_tag={} to_tag={}", call_id, request.fromTag(), request.toTag());
+                return;
+            }
+            dest = (*initial)->second.callee_endpoint;
+            eraseCanceledSessionsLocked((*initial)->first);
+        } else {
+            auto* resolved = resolveInDialogDestination(request, (*session)->second);
+            if (!resolved) {
+                IMS_LOG_WARN("Unable to resolve ACK destination, Call-ID={} from_tag={} to_tag={}", call_id, request.fromTag(), request.toTag());
+                return;
+            }
+            dest = *resolved;
+            if ((*session)->second.cancel_seen) {
+                eraseCanceledSessionsLocked((*session)->first);
+            }
         }
-        auto* resolved = resolveInDialogDestination(request, (*session)->second);
-        if (!resolved) {
-            IMS_LOG_WARN("Unable to resolve ACK destination, Call-ID={} from_tag={} to_tag={}", call_id, request.fromTag(), request.toTag());
-            return;
-        }
-        dest = *resolved;
     }
 
     proxy_.processRouteHeaders(*fwd_ack);
@@ -365,9 +374,9 @@ void SessionRouter::handleCancel(const ims::sip::SipMessage& request,
             IMS_LOG_WARN("No session found for CANCEL, Call-ID={} from_tag={} to_tag={}", call_id, request.fromTag(), request.toTag());
             return;
         }
+        (*found)->second.cancel_seen = true;
         session = (*found)->second;
         session_key = (*found)->first;
-        eraseSessionLocked(session_key);
     }
 
     auto fwd_cancel = proxy_.buildForwardedCancel(request, {
@@ -475,6 +484,10 @@ auto SessionRouter::findCancelSessionLocked(const ims::sip::SipMessage& request)
 auto SessionRouter::resolveInDialogDestination(const ims::sip::SipMessage& request,
                                                const SessionInfo& session) const
     -> const ims::sip::Endpoint* {
+    if (session.cancel_seen && session.callee_tag.empty()
+        && request.fromTag() == session.caller_tag && request.toTag().empty()) {
+        return &session.callee_endpoint;
+    }
     if (!session.callee_tag.empty() && request.fromTag() == session.caller_tag && request.toTag() == session.callee_tag) {
         return &session.callee_endpoint;
     }
@@ -501,6 +514,18 @@ void SessionRouter::recordInviteResponseDialog(const std::string& call_id,
     auto dialog = (*initial)->second;
     dialog.callee_tag = callee_tag;
     sessions_[dialog_key] = std::move(dialog);
+}
+
+void SessionRouter::eraseCanceledSessionsLocked(const DialogKey& key) {
+    auto caller_tag = key.caller_tag;
+    if (caller_tag.empty()) {
+        caller_tag = key.callee_tag;
+    }
+
+    eraseSessionLocked(DialogKey{.call_id = key.call_id, .caller_tag = caller_tag});
+    if (!key.callee_tag.empty()) {
+        eraseSessionLocked(key);
+    }
 }
 
 void SessionRouter::eraseSessionLocked(const DialogKey& key) {

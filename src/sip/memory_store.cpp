@@ -71,20 +71,21 @@ auto MemoryRegistrationStore::lookup(std::string_view impu)
     return it->second;
 }
 
-auto MemoryRegistrationStore::upsertContact(std::string_view impu,
-                                            const ContactBindingSelector& selector,
-                                            const ContactBinding& contact,
-                                            std::string_view impi,
-                                            std::string_view scscf_uri,
-                                            RegistrationBinding::State state,
-                                            bool require_existing_match,
-                                            bool reject_older_cseq) -> Result<bool>
+auto MemoryRegistrationStore::upsertContactLocked(
+    std::unordered_map<std::string, RegistrationBinding>& bindings,
+    std::string_view impu,
+    const ContactBindingSelector& selector,
+    const ContactBinding& contact,
+    std::string_view impi,
+    std::string_view scscf_uri,
+    RegistrationBinding::State state,
+    bool require_existing_match,
+    bool reject_older_cseq) -> bool
 {
-    std::lock_guard lock(mutex_);
     auto key = std::string(impu);
-    auto it = pruneExpiredLocked(impu);
+    auto it = bindings.find(key);
 
-    if (it == bindings_.end()) {
+    if (it == bindings.end()) {
         if (require_existing_match) {
             return false;
         }
@@ -96,7 +97,7 @@ auto MemoryRegistrationStore::upsertContact(std::string_view impu,
             .contacts = {},
             .state = state,
         };
-        auto [inserted_it, inserted] = bindings_.emplace(key, std::move(binding));
+        auto [inserted_it, inserted] = bindings.emplace(key, std::move(binding));
         (void)inserted;
         it = inserted_it;
     }
@@ -133,12 +134,13 @@ auto MemoryRegistrationStore::upsertContact(std::string_view impu,
     return true;
 }
 
-auto MemoryRegistrationStore::removeContact(std::string_view impu,
-                                            const ContactBindingSelector& selector) -> Result<bool>
+auto MemoryRegistrationStore::removeContactLocked(
+    std::unordered_map<std::string, RegistrationBinding>& bindings,
+    std::string_view impu,
+    const ContactBindingSelector& selector) -> bool
 {
-    std::lock_guard lock(mutex_);
-    auto it = pruneExpiredLocked(impu);
-    if (it == bindings_.end()) {
+    auto it = bindings.find(std::string(impu));
+    if (it == bindings.end()) {
         return false;
     }
 
@@ -153,12 +155,101 @@ auto MemoryRegistrationStore::removeContact(std::string_view impu,
     }
 
     if (binding.contacts.empty()) {
-        bindings_.erase(it);
+        bindings.erase(it);
     } else {
         binding.state = RegistrationBinding::State::kRegistered;
     }
 
     return true;
+}
+
+auto MemoryRegistrationStore::upsertContact(std::string_view impu,
+                                            const ContactBindingSelector& selector,
+                                            const ContactBinding& contact,
+                                            std::string_view impi,
+                                            std::string_view scscf_uri,
+                                            RegistrationBinding::State state,
+                                            bool require_existing_match,
+                                            bool reject_older_cseq) -> Result<bool>
+{
+    std::lock_guard lock(mutex_);
+    pruneExpiredLocked(impu);
+    return upsertContactLocked(bindings_, impu, selector, contact, impi, scscf_uri, state,
+                               require_existing_match, reject_older_cseq);
+}
+
+auto MemoryRegistrationStore::removeContact(std::string_view impu,
+                                            const ContactBindingSelector& selector) -> Result<bool>
+{
+    std::lock_guard lock(mutex_);
+    pruneExpiredLocked(impu);
+    return removeContactLocked(bindings_, impu, selector);
+}
+
+auto MemoryRegistrationStore::upsertContacts(const ContactBatchUpsert& batch) -> Result<size_t>
+{
+    std::lock_guard lock(mutex_);
+    for (const auto& impu : batch.impus) {
+        pruneExpiredLocked(impu);
+    }
+
+    if (batch.require_existing_match) {
+        for (const auto& impu : batch.impus) {
+            auto it = bindings_.find(impu);
+            if (it == bindings_.end()) {
+                return size_t{0};
+            }
+            const auto& contacts = it->second.contacts;
+            const auto existing = std::find_if(contacts.begin(), contacts.end(),
+                                               [&](const ContactBinding& candidate) {
+                                                   return matchesSelector(candidate, batch.selector);
+                                               });
+            if (existing == contacts.end()) {
+                return size_t{0};
+            }
+        }
+    }
+
+    size_t changed = 0;
+    for (const auto& impu : batch.impus) {
+        if (!upsertContactLocked(bindings_, impu, batch.selector, batch.contact, batch.impi,
+                                 batch.scscf_uri, batch.state, batch.require_existing_match,
+                                 batch.reject_older_cseq)) {
+            return size_t{0};
+        }
+        ++changed;
+    }
+
+    return changed;
+}
+
+auto MemoryRegistrationStore::removeContacts(const ContactBatchRemove& batch) -> Result<size_t>
+{
+    std::lock_guard lock(mutex_);
+    for (const auto& impu : batch.impus) {
+        pruneExpiredLocked(impu);
+    }
+
+    size_t removed = 0;
+    for (const auto& impu : batch.impus) {
+        if (removeContactLocked(bindings_, impu, batch.selector)) {
+            ++removed;
+        }
+    }
+
+    return removed;
+}
+
+auto MemoryRegistrationStore::removeBindings(const std::unordered_set<std::string>& impus) -> Result<size_t>
+{
+    std::lock_guard lock(mutex_);
+    size_t removed = 0;
+    for (const auto& impu : impus) {
+        if (bindings_.erase(impu) > 0) {
+            ++removed;
+        }
+    }
+    return removed;
 }
 
 auto MemoryRegistrationStore::remove(std::string_view impu) -> VoidResult {

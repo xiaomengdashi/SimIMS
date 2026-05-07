@@ -3,6 +3,8 @@
 #include "diameter/ipcf_client.hpp"
 #include "common/config.hpp"
 
+#include <atomic>
+
 namespace ims::diameter {
 
 /// Stub PCF/PCRF client for development/testing.
@@ -17,7 +19,7 @@ public:
 private:
     PcfSettings config_;
     AsrHandler asr_handler_;
-    uint32_t session_counter_ = 0;
+    std::atomic<uint64_t> session_counter_{0};
 };
 
 } // namespace ims::diameter
