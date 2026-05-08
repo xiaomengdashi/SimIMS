@@ -12,6 +12,8 @@ namespace ims::scscf {
 
 namespace {
 
+constexpr auto kInviteSessionTtl = std::chrono::minutes(3);
+
 auto isUsableDestination(const ims::sip::Endpoint& endpoint) -> bool {
     return !endpoint.address.empty() && endpoint.address != "0.0.0.0";
 }
@@ -80,26 +82,30 @@ void SessionRouter::handleInvite(const ims::sip::SipMessage& request,
     std::string callee_impu;
 
     if (in_dialog) {
-        std::lock_guard lock(sessions_mutex_);
-        auto session = findSessionForRequestLocked(request);
-        if (!session) {
-            IMS_LOG_WARN("No matching dialog found for in-dialog INVITE, Call-ID={} from_tag={} to_tag={}",
-                         call_id, request.fromTag(), request.toTag());
-            auto resp = ims::sip::createResponse(request, 481, "Call/Transaction Does Not Exist");
+        int error_code = 0;
+        std::string error_reason;
+        {
+            std::lock_guard lock(sessions_mutex_);
+            auto session = findSessionForRequestLocked(request);
+            if (!session) {
+                IMS_LOG_WARN("No matching dialog found for in-dialog INVITE, Call-ID={} from_tag={} to_tag={}",
+                             call_id, request.fromTag(), request.toTag());
+                error_code = 481;
+                error_reason = "Call/Transaction Does Not Exist";
+            } else if (auto* resolved = resolveInDialogDestination(request, (*session)->second)) {
+                dest = *resolved;
+            } else {
+                IMS_LOG_WARN("Unable to resolve in-dialog INVITE destination, Call-ID={} from_tag={} to_tag={}",
+                             call_id, request.fromTag(), request.toTag());
+                error_code = 481;
+                error_reason = "Call/Transaction Does Not Exist";
+            }
+        }
+        if (error_code != 0) {
+            auto resp = ims::sip::createResponse(request, error_code, error_reason);
             if (resp) sendResponse(txn, std::move(*resp), "S-CSCF error");
             return;
         }
-
-        auto* resolved = resolveInDialogDestination(request, (*session)->second);
-        if (!resolved) {
-            IMS_LOG_WARN("Unable to resolve in-dialog INVITE destination, Call-ID={} from_tag={} to_tag={}",
-                         call_id, request.fromTag(), request.toTag());
-            auto resp = ims::sip::createResponse(request, 481, "Call/Transaction Does Not Exist");
-            if (resp) sendResponse(txn, std::move(*resp), "S-CSCF error");
-            return;
-        }
-
-        dest = *resolved;
     } else {
         auto binding = lookupCallee(request_uri);
         if (!binding) {
@@ -159,15 +165,21 @@ void SessionRouter::handleInvite(const ims::sip::SipMessage& request,
 
     if (!in_dialog) {
         std::lock_guard lock(sessions_mutex_);
+        auto now = std::chrono::steady_clock::now();
+        purgeExpiredSessionsLocked(now);
         DialogKey key{.call_id = call_id, .caller_tag = from_tag};
         auto& session = sessions_[key];
         session.call_id = call_id;
         session.caller_tag = from_tag;
+        session.callee_tag.clear();
         session.caller_impu = from;
         session.caller_endpoint = txn->source();
         session.callee_impu = callee_impu;
         session.callee_endpoint = dest;
         session.callee_invite_branch = invite_branch;
+        session.created = now;
+        session.last_updated = now;
+        session.established = false;
         session.bye_seen = false;
     }
 
@@ -183,8 +195,8 @@ void SessionRouter::handleInvite(const ims::sip::SipMessage& request,
     auto send_result = sip_stack_.sendRequest(std::move(*fwd_request), dest,
         [this, txn, call_id, from_tag, in_dialog](const ims::sip::SipMessage& response) {
             IMS_LOG_DEBUG("Got response {} for INVITE Call-ID={}", response.statusCode(), call_id);
-            if (!in_dialog && !response.toTag().empty()) {
-                recordInviteResponseDialog(call_id, from_tag, response.toTag());
+            if (!in_dialog) {
+                handleInviteResponseState(call_id, from_tag, response);
             }
             auto upstream = proxy_.forwardResponseUpstream(response, txn);
             if (!upstream) {
@@ -210,25 +222,29 @@ void SessionRouter::handleBye(const ims::sip::SipMessage& request,
 
     ims::sip::Endpoint dest;
     DialogKey session_key;
+    int error_code = 0;
+    std::string error_reason;
     {
         std::lock_guard lock(sessions_mutex_);
         auto session = findSessionForRequestLocked(request);
         if (!session) {
             IMS_LOG_WARN("No session found for BYE, Call-ID={} from_tag={} to_tag={}", call_id, request.fromTag(), request.toTag());
-            auto resp = ims::sip::createResponse(request, 481, "Call/Transaction Does Not Exist");
-            if (resp) sendResponse(txn, std::move(*resp), "S-CSCF error");
-            return;
-        }
-        auto* resolved = resolveInDialogDestination(request, (*session)->second);
-        if (!resolved) {
+            error_code = 481;
+            error_reason = "Call/Transaction Does Not Exist";
+        } else if (auto* resolved = resolveInDialogDestination(request, (*session)->second)) {
+            dest = *resolved;
+            (*session)->second.bye_seen = true;
+            session_key = (*session)->first;
+        } else {
             IMS_LOG_WARN("Unable to resolve BYE destination, Call-ID={} from_tag={} to_tag={}", call_id, request.fromTag(), request.toTag());
-            auto resp = ims::sip::createResponse(request, 481, "Call/Transaction Does Not Exist");
-            if (resp) sendResponse(txn, std::move(*resp), "S-CSCF error");
-            return;
+            error_code = 481;
+            error_reason = "Call/Transaction Does Not Exist";
         }
-        dest = *resolved;
-        (*session)->second.bye_seen = true;
-        session_key = (*session)->first;
+    }
+    if (error_code != 0) {
+        auto resp = ims::sip::createResponse(request, error_code, error_reason);
+        if (resp) sendResponse(txn, std::move(*resp), "S-CSCF error");
+        return;
     }
 
     proxy_.processRouteHeaders(*fwd_bye);
@@ -315,23 +331,27 @@ void SessionRouter::handlePrack(const ims::sip::SipMessage& request,
     }
 
     ims::sip::Endpoint dest;
+    int error_code = 0;
+    std::string error_reason;
     {
         std::lock_guard lock(sessions_mutex_);
         auto session = findSessionForRequestLocked(request);
         if (!session) {
             IMS_LOG_WARN("No session found for PRACK, Call-ID={} from_tag={} to_tag={}", call_id, request.fromTag(), request.toTag());
-            auto resp = ims::sip::createResponse(request, 481, "Call/Transaction Does Not Exist");
-            if (resp) sendResponse(txn, std::move(*resp), "S-CSCF error");
-            return;
-        }
-        auto* resolved = resolveInDialogDestination(request, (*session)->second);
-        if (!resolved) {
+            error_code = 481;
+            error_reason = "Call/Transaction Does Not Exist";
+        } else if (auto* resolved = resolveInDialogDestination(request, (*session)->second)) {
+            dest = *resolved;
+        } else {
             IMS_LOG_WARN("Unable to resolve PRACK destination, Call-ID={} from_tag={} to_tag={}", call_id, request.fromTag(), request.toTag());
-            auto resp = ims::sip::createResponse(request, 481, "Call/Transaction Does Not Exist");
-            if (resp) sendResponse(txn, std::move(*resp), "S-CSCF error");
-            return;
+            error_code = 481;
+            error_reason = "Call/Transaction Does Not Exist";
         }
-        dest = *resolved;
+    }
+    if (error_code != 0) {
+        auto resp = ims::sip::createResponse(request, error_code, error_reason);
+        if (resp) sendResponse(txn, std::move(*resp), "S-CSCF error");
+        return;
     }
 
     proxy_.processRouteHeaders(*fwd_prack);
@@ -501,19 +521,88 @@ void SessionRouter::recordInviteResponseDialog(const std::string& call_id,
                                                 const std::string& caller_tag,
                                                 const std::string& callee_tag) {
     std::lock_guard lock(sessions_mutex_);
-    auto initial = findInitialSessionLocked(call_id, caller_tag);
-    if (!initial) {
+    auto now = std::chrono::steady_clock::now();
+    purgeExpiredSessionsLocked(now);
+    recordInviteResponseDialogLocked(call_id, caller_tag, callee_tag, false, now);
+}
+
+void SessionRouter::handleInviteResponseState(const std::string& call_id,
+                                              const std::string& caller_tag,
+                                              const ims::sip::SipMessage& response) {
+    auto status = response.statusCode();
+    auto callee_tag = response.toTag();
+    std::lock_guard lock(sessions_mutex_);
+    auto now = std::chrono::steady_clock::now();
+    purgeExpiredSessionsLocked(now);
+
+    if (status == 100) {
         return;
     }
+    if (status > 100 && status < 200 && !callee_tag.empty()) {
+        recordInviteResponseDialogLocked(call_id, caller_tag, callee_tag, false, now);
+        return;
+    }
+    if (status >= 200 && status < 300) {
+        if (!callee_tag.empty()) {
+            recordInviteResponseDialogLocked(call_id, caller_tag, callee_tag, true, now);
+        }
+        eraseSessionLocked(DialogKey{.call_id = call_id, .caller_tag = caller_tag});
+        return;
+    }
+    if (status >= 300 && status <= 699) {
+        eraseInviteSessionsLocked(call_id, caller_tag);
+    }
+}
 
+void SessionRouter::recordInviteResponseDialogLocked(const std::string& call_id,
+                                                     const std::string& caller_tag,
+                                                     const std::string& callee_tag,
+                                                     bool established,
+                                                     std::chrono::steady_clock::time_point now) {
     DialogKey dialog_key{
         .call_id = call_id,
         .caller_tag = caller_tag,
         .callee_tag = callee_tag,
     };
+    if (auto dialog = sessions_.find(dialog_key); dialog != sessions_.end()) {
+        dialog->second.established = dialog->second.established || established;
+        dialog->second.last_updated = now;
+        return;
+    }
+
+    auto initial = findInitialSessionLocked(call_id, caller_tag);
+    if (!initial) {
+        return;
+    }
+
     auto dialog = (*initial)->second;
     dialog.callee_tag = callee_tag;
+    dialog.last_updated = now;
+    dialog.established = established;
     sessions_[dialog_key] = std::move(dialog);
+}
+
+void SessionRouter::eraseInviteSessionsLocked(const std::string& call_id,
+                                              const std::string& caller_tag) {
+    for (auto it = sessions_.begin(); it != sessions_.end();) {
+        if (it->first.call_id == call_id
+            && it->first.caller_tag == caller_tag
+            && (it->first.callee_tag.empty() || !it->second.established)) {
+            it = sessions_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+void SessionRouter::purgeExpiredSessionsLocked(std::chrono::steady_clock::time_point now) {
+    for (auto it = sessions_.begin(); it != sessions_.end();) {
+        if (!it->second.established && now - it->second.last_updated >= kInviteSessionTtl) {
+            it = sessions_.erase(it);
+        } else {
+            ++it;
+        }
+    }
 }
 
 void SessionRouter::eraseCanceledSessionsLocked(const DialogKey& key) {

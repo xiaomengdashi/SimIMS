@@ -562,21 +562,43 @@ void TransactionLayer::processMessage(SipMessage msg, Endpoint source) {
             std::move(msg), transport_, std::move(source), io_);
 
         auto state = state_;
-        txn->onTerminated([state, key]() {
+        std::weak_ptr<ServerTransaction> weak_txn = txn;
+        txn->onTerminated([state, key, weak_txn]() {
             if (state->shutting_down.load(std::memory_order_acquire)) {
                 return;
             }
+            auto txn = weak_txn.lock();
+            if (!txn) {
+                return;
+            }
             std::lock_guard lock(state->mutex);
-            state->server_txns.erase(key);
-            IMS_LOG_DEBUG("Server transaction terminated, key={}", key);
+            auto it = state->server_txns.find(key);
+            if (it != state->server_txns.end() && it->second == txn) {
+                state->server_txns.erase(it);
+                IMS_LOG_DEBUG("Server transaction terminated, key={}", key);
+            }
         });
 
+        bool inserted = false;
         {
             std::lock_guard lock(state_->mutex);
             if (state_->shutting_down.load(std::memory_order_acquire)) {
                 return;
             }
-            state_->server_txns[key] = txn;
+            auto [it, did_insert] = state_->server_txns.try_emplace(key, txn);
+            inserted = did_insert;
+            if (!inserted) {
+                existing_txn = it->second;
+            }
+        }
+
+        if (!inserted) {
+            IMS_LOG_DEBUG("Request retransmission raced with server txn creation, key={}", key);
+            auto retransmit_result = existing_txn->retransmitLastResponse();
+            if (!retransmit_result) {
+                IMS_LOG_DEBUG("No cached response to retransmit for key={}", key);
+            }
+            return;
         }
 
         RequestHandler request_handler;

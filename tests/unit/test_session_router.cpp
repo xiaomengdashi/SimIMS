@@ -92,6 +92,25 @@ auto makeRequest(const std::string& method,
     return std::move(*parsed);
 }
 
+auto makeInviteResponse(int status_code,
+                        const std::string& reason,
+                        const std::string& call_id,
+                        const std::string& from_tag,
+                        const std::string& to_tag) -> ims::sip::SipMessage {
+    auto raw = std::format(
+        "SIP/2.0 {} {}\r\n"
+        "Via: SIP/2.0/UDP 127.0.0.1:5090;branch=z9hG4bK-invite\r\n"
+        "From: <sip:alice@ims.example.com>;tag={}\r\n"
+        "To: <sip:bob@ims.example.com>;tag={}\r\n"
+        "Call-ID: {}\r\n"
+        "CSeq: 1 INVITE\r\n"
+        "Content-Length: 0\r\n\r\n",
+        status_code, reason, from_tag, to_tag, call_id);
+    auto parsed = ims::sip::SipMessage::parse(raw);
+    EXPECT_TRUE(parsed.has_value()) << parsed.error().message;
+    return std::move(*parsed);
+}
+
 auto makeTxn(const ims::sip::SipMessage& request,
              const std::shared_ptr<CapturingTransport>& transport,
              boost::asio::io_context& io) -> std::shared_ptr<ims::sip::ServerTransaction> {
@@ -239,6 +258,61 @@ TEST_F(SessionRouterTest, InviteResponseCreatesSeparateDialogWithoutReplacingExi
     ASSERT_TRUE(router->sessions_.contains(key("call-1", "caller", "callee-b")));
     EXPECT_EQ(router->sessions_.at(key("call-1", "caller", "callee-a")).callee_endpoint.port, 5070);
     EXPECT_EQ(router->sessions_.at(key("call-1", "caller", "callee-b")).callee_endpoint.port, 5080);
+}
+
+TEST_F(SessionRouterTest, InviteFinalFailureRemovesInitialAndEarlySessions) {
+    router->sessions_.emplace(key("call-fail", "caller", ""),
+                              makeSession("call-fail", "caller", "", 5070));
+    router->recordInviteResponseDialog("call-fail", "caller", "early-a");
+    router->recordInviteResponseDialog("call-fail", "caller", "early-b");
+
+    auto failure = makeInviteResponse(486, "Busy Here", "call-fail", "caller", "early-a");
+    router->handleInviteResponseState("call-fail", "caller", failure);
+
+    EXPECT_FALSE(router->sessions_.contains(key("call-fail", "caller", "")));
+    EXPECT_FALSE(router->sessions_.contains(key("call-fail", "caller", "early-a")));
+    EXPECT_FALSE(router->sessions_.contains(key("call-fail", "caller", "early-b")));
+}
+
+TEST_F(SessionRouterTest, InviteSuccessCreatesDialogAndClearsInitialSession) {
+    router->sessions_.emplace(key("call-ok", "caller", ""),
+                              makeSession("call-ok", "caller", "", 5070));
+
+    auto success = makeInviteResponse(200, "OK", "call-ok", "caller", "callee");
+    router->handleInviteResponseState("call-ok", "caller", success);
+
+    EXPECT_FALSE(router->sessions_.contains(key("call-ok", "caller", "")));
+    ASSERT_TRUE(router->sessions_.contains(key("call-ok", "caller", "callee")));
+    EXPECT_TRUE(router->sessions_.at(key("call-ok", "caller", "callee")).established);
+}
+
+TEST_F(SessionRouterTest, InviteFinalFailureKeepsEstablishedDialog) {
+    auto established = makeSession("call-mixed", "caller", "callee", 5070);
+    established.established = true;
+    router->sessions_.emplace(key("call-mixed", "caller", "callee"), established);
+    router->sessions_.emplace(key("call-mixed", "caller", ""),
+                              makeSession("call-mixed", "caller", "", 5080));
+    router->recordInviteResponseDialog("call-mixed", "caller", "early");
+
+    auto failure = makeInviteResponse(480, "Temporarily Unavailable", "call-mixed", "caller", "early");
+    router->handleInviteResponseState("call-mixed", "caller", failure);
+
+    ASSERT_TRUE(router->sessions_.contains(key("call-mixed", "caller", "callee")));
+    EXPECT_FALSE(router->sessions_.contains(key("call-mixed", "caller", "")));
+    EXPECT_FALSE(router->sessions_.contains(key("call-mixed", "caller", "early")));
+}
+
+TEST_F(SessionRouterTest, CancelCanStillUseInitialSessionBeforeFinalFailureCleanup) {
+    router->sessions_.emplace(key("call-cancel-before-fail", "caller", ""),
+                              makeSession("call-cancel-before-fail", "caller", "", 5070));
+
+    auto cancel = makeRequest("CANCEL", "call-cancel-before-fail", "caller", "");
+    router->handleCancel(cancel, makeTxn(cancel, transport, io));
+
+    ASSERT_TRUE(router->sessions_.contains(key("call-cancel-before-fail", "caller", "")));
+    EXPECT_TRUE(router->sessions_.at(key("call-cancel-before-fail", "caller", "")).cancel_seen);
+    ASSERT_EQ(transport->sent_destinations.size(), 2u);
+    EXPECT_EQ(transport->sent_destinations[1].port, 5070);
 }
 
 } // namespace

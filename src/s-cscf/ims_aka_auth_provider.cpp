@@ -65,6 +65,8 @@ auto ImsAkaAuthProvider::createChallenge(const ims::sip::SipMessage& request) ->
         };
     };
 
+    std::shared_future<Result<PendingAuth>> in_flight;
+    std::shared_ptr<std::promise<Result<PendingAuth>>> owner_promise;
     {
         std::lock_guard lock(auth_mutex_);
         auto now = std::chrono::steady_clock::now();
@@ -72,6 +74,21 @@ auto ImsAkaAuthProvider::createChallenge(const ims::sip::SipMessage& request) ->
         if (auto it = pending_auth_.find(key); it != pending_auth_.end()) {
             return build_challenge(it->second);
         }
+        if (auto it = in_flight_auth_.find(key); it != in_flight_auth_.end()) {
+            in_flight = it->second;
+        } else {
+            owner_promise = std::make_shared<std::promise<Result<PendingAuth>>>();
+            in_flight = owner_promise->get_future().share();
+            in_flight_auth_.emplace(key, in_flight);
+        }
+    }
+
+    if (!owner_promise) {
+        auto pending = in_flight.get();
+        if (!pending) {
+            return std::unexpected(pending.error());
+        }
+        return build_challenge(*pending);
     }
 
     ims::diameter::MarParams mar{
@@ -81,28 +98,34 @@ auto ImsAkaAuthProvider::createChallenge(const ims::sip::SipMessage& request) ->
         .server_name = std::format("sip:scscf.{}", domain_),
     };
 
-    auto maa = hss_->multimediaAuth(mar);
-    if (!maa) {
-        return std::unexpected(maa.error());
+    Result<PendingAuth> pending_result = [&]() -> Result<PendingAuth> {
+        auto maa = hss_->multimediaAuth(mar);
+        if (!maa) {
+            return std::unexpected(maa.error());
+        }
+
+        return PendingAuth{
+            .vector = maa->auth_vector,
+            .impi = impi,
+            .impu = impu,
+            .scheme = maa->sip_auth_scheme,
+            .expires_at = std::chrono::steady_clock::now() + kPendingAuthTtl,
+        };
+    }();
+
+    {
+        std::lock_guard lock(auth_mutex_);
+        if (pending_result) {
+            pending_auth_[key] = *pending_result;
+        }
+        in_flight_auth_.erase(key);
     }
 
-    std::lock_guard lock(auth_mutex_);
-    auto now = std::chrono::steady_clock::now();
-    purgeExpiredLocked(now);
-    if (auto it = pending_auth_.find(key); it != pending_auth_.end()) {
-        return build_challenge(it->second);
+    owner_promise->set_value(pending_result);
+    if (!pending_result) {
+        return std::unexpected(pending_result.error());
     }
-
-    auto pending = PendingAuth{
-        .vector = maa->auth_vector,
-        .impi = std::move(impi),
-        .impu = std::move(impu),
-        .scheme = maa->sip_auth_scheme,
-        .expires_at = now + kPendingAuthTtl,
-    };
-    auto challenge = build_challenge(pending);
-    pending_auth_[key] = std::move(pending);
-    return challenge;
+    return build_challenge(*pending_result);
 }
 
 auto ImsAkaAuthProvider::verifyAuthorization(const ims::sip::SipMessage& request)

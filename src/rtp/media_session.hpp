@@ -7,6 +7,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace ims::media {
 
@@ -67,7 +68,9 @@ public:
     void updateCalleeSdp(const MediaSessionKey& key, const std::string& sdp);
     void updateCalleeSdp(const std::string& call_id, const std::string& sdp);
     auto beginInviteResponse(const MediaSessionKey& response_key) -> std::optional<InviteResponseMediaUpdate>;
-    void commitInviteResponse(const MediaSessionKey& key, const std::string& callee_sdp);
+    void commitInviteResponse(const MediaSessionKey& key, const std::string& callee_sdp, bool established);
+    auto markInviteFinalSuccess(const MediaSessionKey& winning_key) -> std::vector<MediaTerminationPlan>;
+    auto markInviteFinalFailure(const MediaSessionKey& response_key) -> std::vector<MediaTerminationPlan>;
     auto markTerminating(const MediaSessionKey& key) -> std::optional<MediaTerminationPlan>;
     void completeTermination(const MediaSessionKey& key);
     void setRxSession(const MediaSessionKey& key, const std::string& rx_session_id);
@@ -86,6 +89,8 @@ private:
 
     auto findUniqueByCallIdLocked(const std::string& call_id) -> std::optional<SessionIterator>;
     auto findUniqueByCallIdLocked(const std::string& call_id) const -> std::optional<ConstSessionIterator>;
+    auto ensureInviteResponseSessionLocked(const MediaSessionKey& response_key) -> SessionIterator;
+    auto makeTerminationPlanLocked(SessionIterator it) -> MediaTerminationPlan;
 
     mutable std::mutex mutex_;
     SessionMap sessions_;

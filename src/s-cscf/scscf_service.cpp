@@ -91,6 +91,10 @@ ScscfService::ScscfService(const ims::ScscfConfig& config,
     session_router_ = std::make_unique<SessionRouter>(store_, *sip_stack_, peer_icscf);
 }
 
+ScscfService::~ScscfService() {
+    stop();
+}
+
 auto ScscfService::start() -> VoidResult {
     IMS_LOG_INFO("Starting S-CSCF on {}:{} domain={} auth_mode={} cleanup_interval_ms={}",
                  config_.listen_addr,
@@ -138,6 +142,10 @@ auto ScscfService::start() -> VoidResult {
 }
 
 void ScscfService::stop() {
+    if (stopping_.exchange(true, std::memory_order_acq_rel)) {
+        return;
+    }
+
     IMS_LOG_INFO("Stopping S-CSCF");
     registration_cleanup_timer_.cancel();
     if (reg_event_notifier_) {
@@ -147,6 +155,9 @@ void ScscfService::stop() {
 }
 
 void ScscfService::scheduleRegistrationCleanup() {
+    if (stopping_.load(std::memory_order_acquire)) {
+        return;
+    }
     if (config_.registration_cleanup_interval_ms == 0) {
         IMS_LOG_INFO("Registration cleanup scheduler disabled");
         return;
@@ -158,12 +169,18 @@ void ScscfService::scheduleRegistrationCleanup() {
         if (ec == boost::asio::error::operation_aborted) {
             return;
         }
+        if (stopping_.load(std::memory_order_acquire)) {
+            return;
+        }
         if (ec) {
             IMS_LOG_WARN("Registration cleanup timer error: {}", ec.message());
             scheduleRegistrationCleanup();
             return;
         }
         runRegistrationCleanup();
+        if (stopping_.load(std::memory_order_acquire)) {
+            return;
+        }
         scheduleRegistrationCleanup();
     });
 }

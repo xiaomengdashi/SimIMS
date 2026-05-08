@@ -319,3 +319,70 @@ TEST(MemoryRegistrationStoreAtomicTest, OlderCseqDoesNotOverwriteMatchedContact)
     EXPECT_EQ(lookup->contacts[0].path, "<sip:pcscf.ims.example.com;lr>");
     EXPECT_EQ(lookup->contacts[0].cseq, 5u);
 }
+
+TEST(MemoryRegistrationStoreAtomicTest, BatchRemoveRejectsOlderCseqForSameCallId) {
+    MemoryRegistrationStore store;
+
+    auto current = makeContact("sip:user@10.0.0.1:5060", "urn:uuid:ue-a", "1", "call-a", 5);
+    ASSERT_TRUE(store.upsertContact("sip:user@ims.example.com", makeSelector(current), current,
+                                    "user@ims.example.com", "sip:scscf.ims.example.com",
+                                    RegistrationBinding::State::kRegistered)
+                    .has_value());
+
+    auto removed = store.removeContacts(ContactBatchRemove{
+        .impus = {"sip:user@ims.example.com"},
+        .selector = makeSelector(current),
+        .call_id = "call-a",
+        .cseq = 4,
+        .reject_older_cseq = true,
+    });
+    ASSERT_TRUE(removed.has_value()) << removed.error().message;
+    EXPECT_EQ(*removed, 0u);
+
+    auto lookup = store.lookup("sip:user@ims.example.com");
+    ASSERT_TRUE(lookup.has_value()) << lookup.error().message;
+    ASSERT_EQ(lookup->contacts.size(), 1u);
+    EXPECT_EQ(lookup->contacts[0].cseq, 5u);
+}
+
+TEST(MemoryRegistrationStoreAtomicTest, BatchRemoveAllowsNewerCseqForSameCallId) {
+    MemoryRegistrationStore store;
+
+    auto current = makeContact("sip:user@10.0.0.1:5060", "urn:uuid:ue-a", "1", "call-a", 5);
+    ASSERT_TRUE(store.upsertContact("sip:user@ims.example.com", makeSelector(current), current,
+                                    "user@ims.example.com", "sip:scscf.ims.example.com",
+                                    RegistrationBinding::State::kRegistered)
+                    .has_value());
+
+    auto removed = store.removeContacts(ContactBatchRemove{
+        .impus = {"sip:user@ims.example.com"},
+        .selector = makeSelector(current),
+        .call_id = "call-a",
+        .cseq = 6,
+        .reject_older_cseq = true,
+    });
+    ASSERT_TRUE(removed.has_value()) << removed.error().message;
+    EXPECT_EQ(*removed, 1u);
+    EXPECT_FALSE(store.lookup("sip:user@ims.example.com").has_value());
+}
+
+TEST(MemoryRegistrationStoreAtomicTest, BatchRemoveKeepsExistingBehaviorWhenCseqRejectionDisabled) {
+    MemoryRegistrationStore store;
+
+    auto current = makeContact("sip:user@10.0.0.1:5060", "urn:uuid:ue-a", "1", "call-a", 5);
+    ASSERT_TRUE(store.upsertContact("sip:user@ims.example.com", makeSelector(current), current,
+                                    "user@ims.example.com", "sip:scscf.ims.example.com",
+                                    RegistrationBinding::State::kRegistered)
+                    .has_value());
+
+    auto removed = store.removeContacts(ContactBatchRemove{
+        .impus = {"sip:user@ims.example.com"},
+        .selector = makeSelector(current),
+        .call_id = "call-a",
+        .cseq = 4,
+        .reject_older_cseq = false,
+    });
+    ASSERT_TRUE(removed.has_value()) << removed.error().message;
+    EXPECT_EQ(*removed, 1u);
+    EXPECT_FALSE(store.lookup("sip:user@ims.example.com").has_value());
+}

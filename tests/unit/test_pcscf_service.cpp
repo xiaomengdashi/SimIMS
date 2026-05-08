@@ -145,7 +145,83 @@ TEST_F(PcscfServiceTest, InviteResponsesWithSameCallIdUseMatchingFromTag) {
     EXPECT_EQ(state_b->callee_sdp, kOriginalSdp);
 }
 
-TEST_F(PcscfServiceTest, Invite486DoesNotCallRtpengineAnswer) {
+TEST_F(PcscfServiceTest, ForkedEarlyInviteResponsesCreateSeparateMediaSessions) {
+    static const std::string kCallId = "forked-early";
+    static const std::string kFromTag = "from-a";
+    static const std::string kOriginalSdp = "v=0\r\no=- 1 1 IN IP4 10.0.0.1\r\ns=-\r\n";
+
+    service_->media_sessions_.createSession(kCallId, kFromTag);
+    auto first = makeInviteResponse(183, "Session Progress", kCallId, kFromTag, "to-a", kOriginalSdp);
+    auto second = makeInviteResponse(183, "Session Progress", kCallId, kFromTag, "to-b", kOriginalSdp);
+
+    EXPECT_CALL(*rtpengine_, answer(_, kOriginalSdp, _))
+        .Times(2)
+        .WillRepeatedly([](const ims::media::MediaSession&, const std::string&, const ims::media::RtpengineFlags&) {
+            return ims::media::RtpengineResult{.sdp = "v=0\r\ns=rewritten\r\n"};
+        });
+
+    service_->onInviteResponse(first);
+    service_->onInviteResponse(second);
+
+    EXPECT_TRUE(service_->media_sessions_.getSession(ims::media::MediaSessionKey{
+        .call_id = kCallId,
+        .from_tag = kFromTag,
+    }).has_value());
+    EXPECT_TRUE(service_->media_sessions_.getSession(ims::media::MediaSessionKey{
+        .call_id = kCallId,
+        .from_tag = kFromTag,
+        .to_tag = "to-a",
+    }).has_value());
+    EXPECT_TRUE(service_->media_sessions_.getSession(ims::media::MediaSessionKey{
+        .call_id = kCallId,
+        .from_tag = kFromTag,
+        .to_tag = "to-b",
+    }).has_value());
+}
+
+TEST_F(PcscfServiceTest, InviteFinalSuccessDeletesInitialAndLosingEarlyMediaSessions) {
+    static const std::string kCallId = "forked-success";
+    static const std::string kFromTag = "from-a";
+    static const std::string kOriginalSdp = "v=0\r\no=- 1 1 IN IP4 10.0.0.1\r\ns=-\r\n";
+
+    service_->media_sessions_.createSession(kCallId, kFromTag);
+    auto losing = service_->media_sessions_.beginInviteResponse(ims::media::MediaSessionKey{
+        .call_id = kCallId,
+        .from_tag = kFromTag,
+        .to_tag = "loser",
+    });
+    ASSERT_TRUE(losing.has_value());
+    auto success = makeInviteResponse(200, "OK", kCallId, kFromTag, "winner", kOriginalSdp);
+
+    EXPECT_CALL(*rtpengine_, answer(Truly([](const ims::media::MediaSession& session) {
+        return session.call_id == "forked-success" && session.from_tag == "from-a" && session.to_tag == "winner";
+    }), kOriginalSdp, _))
+        .WillOnce([](const ims::media::MediaSession&, const std::string&, const ims::media::RtpengineFlags&) {
+            return ims::media::RtpengineResult{.sdp = "v=0\r\ns=winner\r\n"};
+        });
+    EXPECT_CALL(*rtpengine_, deleteSession(Truly([](const ims::media::MediaSession& session) {
+        return session.call_id == "forked-success"
+               && session.from_tag == "from-a"
+               && (session.to_tag.empty() || session.to_tag == "loser");
+    }))).Times(2).WillRepeatedly(Return(ims::VoidResult{}));
+
+    service_->onInviteResponse(success);
+
+    EXPECT_FALSE(service_->media_sessions_.getSession(ims::media::MediaSessionKey{
+        .call_id = kCallId,
+        .from_tag = kFromTag,
+    }).has_value());
+    EXPECT_FALSE(service_->media_sessions_.getSession(losing->key).has_value());
+    auto winner = service_->media_sessions_.getSession(ims::media::MediaSessionKey{
+        .call_id = kCallId,
+        .from_tag = kFromTag,
+        .to_tag = "winner",
+    });
+    ASSERT_TRUE(winner.has_value());
+    EXPECT_EQ(winner->lifecycle, ims::media::MediaSessionLifecycle::kEstablished);
+}
+
+TEST_F(PcscfServiceTest, Invite486DeletesMediaSessionWithoutCallingAnswer) {
     static const std::string kCallId = "call-486";
     static const std::string kFromTag = "from-a";
     static const std::string kOriginalSdp = "v=0\r\ns=-\r\n";
@@ -154,15 +230,19 @@ TEST_F(PcscfServiceTest, Invite486DoesNotCallRtpengineAnswer) {
     auto response = makeInviteResponse(486, "Busy Here", kCallId, kFromTag, "to-b", kOriginalSdp);
 
     EXPECT_CALL(*rtpengine_, answer(_, _, _)).Times(0);
+    EXPECT_CALL(*rtpengine_, deleteSession(Truly([](const ims::media::MediaSession& session) {
+        return session.call_id == "call-486" && session.from_tag == "from-a" && session.to_tag.empty();
+    }))).WillOnce(Return(ims::VoidResult{}));
 
     service_->onInviteResponse(response);
 
     auto body = response.body();
     ASSERT_TRUE(body.has_value());
     EXPECT_EQ(*body, kOriginalSdp);
+    EXPECT_EQ(service_->media_sessions_.sessionCount(), 0u);
 }
 
-TEST_F(PcscfServiceTest, Invite200WithoutSdpDoesNotCallRtpengineAnswer) {
+TEST_F(PcscfServiceTest, Invite200WithoutSdpCleansInitialWithoutCallingAnswer) {
     static const std::string kCallId = "call-200-no-sdp";
     static const std::string kFromTag = "from-a";
 
@@ -170,10 +250,24 @@ TEST_F(PcscfServiceTest, Invite200WithoutSdpDoesNotCallRtpengineAnswer) {
     auto response = makeInviteResponse(200, "OK", kCallId, kFromTag, "to-b", std::nullopt);
 
     EXPECT_CALL(*rtpengine_, answer(_, _, _)).Times(0);
+    EXPECT_CALL(*rtpengine_, deleteSession(Truly([](const ims::media::MediaSession& session) {
+        return session.call_id == "call-200-no-sdp" && session.from_tag == "from-a" && session.to_tag.empty();
+    }))).WillOnce(Return(ims::VoidResult{}));
 
     service_->onInviteResponse(response);
 
     EXPECT_FALSE(response.body().has_value());
+    EXPECT_FALSE(service_->media_sessions_.getSession(ims::media::MediaSessionKey{
+        .call_id = kCallId,
+        .from_tag = kFromTag,
+    }).has_value());
+    auto winning = service_->media_sessions_.getSession(ims::media::MediaSessionKey{
+        .call_id = kCallId,
+        .from_tag = kFromTag,
+        .to_tag = "to-b",
+    });
+    ASSERT_TRUE(winning.has_value());
+    EXPECT_EQ(winning->lifecycle, ims::media::MediaSessionLifecycle::kEstablished);
 }
 
 TEST_F(PcscfServiceTest, Invite183WithoutTrackedSessionDoesNotCallRtpengineAnswer) {
@@ -194,7 +288,10 @@ TEST_F(PcscfServiceTest, TerminateMediaForReverseByeDeletesRtpengineAndRxSession
         .to_tag = "callee",
     });
     ASSERT_TRUE(update.has_value());
-    service_->media_sessions_.commitInviteResponse(update->key, "callee-sdp");
+    service_->media_sessions_.commitInviteResponse(update->key, "callee-sdp", true);
+    for (const auto& plan : service_->media_sessions_.markInviteFinalSuccess(update->key)) {
+        service_->media_sessions_.completeTermination(plan.key);
+    }
     service_->media_sessions_.setRxSession(update->key, "rx-reverse-bye");
 
     auto bye = ims::sip::SipMessage::parse(

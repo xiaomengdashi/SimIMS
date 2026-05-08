@@ -5,6 +5,9 @@
 #include <boost/asio/io_context.hpp>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
+#include <atomic>
+#include <chrono>
+#include <future>
 
 using namespace ims;
 using namespace ims::sip;
@@ -207,6 +210,58 @@ TEST_F(TransactionLayerTest, ShutdownCancelsServerTransactionWithoutTerminationC
 
     EXPECT_EQ(txn->state(), TransactionState::kTerminated);
     EXPECT_EQ(terminated_count, 0);
+}
+
+TEST_F(TransactionLayerTest, ConcurrentDuplicateRequestCreatesSingleServerTransaction) {
+    TransactionLayer layer(io, transport);
+    std::atomic_int handler_count{0};
+    std::promise<void> entered_handler;
+    auto entered_handler_future = entered_handler.get_future().share();
+    std::promise<void> allow_handler_to_return;
+    auto allow_handler_future = allow_handler_to_return.get_future().share();
+
+    layer.setRequestHandler([&](std::shared_ptr<ServerTransaction>) {
+        ++handler_count;
+        entered_handler.set_value();
+        EXPECT_EQ(allow_handler_future.wait_for(std::chrono::seconds(1)), std::future_status::ready);
+    });
+
+    auto first = parseMessage(kRegisterMsg);
+    auto duplicate = parseMessage(kRegisterMsg);
+
+    auto first_future = std::async(std::launch::async, [&] {
+        layer.processMessage(std::move(first), source);
+    });
+    ASSERT_EQ(entered_handler_future.wait_for(std::chrono::seconds(1)), std::future_status::ready);
+
+    layer.processMessage(std::move(duplicate), source);
+    EXPECT_EQ(handler_count.load(), 1);
+
+    allow_handler_to_return.set_value();
+    first_future.get();
+}
+
+TEST_F(TransactionLayerTest, DuplicateRequestRetransmitsExistingResponse) {
+    TransactionLayer layer(io, transport);
+    int handler_count = 0;
+
+    EXPECT_CALL(*transport, send(_, _)).Times(2).WillRepeatedly(Return(VoidResult{}));
+
+    layer.setRequestHandler([&](std::shared_ptr<ServerTransaction> txn) {
+        ++handler_count;
+        auto response = createResponse(txn->request(), 401, "Unauthorized");
+        ASSERT_TRUE(response.has_value()) << response.error().message;
+        auto result = txn->sendResponse(std::move(*response));
+        ASSERT_TRUE(result.has_value()) << result.error().message;
+    });
+
+    auto first = parseMessage(kRegisterMsg);
+    layer.processMessage(std::move(first), source);
+    EXPECT_EQ(handler_count, 1);
+
+    auto duplicate = parseMessage(kRegisterMsg);
+    layer.processMessage(std::move(duplicate), source);
+    EXPECT_EQ(handler_count, 1);
 }
 
 } // namespace

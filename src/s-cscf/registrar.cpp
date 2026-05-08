@@ -242,9 +242,9 @@ bool Registrar::tryHandleReregister(ims::sip::SipMessage& request,
         .require_existing_match = true,
         .reject_older_cseq = true,
     });
-    if (!batch_result) {
+    if (!batch_result || *batch_result == 0) {
         IMS_LOG_ERROR("Failed to update associated bindings during re-registration for {}: {}",
-                      impu, batch_result.error().message);
+                      impu, batch_result ? "no matching contact" : batch_result.error().message);
         auto resp = ims::sip::createResponse(request, 500, "Internal Server Error");
         if (resp) {
             (void)txn->sendResponse(std::move(*resp));
@@ -406,6 +406,9 @@ void Registrar::handleDeregister(ims::sip::SipMessage& request,
         ? store_->removeContacts(ims::registration::ContactBatchRemove{
               .impus = std::move(target_impus),
               .selector = selector,
+              .call_id = request.callId(),
+              .cseq = request.cseq(),
+              .reject_older_cseq = true,
           })
         : store_->removeBindings(target_impus);
     if (!remove_result) {

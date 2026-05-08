@@ -11,6 +11,7 @@
 #include "sip/store.hpp"
 
 #include <boost/asio/steady_timer.hpp>
+#include <atomic>
 #include <memory>
 
 namespace ims::scscf {
@@ -31,6 +32,8 @@ public:
                  std::shared_ptr<ims::registration::IRegistrationStore> store,
                  std::shared_ptr<IDigestCredentialStore> digest_store,
                  std::unique_ptr<ims::sip::IRegEventNotifier> reg_event_notifier);
+
+    ~ScscfService();
 
     auto start() -> VoidResult;
     void stop();
@@ -66,6 +69,7 @@ private:
     std::shared_ptr<ims::registration::IRegistrationStore> store_;
     std::shared_ptr<IDigestCredentialStore> digest_store_;
     boost::asio::steady_timer registration_cleanup_timer_;
+    std::atomic_bool stopping_{false};
 };
 
 } // namespace ims::scscf

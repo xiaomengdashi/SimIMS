@@ -12,6 +12,7 @@
 #include <expected>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
+#include <memory>
 #include <optional>
 
 namespace ims::scscf {
@@ -116,10 +117,12 @@ public:
 
     void shutdown() override {
         shutdown_called = true;
+        ++shutdown_calls;
     }
 
     bool started = false;
     bool shutdown_called = false;
+    int shutdown_calls = 0;
     std::vector<ims::sip::InitialRegNotifyContext> contexts;
 };
 
@@ -434,6 +437,47 @@ TEST_F(ScscfServiceTest, StartSchedulesPeriodicRegistrationCleanup) {
     ims::scscf::ScscfServiceTestPeer::scheduleRegistrationCleanup(*service);
     io.run_for(std::chrono::milliseconds(20));
     service->stop();
+}
+
+TEST_F(ScscfServiceTest, StopIsIdempotentWithCleanupTimer) {
+    config.registration_cleanup_interval_ms = 10;
+    reinitializeService();
+
+    EXPECT_CALL(*store, purgeExpired()).Times(0);
+
+    ims::scscf::ScscfServiceTestPeer::scheduleRegistrationCleanup(*service);
+    service->stop();
+    service->stop();
+    io.run_for(std::chrono::milliseconds(20));
+
+    EXPECT_EQ(notifier_ptr->shutdown_calls, 1);
+}
+
+TEST_F(ScscfServiceTest, CleanupTimerDoesNotRescheduleAfterStop) {
+    config.registration_cleanup_interval_ms = 1;
+    reinitializeService();
+
+    EXPECT_CALL(*store, purgeExpired())
+        .WillOnce([&]() -> ims::Result<size_t> {
+            service->stop();
+            return 1;
+        });
+
+    ims::scscf::ScscfServiceTestPeer::scheduleRegistrationCleanup(*service);
+    io.run_for(std::chrono::milliseconds(20));
+
+    EXPECT_EQ(notifier_ptr->shutdown_calls, 1);
+}
+
+TEST_F(ScscfServiceTest, DestructorCancelsRegistrationCleanupTimer) {
+    config.registration_cleanup_interval_ms = 10;
+    reinitializeService();
+
+    EXPECT_CALL(*store, purgeExpired()).Times(0);
+
+    ims::scscf::ScscfServiceTestPeer::scheduleRegistrationCleanup(*service);
+    service.reset();
+    io.run_for(std::chrono::milliseconds(20));
 }
 
 } // namespace

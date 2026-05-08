@@ -52,7 +52,10 @@ private:
                              bool reject_older_cseq) -> bool;
     auto removeContactLocked(std::unordered_map<std::string, RegistrationBinding>& bindings,
                              std::string_view impu,
-                             const ContactBindingSelector& selector) -> bool;
+                             const ContactBindingSelector& selector,
+                             std::string_view call_id,
+                             uint32_t cseq,
+                             bool reject_older_cseq) -> bool;
 
     mutable std::mutex mutex_;
     std::unordered_map<std::string, RegistrationBinding> bindings_;

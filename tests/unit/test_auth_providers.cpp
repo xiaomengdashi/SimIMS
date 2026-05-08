@@ -14,11 +14,11 @@
 #include <mutex>
 #include <optional>
 #include <sstream>
+#include <thread>
 
 namespace {
 
 using ::testing::_;
-using ::testing::Between;
 using ::testing::Return;
 using ::testing::StrEq;
 
@@ -509,8 +509,8 @@ TEST(ImsAkaAuthProviderTest, ConcurrentInitialRegisterReusesPendingChallengeAfte
     auto entered_hss_once = std::make_shared<std::once_flag>();
 
     EXPECT_CALL(*hss, multimediaAuth(_))
-        .Times(Between(1, 2))
-        .WillRepeatedly([&, entered_hss, allow_hss_future, entered_hss_once](const auto&) {
+        .Times(1)
+        .WillOnce([&, entered_hss, allow_hss_future, entered_hss_once](const auto&) {
             std::call_once(*entered_hss_once, [&] { entered_hss->set_value(); });
             EXPECT_EQ(allow_hss_future.wait_for(std::chrono::seconds(1)), std::future_status::ready);
             return ims::Result<ims::diameter::MaaResult>{ims::diameter::MaaResult{
@@ -543,6 +543,84 @@ TEST(ImsAkaAuthProviderTest, ConcurrentInitialRegisterReusesPendingChallengeAfte
     ASSERT_TRUE(duplicate_challenge.has_value()) << duplicate_challenge.error().message;
     EXPECT_EQ(extractNonce(duplicate_challenge->www_authenticate),
               extractNonce(first_challenge->www_authenticate));
+}
+
+TEST(ImsAkaAuthProviderTest, ConcurrentDuplicateChallengePropagatesMarFailureToAllWaiters) {
+    auto hss = std::make_shared<ims::test::MockHssClient>();
+    ims::scscf::ImsAkaAuthProvider provider(hss, "ims.example.com");
+
+    auto entered_hss = std::make_shared<std::promise<void>>();
+    auto allow_hss_to_return = std::make_shared<std::promise<void>>();
+    auto entered_hss_future = entered_hss->get_future().share();
+    auto allow_hss_future = allow_hss_to_return->get_future().share();
+
+    EXPECT_CALL(*hss, multimediaAuth(_))
+        .Times(1)
+        .WillOnce([entered_hss, allow_hss_future](const auto&) {
+            entered_hss->set_value();
+            EXPECT_EQ(allow_hss_future.wait_for(std::chrono::seconds(1)), std::future_status::ready);
+            return ims::Result<ims::diameter::MaaResult>{
+                std::unexpected(ims::ErrorInfo{ims::ErrorCode::kDiameterAuthFailed, "MAR failed"})};
+        });
+
+    auto first_register = makeRegister("sip:ims.example.com",
+                                       "<sip:testuser@ims.example.com>;tag=from-1",
+                                       "<sip:testuser@ims.example.com>",
+                                       "call-aka-failure");
+    auto duplicate_register = makeRegister("sip:ims.example.com",
+                                           "<sip:testuser@ims.example.com>;tag=from-1",
+                                           "<sip:testuser@ims.example.com>",
+                                           "call-aka-failure");
+
+    auto first_future = std::async(std::launch::async, [&] { return provider.createChallenge(first_register); });
+    ASSERT_EQ(entered_hss_future.wait_for(std::chrono::seconds(1)), std::future_status::ready);
+    auto duplicate_future = std::async(std::launch::async,
+                                       [&] { return provider.createChallenge(duplicate_register); });
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    allow_hss_to_return->set_value();
+
+    auto first = first_future.get();
+    auto duplicate = duplicate_future.get();
+    ASSERT_FALSE(first.has_value());
+    ASSERT_FALSE(duplicate.has_value());
+    EXPECT_EQ(first.error().message, "MAR failed");
+    EXPECT_EQ(duplicate.error().message, "MAR failed");
+}
+
+TEST(ImsAkaAuthProviderTest, InFlightChallengeIsClearedAfterFailureAndCanRetry) {
+    auto hss = std::make_shared<ims::test::MockHssClient>();
+    ims::scscf::ImsAkaAuthProvider provider(hss, "ims.example.com");
+
+    ims::diameter::AuthVector av{
+        .rand = {0x51, 0x52, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58,
+                 0x59, 0x5A, 0x5B, 0x5C, 0x5D, 0x5E, 0x5F, 0x60},
+        .autn = {0x61, 0x62, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68,
+                 0x69, 0x6A, 0x6B, 0x6C, 0x6D, 0x6E, 0x6F, 0x70},
+        .xres = {0x71, 0x72, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78},
+    };
+
+    EXPECT_CALL(*hss, multimediaAuth(_))
+        .WillOnce(Return(ims::Result<ims::diameter::MaaResult>{
+            std::unexpected(ims::ErrorInfo{ims::ErrorCode::kDiameterAuthFailed, "MAR failed"})}))
+        .WillOnce(Return(ims::Result<ims::diameter::MaaResult>{ims::diameter::MaaResult{
+            .result_code = 2001,
+            .sip_auth_scheme = "Digest-AKAv1-MD5",
+            .auth_vector = av,
+        }}));
+
+    auto request = makeRegister("sip:ims.example.com",
+                                "<sip:testuser@ims.example.com>;tag=from-1",
+                                "<sip:testuser@ims.example.com>",
+                                "call-aka-retry");
+
+    auto failed = provider.createChallenge(request);
+    ASSERT_FALSE(failed.has_value());
+    EXPECT_EQ(failed.error().message, "MAR failed");
+
+    auto retry = provider.createChallenge(request);
+    ASSERT_TRUE(retry.has_value()) << retry.error().message;
+    EXPECT_EQ(retry->scheme, "Digest-AKAv1-MD5");
 }
 
 TEST(ImsAkaAuthProviderTest, FailedAuthorizationDoesNotConsumePendingChallenge) {

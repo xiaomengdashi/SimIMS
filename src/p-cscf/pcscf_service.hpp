@@ -12,6 +12,7 @@
 #include <mutex>
 #include <optional>
 #include <unordered_map>
+#include <vector>
 
 namespace ims::pcscf {
 
@@ -46,6 +47,7 @@ private:
     auto mediaKeyForRequest(const ims::sip::SipMessage& request) const -> ims::media::MediaSessionKey;
     auto mediaKeyForResponse(const ims::sip::SipMessage& response) const -> ims::media::MediaSessionKey;
     void terminateMediaForRequest(const ims::sip::SipMessage& request);
+    void completeMediaTerminations(std::vector<ims::media::MediaTerminationPlan> plans);
 
     void onRegister(std::shared_ptr<ims::sip::ServerTransaction> txn,
                     ims::sip::SipMessage& request);

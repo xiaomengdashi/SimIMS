@@ -5,6 +5,7 @@
 #include "i_auth_provider.hpp"
 
 #include <chrono>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -47,6 +48,7 @@ private:
     std::shared_ptr<ims::diameter::IHssClient> hss_;
     std::string domain_;
     mutable std::unordered_map<std::string, PendingAuth> pending_auth_;
+    mutable std::unordered_map<std::string, std::shared_future<Result<PendingAuth>>> in_flight_auth_;
     mutable std::mutex auth_mutex_;
 };
 

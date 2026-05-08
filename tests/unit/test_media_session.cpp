@@ -112,7 +112,7 @@ TEST(MediaSessionManagerTest, TerminatingSessionRejectsLateInviteResponse) {
     EXPECT_FALSE(update.has_value());
 
     manager.commitInviteResponse(MediaSessionKey{.call_id = "call-1", .from_tag = "from-a", .to_tag = "to-a"},
-                                  "callee-sdp");
+                                  "callee-sdp", true);
     EXPECT_FALSE(manager.getSession(MediaSessionKey{
         .call_id = "call-1",
         .from_tag = "from-a",
@@ -143,7 +143,7 @@ TEST(MediaSessionManagerTest, ReverseDialogTerminationFindsEstablishedSession) {
         .to_tag = "callee",
     });
     ASSERT_TRUE(update.has_value());
-    manager.commitInviteResponse(update->key, "callee-sdp");
+    manager.commitInviteResponse(update->key, "callee-sdp", true);
     manager.setRxSession(update->key, "rx-session-1");
 
     auto termination = manager.markTerminating(MediaSessionKey{
@@ -173,7 +173,7 @@ TEST(MediaSessionManagerTest, ReverseEarlyTerminationFindsInitialSession) {
     EXPECT_TRUE(termination->key.to_tag.empty());
 }
 
-TEST(MediaSessionManagerTest, BeginInviteResponseMigratesToTagAndCommitStoresSdp) {
+TEST(MediaSessionManagerTest, BeginInviteResponseCreatesBranchAndKeepsInitialSession) {
     MediaSessionManager manager;
 
     manager.createSession(MediaSessionKey{.call_id = "call-1", .from_tag = "from-a"});
@@ -184,13 +184,92 @@ TEST(MediaSessionManagerTest, BeginInviteResponseMigratesToTagAndCommitStoresSdp
     });
     ASSERT_TRUE(update.has_value());
     EXPECT_EQ(update->session.to_tag, "to-a");
-    manager.commitInviteResponse(update->key, "callee-sdp");
+    manager.commitInviteResponse(update->key, "callee-sdp", false);
 
-    EXPECT_FALSE(manager.getSession(MediaSessionKey{.call_id = "call-1", .from_tag = "from-a"}).has_value());
+    EXPECT_TRUE(manager.getSession(MediaSessionKey{.call_id = "call-1", .from_tag = "from-a"}).has_value());
     auto state = manager.getSession(MediaSessionKey{.call_id = "call-1", .from_tag = "from-a", .to_tag = "to-a"});
     ASSERT_TRUE(state.has_value());
     EXPECT_EQ(state->callee_sdp, "callee-sdp");
-    EXPECT_EQ(state->lifecycle, MediaSessionLifecycle::kEstablished);
+    EXPECT_EQ(state->lifecycle, MediaSessionLifecycle::kEarly);
+    EXPECT_EQ(manager.sessionCount(), 2u);
+}
+
+TEST(MediaSessionManagerTest, SecondForkedEarlyDialogCreatesIndependentSession) {
+    MediaSessionManager manager;
+
+    manager.createSession(MediaSessionKey{.call_id = "fork-call", .from_tag = "caller"});
+    auto first = manager.beginInviteResponse(MediaSessionKey{
+        .call_id = "fork-call",
+        .from_tag = "caller",
+        .to_tag = "early-a",
+    });
+    auto second = manager.beginInviteResponse(MediaSessionKey{
+        .call_id = "fork-call",
+        .from_tag = "caller",
+        .to_tag = "early-b",
+    });
+
+    ASSERT_TRUE(first.has_value());
+    ASSERT_TRUE(second.has_value());
+    EXPECT_TRUE(manager.getSession(MediaSessionKey{.call_id = "fork-call", .from_tag = "caller"}).has_value());
+    EXPECT_TRUE(manager.getSession(first->key).has_value());
+    EXPECT_TRUE(manager.getSession(second->key).has_value());
+    EXPECT_EQ(manager.sessionCount(), 3u);
+}
+
+TEST(MediaSessionManagerTest, FinalSuccessKeepsWinningDialogAndRemovesOtherEarlyDialogs) {
+    MediaSessionManager manager;
+
+    manager.createSession(MediaSessionKey{.call_id = "fork-success", .from_tag = "caller"});
+    auto winning = manager.beginInviteResponse(MediaSessionKey{
+        .call_id = "fork-success",
+        .from_tag = "caller",
+        .to_tag = "winner",
+    });
+    auto losing = manager.beginInviteResponse(MediaSessionKey{
+        .call_id = "fork-success",
+        .from_tag = "caller",
+        .to_tag = "loser",
+    });
+    ASSERT_TRUE(winning.has_value());
+    ASSERT_TRUE(losing.has_value());
+    manager.commitInviteResponse(winning->key, "winner-sdp", true);
+
+    auto plans = manager.markInviteFinalSuccess(winning->key);
+    EXPECT_EQ(plans.size(), 2u);
+    for (const auto& plan : plans) {
+        manager.completeTermination(plan.key);
+    }
+
+    auto winner = manager.getSession(winning->key);
+    ASSERT_TRUE(winner.has_value());
+    EXPECT_EQ(winner->lifecycle, MediaSessionLifecycle::kEstablished);
+    EXPECT_FALSE(manager.getSession(MediaSessionKey{.call_id = "fork-success", .from_tag = "caller"}).has_value());
+    EXPECT_FALSE(manager.getSession(losing->key).has_value());
+}
+
+TEST(MediaSessionManagerTest, FinalFailureRemovesInitialAndEarlyDialogs) {
+    MediaSessionManager manager;
+
+    manager.createSession(MediaSessionKey{.call_id = "fork-fail", .from_tag = "caller"});
+    auto early = manager.beginInviteResponse(MediaSessionKey{
+        .call_id = "fork-fail",
+        .from_tag = "caller",
+        .to_tag = "early",
+    });
+    ASSERT_TRUE(early.has_value());
+
+    auto plans = manager.markInviteFinalFailure(MediaSessionKey{
+        .call_id = "fork-fail",
+        .from_tag = "caller",
+        .to_tag = "early",
+    });
+    EXPECT_EQ(plans.size(), 2u);
+    for (const auto& plan : plans) {
+        manager.completeTermination(plan.key);
+    }
+
+    EXPECT_EQ(manager.sessionCount(), 0u);
 }
 
 TEST(MediaSessionManagerTest, CallIdOnlyCompatibilityWorksForSingleSession) {

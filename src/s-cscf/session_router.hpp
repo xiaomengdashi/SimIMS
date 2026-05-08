@@ -7,6 +7,7 @@
 #include "sip/store.hpp"
 #include "common/types.hpp"
 
+#include <chrono>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -63,6 +64,9 @@ private:
         ims::sip::Endpoint caller_endpoint;
         ims::sip::Endpoint callee_endpoint;
         std::string callee_invite_branch;
+        std::chrono::steady_clock::time_point created = std::chrono::steady_clock::now();
+        std::chrono::steady_clock::time_point last_updated = created;
+        bool established = false;
         bool bye_seen = false;
         bool cancel_seen = false;
     };
@@ -82,6 +86,17 @@ private:
     void recordInviteResponseDialog(const std::string& call_id,
                                     const std::string& caller_tag,
                                     const std::string& callee_tag);
+    void handleInviteResponseState(const std::string& call_id,
+                                   const std::string& caller_tag,
+                                   const ims::sip::SipMessage& response);
+    void recordInviteResponseDialogLocked(const std::string& call_id,
+                                          const std::string& caller_tag,
+                                          const std::string& callee_tag,
+                                          bool established,
+                                          std::chrono::steady_clock::time_point now);
+    void eraseInviteSessionsLocked(const std::string& call_id,
+                                   const std::string& caller_tag);
+    void purgeExpiredSessionsLocked(std::chrono::steady_clock::time_point now);
     void eraseCanceledSessionsLocked(const DialogKey& key);
     void eraseSessionLocked(const DialogKey& key);
 

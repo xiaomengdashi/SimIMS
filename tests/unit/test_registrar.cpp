@@ -599,3 +599,76 @@ TEST_F(RegistrarAtomicStoreTest, WildcardDeregisterRemovesEntireBinding) {
     ASSERT_FALSE(binding.has_value());
     EXPECT_EQ(binding.error().code, ims::ErrorCode::kRegistrationNotFound);
 }
+
+TEST_F(RegistrarAtomicStoreTest, ReregisterHandlesZeroContactsUpdatedAsFailure) {
+    auto contact = ims::registration::ContactBinding{
+        .contact_uri = "<sip:460112024122023@127.0.0.1:5060>",
+        .expires = std::chrono::steady_clock::now() + std::chrono::minutes(10),
+        .call_id = "rereg-zero",
+        .cseq = 1,
+    };
+    auto selector = ims::registration::ContactBindingSelector{
+        .normalized_contact_uri = "sip:460112024122023@127.0.0.1:5060",
+    };
+    ASSERT_TRUE(store_->upsertContact("sip:460112024122023@ims.example.com",
+                                      selector,
+                                      contact,
+                                      "460112024122023@ims.example.com",
+                                      "sip:scscf.ims.example.com",
+                                      RegistrationBinding::State::kRegistered)
+                    .has_value());
+
+    EXPECT_CALL(*hss_, serverAssignment(_))
+        .WillOnce(Return(successSaa({
+            "sip:460112024122023@ims.example.com",
+            "tel:+8613824122023",
+        })));
+
+    auto refresh = makeRegister("rereg-zero", 2, "<sip:460112024122023@127.0.0.1:5060>", 600);
+    registrar_->handleRegister(refresh, makeTxn(refresh, transport_, io_));
+
+    ASSERT_FALSE(transport_->sent_messages.empty());
+    EXPECT_EQ(transport_->sent_messages.back().statusCode(), 500);
+}
+
+TEST(RegistrarAtomicStoreMockTest, DeregisterSpecificContactPassesCallIdAndCseqToStore) {
+    boost::asio::io_context io;
+    auto transport = std::make_shared<CapturingTransport>();
+    auto store = std::make_shared<MockRegistrationStore>();
+    auto hss = std::make_shared<MockHssClient>();
+    std::vector<std::shared_ptr<ims::scscf::IAuthProvider>> providers{
+        std::make_shared<StaticAuthProvider>(),
+    };
+    ims::scscf::Registrar registrar(store, std::move(providers), hss, "ims.example.com");
+
+    EXPECT_CALL(*hss, serverAssignment(_))
+        .WillOnce(Return(ims::Result<ims::diameter::SaaResult>{ims::diameter::SaaResult{
+            .result_code = 2001,
+            .user_profile = {
+                .impu = "sip:460112024122023@ims.example.com",
+                .associated_impus = {
+                    "sip:460112024122023@ims.example.com",
+                    "tel:+8613824122023",
+                },
+                .ifcs = {},
+            },
+        }}));
+    EXPECT_CALL(*store, removeContacts(_))
+        .WillOnce([](const ims::registration::ContactBatchRemove& batch) {
+            EXPECT_TRUE(batch.impus.contains("sip:460112024122023@ims.example.com"));
+            EXPECT_TRUE(batch.impus.contains("tel:+8613824122023"));
+            EXPECT_EQ(batch.call_id, "dereg-specific");
+            EXPECT_EQ(batch.cseq, 7u);
+            EXPECT_TRUE(batch.reject_older_cseq);
+            return ims::Result<size_t>{2};
+        });
+
+    auto dereg = makeRegister(
+        "dereg-specific", 7,
+        "<sip:460112024122023@127.0.0.1:5060>;expires=0;+sip.instance=\"urn:uuid:ue-a\";reg-id=1",
+        0);
+    registrar.handleRegister(dereg, makeTxn(dereg, transport, io));
+
+    ASSERT_FALSE(transport->sent_messages.empty());
+    EXPECT_EQ(transport->sent_messages.back().statusCode(), 200);
+}

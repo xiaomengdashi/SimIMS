@@ -137,7 +137,10 @@ auto MemoryRegistrationStore::upsertContactLocked(
 auto MemoryRegistrationStore::removeContactLocked(
     std::unordered_map<std::string, RegistrationBinding>& bindings,
     std::string_view impu,
-    const ContactBindingSelector& selector) -> bool
+    const ContactBindingSelector& selector,
+    std::string_view call_id,
+    uint32_t cseq,
+    bool reject_older_cseq) -> bool
 {
     auto it = bindings.find(std::string(impu));
     if (it == bindings.end()) {
@@ -147,7 +150,15 @@ auto MemoryRegistrationStore::removeContactLocked(
     auto& binding = it->second;
     auto old_size = binding.contacts.size();
     std::erase_if(binding.contacts, [&](const ContactBinding& candidate) {
-        return matchesSelector(candidate, selector);
+        if (!matchesSelector(candidate, selector)) {
+            return false;
+        }
+        if (reject_older_cseq && candidate.call_id == call_id && cseq < candidate.cseq) {
+            IMS_LOG_DEBUG("Ignoring stale REGISTER removal for IMPU={} call-id={} cseq={} < {}",
+                          binding.impu, call_id, cseq, candidate.cseq);
+            return false;
+        }
+        return true;
     });
 
     if (old_size == binding.contacts.size()) {
@@ -183,7 +194,7 @@ auto MemoryRegistrationStore::removeContact(std::string_view impu,
 {
     std::lock_guard lock(mutex_);
     pruneExpiredLocked(impu);
-    return removeContactLocked(bindings_, impu, selector);
+    return removeContactLocked(bindings_, impu, selector, {}, 0, false);
 }
 
 auto MemoryRegistrationStore::upsertContacts(const ContactBatchUpsert& batch) -> Result<size_t>
@@ -232,7 +243,8 @@ auto MemoryRegistrationStore::removeContacts(const ContactBatchRemove& batch) ->
 
     size_t removed = 0;
     for (const auto& impu : batch.impus) {
-        if (removeContactLocked(bindings_, impu, batch.selector)) {
+        if (removeContactLocked(bindings_, impu, batch.selector, batch.call_id, batch.cseq,
+                                batch.reject_older_cseq)) {
             ++removed;
         }
     }

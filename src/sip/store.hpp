@@ -73,6 +73,9 @@ struct ContactBatchUpsert {
 struct ContactBatchRemove {
     std::unordered_set<std::string> impus;
     ContactBindingSelector selector;
+    std::string call_id;
+    uint32_t cseq = 0;
+    bool reject_older_cseq = false;
 };
 
 /// Abstract registration storage interface
