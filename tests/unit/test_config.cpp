@@ -1,4 +1,5 @@
 #include "common/config.hpp"
+#include "common/logger.hpp"
 #include <gtest/gtest.h>
 #include <fstream>
 #include <filesystem>
@@ -204,6 +205,16 @@ TEST_F(ConfigTest, LoadWithDefaults) {
     EXPECT_EQ(config.scscf.exosip.listen_addr, "0.0.0.0");
     EXPECT_EQ(config.scscf.exosip.listen_port, 5072);
     EXPECT_FALSE(config.scscf.peer_icscf.has_value());
+}
+
+TEST(LoggerTest, InitLoggerAcceptsWarnAlias) {
+    init_logger("ims-test-warn", "warn");
+    EXPECT_EQ(get_logger().level(), spdlog::level::warn);
+}
+
+TEST(LoggerTest, InitLoggerAcceptsWarningAlias) {
+    init_logger("ims-test-warning", "warning");
+    EXPECT_EQ(get_logger().level(), spdlog::level::warn);
 }
 
 TEST_F(ConfigTest, FileNotFound) {
