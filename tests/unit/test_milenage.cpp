@@ -1,4 +1,9 @@
 #include "crypt/milenage_adapter.hpp"
+#include "crypt/milenage.hpp"
+
+#include <condition_variable>
+#include <mutex>
+#include <thread>
 
 #include <gtest/gtest.h>
 
@@ -21,6 +26,64 @@ TEST(MilenageTest, ComputesKnownOpc) {
     auto opc = compute_opc(k, op);
     ASSERT_TRUE(opc.has_value()) << opc.error().message;
     EXPECT_EQ(*opc, expected_opc);
+}
+
+TEST(MilenageTest, KeepsRijndaelRoundKeysIsolatedAcrossThreads) {
+    std::array<BYTE, 16> key_a = {
+        0x46, 0x5b, 0x5c, 0xe8, 0xb1, 0x99, 0xb4, 0x9f,
+        0xaa, 0x5f, 0x0a, 0x2e, 0xe2, 0x38, 0xa6, 0xbc,
+    };
+    std::array<BYTE, 16> key_b = {
+        0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
+        0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,
+    };
+    std::array<BYTE, 16> input = {
+        0xcd, 0xc2, 0x02, 0xd5, 0x12, 0x3e, 0x20, 0xf6,
+        0x2b, 0x6d, 0x67, 0x6a, 0xc7, 0x2c, 0xb3, 0x18,
+    };
+    const std::array<BYTE, 16> expected = {
+        0x00, 0xa1, 0xc9, 0xa4, 0x87, 0x74, 0xbf, 0xb8,
+        0x63, 0xc8, 0xfe, 0x24, 0xf0, 0x8c, 0x98, 0xb7,
+    };
+
+    std::array<BYTE, 16> output{};
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool key_a_scheduled{false};
+    bool key_b_scheduled{false};
+
+    std::jthread thread_a([&] {
+        RijndaelKeySchedule(key_a.data());
+        {
+            std::lock_guard lock(mutex);
+            key_a_scheduled = true;
+        }
+        cv.notify_all();
+
+        std::unique_lock lock(mutex);
+        cv.wait(lock, [&] { return key_b_scheduled; });
+        lock.unlock();
+
+        RijndaelEncrypt(input.data(), output.data());
+    });
+
+    std::jthread thread_b([&] {
+        std::unique_lock lock(mutex);
+        cv.wait(lock, [&] { return key_a_scheduled; });
+        lock.unlock();
+
+        RijndaelKeySchedule(key_b.data());
+        {
+            std::lock_guard guard(mutex);
+            key_b_scheduled = true;
+        }
+        cv.notify_all();
+    });
+
+    thread_a.join();
+    thread_b.join();
+
+    EXPECT_EQ(output, expected);
 }
 
 TEST(MilenageTest, GeneratesKnownReferenceVector) {
