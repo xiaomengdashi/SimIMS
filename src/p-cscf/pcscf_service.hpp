@@ -61,6 +61,8 @@ private:
                   ims::sip::SipMessage& request);
     void onPrack(std::shared_ptr<ims::sip::ServerTransaction> txn,
                  ims::sip::SipMessage& request);
+    void onMessage(std::shared_ptr<ims::sip::ServerTransaction> txn,
+                   ims::sip::SipMessage& request);
     void onSubscribe(std::shared_ptr<ims::sip::ServerTransaction> txn,
                      ims::sip::SipMessage& request);
     void onInviteResponse(ims::sip::SipMessage& response);

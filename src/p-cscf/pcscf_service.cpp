@@ -73,6 +73,7 @@ auto PcscfService::start() -> VoidResult {
     sip_stack_->onRequest("ACK", [this](auto txn, auto& req) { onAck(txn, req); });
     sip_stack_->onRequest("CANCEL", [this](auto txn, auto& req) { onCancel(txn, req); });
     sip_stack_->onRequest("PRACK", [this](auto txn, auto& req) { onPrack(txn, req); });
+    sip_stack_->onRequest("MESSAGE", [this](auto txn, auto& req) { onMessage(txn, req); });
     sip_stack_->onRequest("SUBSCRIBE", [this](auto txn, auto& req) { onSubscribe(txn, req); });
 
     return sip_stack_->start();
@@ -189,6 +190,17 @@ void PcscfService::onPrack(std::shared_ptr<ims::sip::ServerTransaction> txn,
         return;
     }
     forwardStatefulToCore(std::move(txn), request);
+}
+
+void PcscfService::onMessage(std::shared_ptr<ims::sip::ServerTransaction> txn,
+                              ims::sip::SipMessage& request)
+{
+    IMS_LOG_DEBUG("P-CSCF received MESSAGE for {}", request.requestUri());
+    if (isCoreFacingRequest(*txn)) {
+        forwardStatefulToUe(std::move(txn), request, false);
+        return;
+    }
+    forwardStatefulToCore(std::move(txn), request, false);
 }
 
 void PcscfService::onSubscribe(std::shared_ptr<ims::sip::ServerTransaction> txn,
@@ -534,11 +546,10 @@ void PcscfService::forwardStatefulToUe(std::shared_ptr<ims::sip::ServerTransacti
         return;
     }
 
-    auto token = createTopologyToken();
-    rememberTopologyRoute(token, resolveCoreDestination(request));
-
     request.removeHeader("Route");
     if (add_record_route) {
+        auto token = createTopologyToken();
+        rememberTopologyRoute(token, resolveCoreDestination(request));
         addTopologyRecordRoute(request, token);
     }
 

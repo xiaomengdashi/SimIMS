@@ -128,6 +128,9 @@ auto ScscfService::start() -> VoidResult {
     sip_stack_->onRequest("PRACK", [this](auto txn, auto& req) {
         onPrack(txn, req);
     });
+    sip_stack_->onRequest("MESSAGE", [this](auto txn, auto& req) {
+        onMessage(txn, req);
+    });
     sip_stack_->onRequest("SUBSCRIBE", [this](auto txn, auto& req) {
         onSubscribe(txn, req);
     });
@@ -231,6 +234,13 @@ void ScscfService::onPrack(std::shared_ptr<ims::sip::ServerTransaction> txn,
 {
     IMS_LOG_DEBUG("S-CSCF received PRACK");
     session_router_->handlePrack(request, txn);
+}
+
+void ScscfService::onMessage(std::shared_ptr<ims::sip::ServerTransaction> txn,
+                              ims::sip::SipMessage& request)
+{
+    IMS_LOG_DEBUG("S-CSCF received MESSAGE");
+    session_router_->handleMessage(request, txn);
 }
 
 void ScscfService::onSubscribe(std::shared_ptr<ims::sip::ServerTransaction> txn,

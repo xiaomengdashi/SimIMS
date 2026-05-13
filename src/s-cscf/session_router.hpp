@@ -42,6 +42,10 @@ public:
     void handlePrack(const ims::sip::SipMessage& request,
                      std::shared_ptr<ims::sip::ServerTransaction> txn);
 
+    /// Handle MESSAGE - route pager-mode SMS to the registered target UE.
+    void handleMessage(const ims::sip::SipMessage& request,
+                       std::shared_ptr<ims::sip::ServerTransaction> txn);
+
 private:
     struct DialogKey {
         std::string call_id;

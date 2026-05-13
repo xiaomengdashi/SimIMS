@@ -375,6 +375,97 @@ void SessionRouter::handlePrack(const ims::sip::SipMessage& request,
     }
 }
 
+void SessionRouter::handleMessage(const ims::sip::SipMessage& request,
+                                  std::shared_ptr<ims::sip::ServerTransaction> txn) {
+    auto call_id = request.callId();
+    auto request_uri = request.requestUri();
+    IMS_LOG_INFO("MESSAGE received, Call-ID={}, To={}", call_id, request_uri);
+
+    auto fwd_message = request.clone();
+    if (!fwd_message) {
+        IMS_LOG_ERROR("Failed to clone MESSAGE for forwarding");
+        auto resp = ims::sip::createResponse(request, 500, "Server Internal Error");
+        if (resp) sendResponse(txn, std::move(*resp), "S-CSCF error");
+        return;
+    }
+
+    ims::sip::Endpoint dest;
+    std::string contact_uri = "<existing-target>";
+    std::string path = "<none>";
+
+    auto sender_impu = ims::sip::normalize_impu_uri(request.fromHeader());
+    if (sender_impu.empty()) {
+        IMS_LOG_WARN("MESSAGE missing usable From identity, Call-ID={}", call_id);
+        auto resp = ims::sip::createResponse(request, 403, "Forbidden");
+        if (resp) sendResponse(txn, std::move(*resp), "S-CSCF error");
+        return;
+    }
+
+    auto sender_registered = store_->isRegistered(sender_impu);
+    if (!sender_registered || !*sender_registered) {
+        IMS_LOG_WARN("MESSAGE sender is not registered: {}", sender_impu);
+        auto resp = ims::sip::createResponse(request, 403, "Forbidden");
+        if (resp) sendResponse(txn, std::move(*resp), "S-CSCF error");
+        return;
+    }
+
+    auto binding = lookupCallee(request_uri);
+    if (!binding) {
+        if (!peer_icscf_) {
+            IMS_LOG_WARN("MESSAGE target not found and no peer I-CSCF configured: {}", request_uri);
+            auto resp = ims::sip::createResponse(request, 404, "Not Found");
+            if (resp) sendResponse(txn, std::move(*resp), "S-CSCF error");
+            return;
+        }
+        IMS_LOG_INFO("MESSAGE target {} not found locally, forwarding to peer I-CSCF {}:{}",
+                     request_uri, peer_icscf_->address, peer_icscf_->port);
+        dest = *peer_icscf_;
+    } else {
+        auto contacts = binding->active_contacts();
+        if (contacts.empty()) {
+            IMS_LOG_WARN("No active contacts for MESSAGE target: {}", request_uri);
+            auto resp = ims::sip::createResponse(request, 480, "Temporarily Unavailable");
+            if (resp) sendResponse(txn, std::move(*resp), "S-CSCF error");
+            return;
+        }
+
+        contact_uri = contacts[0]->contact_uri;
+        if (!contacts[0]->path.empty()) {
+            path = contacts[0]->path;
+        }
+        auto target_uri = ims::sip::extract_uri_from_name_addr(contact_uri);
+        if (!target_uri.empty()) {
+            fwd_message->setRequestUri(target_uri);
+        }
+
+        auto resolved_dest = resolveBindingDestination(*binding);
+        if (!resolved_dest) {
+            IMS_LOG_WARN("Failed to resolve MESSAGE destination for {}: {}",
+                         request_uri, resolved_dest.error().message);
+            auto resp = ims::sip::createResponse(request, 480, "Temporarily Unavailable");
+            if (resp) sendResponse(txn, std::move(*resp), "S-CSCF error");
+            return;
+        }
+
+        dest = *resolved_dest;
+    }
+
+    IMS_LOG_DEBUG("Forwarding MESSAGE request_uri={} contact={} path={} dest={}:{} transport={}",
+                  fwd_message->requestUri(),
+                  contact_uri,
+                  path,
+                  dest.address,
+                  dest.port,
+                  dest.transport);
+
+    auto result = proxy_.forwardStateful(*fwd_message, dest, txn, sip_stack_, {
+        .add_record_route = false,
+    });
+    if (!result) {
+        IMS_LOG_WARN("Failed to forward MESSAGE for Call-ID={}: {}", call_id, result.error().message);
+    }
+}
+
 void SessionRouter::handleCancel(const ims::sip::SipMessage& request,
                                  std::shared_ptr<ims::sip::ServerTransaction> txn) {
     auto call_id = request.callId();

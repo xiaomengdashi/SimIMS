@@ -24,6 +24,8 @@ private:
                     ims::sip::SipMessage& request);
     void onInvite(std::shared_ptr<ims::sip::ServerTransaction> txn,
                   ims::sip::SipMessage& request);
+    void onMessage(std::shared_ptr<ims::sip::ServerTransaction> txn,
+                   ims::sip::SipMessage& request);
     void onSubscribe(std::shared_ptr<ims::sip::ServerTransaction> txn,
                      ims::sip::SipMessage& request);
     auto localScscfEndpoint() const -> ims::sip::Endpoint;

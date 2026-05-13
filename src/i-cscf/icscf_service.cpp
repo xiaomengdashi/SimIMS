@@ -55,6 +55,9 @@ auto IcscfService::start() -> VoidResult {
     sip_stack_->onRequest("PRACK", [this](auto txn, auto& req) {
         onInDialogStateful(txn, req, "PRACK");
     });
+    sip_stack_->onRequest("MESSAGE", [this](auto txn, auto& req) {
+        onMessage(txn, req);
+    });
     sip_stack_->onRequest("SUBSCRIBE", [this](auto txn, auto& req) {
         onSubscribe(txn, req);
     });
@@ -115,6 +118,31 @@ void IcscfService::onInvite(std::shared_ptr<ims::sip::ServerTransaction> txn,
     auto endpoint = ims::sip::parse_endpoint_from_uri(*scscf_result);
     if (!endpoint) {
         IMS_LOG_ERROR("Invalid serving S-CSCF URI from LIA: {}", *scscf_result);
+        auto resp = ims::sip::createResponse(request, 500, "Internal Server Error");
+        if (resp) txn->sendResponse(std::move(*resp));
+        return;
+    }
+    forwardStateful(std::move(txn), request, *endpoint, false);
+}
+
+void IcscfService::onMessage(std::shared_ptr<ims::sip::ServerTransaction> txn,
+                              ims::sip::SipMessage& request)
+{
+    IMS_LOG_DEBUG("I-CSCF received MESSAGE (MT SMS routing)");
+
+    auto impu = ims::sip::normalize_impu_uri(request.requestUri());
+
+    auto scscf_result = selector_->selectForRouting(impu);
+    if (!scscf_result) {
+        IMS_LOG_WARN("No serving S-CSCF for MESSAGE target {}", impu);
+        auto resp = ims::sip::createResponse(request, 404, "Not Found");
+        if (resp) txn->sendResponse(std::move(*resp));
+        return;
+    }
+
+    auto endpoint = ims::sip::parse_endpoint_from_uri(*scscf_result);
+    if (!endpoint) {
+        IMS_LOG_ERROR("Invalid serving S-CSCF URI from LIA for MESSAGE: {}", *scscf_result);
         auto resp = ims::sip::createResponse(request, 500, "Internal Server Error");
         if (resp) txn->sendResponse(std::move(*resp));
         return;

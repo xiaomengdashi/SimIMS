@@ -7,11 +7,20 @@
 #include <boost/asio/io_context.hpp>
 #include <gtest/gtest.h>
 
+#include <unordered_set>
+
 namespace {
 
 class CapturingTransport final : public ims::sip::ITransport {
 public:
     auto send(const ims::sip::SipMessage& msg, const ims::sip::Endpoint& dest) -> ims::VoidResult override {
+        if (fail_send_count > 0) {
+            --fail_send_count;
+            return std::unexpected(ims::ErrorInfo{
+                ims::ErrorCode::kSipTransportError,
+                "synthetic send failure",
+            });
+        }
         auto clone = msg.clone();
         if (!clone) {
             return std::unexpected(clone.error());
@@ -35,6 +44,7 @@ public:
     MessageCallback callback;
     std::vector<ims::sip::SipMessage> sent_messages;
     std::vector<ims::sip::Endpoint> sent_destinations;
+    int fail_send_count = 0;
 };
 
 class FakeSipStack final : public ims::sip::SipStack {
@@ -51,6 +61,9 @@ class NoopRegistrationStore final : public ims::registration::IRegistrationStore
 public:
     auto store(const ims::registration::RegistrationBinding&) -> ims::VoidResult override { return {}; }
     auto lookup(std::string_view) -> ims::Result<ims::registration::RegistrationBinding> override {
+        if (binding) {
+            return *binding;
+        }
         return std::unexpected(ims::ErrorInfo{ims::ErrorCode::kRegistrationNotFound, "not found"});
     }
     auto upsertContact(std::string_view,
@@ -70,7 +83,12 @@ public:
     auto removeBindings(const std::unordered_set<std::string>&) -> ims::Result<size_t> override { return size_t{0}; }
     auto remove(std::string_view) -> ims::VoidResult override { return {}; }
     auto purgeExpired() -> ims::Result<size_t> override { return size_t{0}; }
-    auto isRegistered(std::string_view) -> ims::Result<bool> override { return false; }
+    auto isRegistered(std::string_view impu) -> ims::Result<bool> override {
+        return registered_impus.contains(std::string(impu));
+    }
+
+    std::optional<ims::registration::RegistrationBinding> binding;
+    std::unordered_set<std::string> registered_impus;
 };
 
 auto makeRequest(const std::string& method,
@@ -151,6 +169,47 @@ protected:
             .caller_tag = caller_tag,
             .callee_tag = callee_tag,
         };
+    }
+
+    void seedRegisteredMessageUsers() {
+        store->registered_impus.insert("sip:alice@ims.example.com");
+        store->binding = ims::registration::RegistrationBinding{
+            .impu = "sip:bob@ims.example.com",
+            .impi = "bob-private@ims.example.com",
+            .scscf_uri = "sip:scscf.ims.example.com",
+            .contacts = {
+                ims::registration::ContactBinding{
+                    .contact_uri = "<sip:bob@10.0.0.23:5092;transport=udp>",
+                    .path = "<sip:pcscf.ims.example.com:5060;lr>",
+                    .expires = std::chrono::steady_clock::now() + std::chrono::minutes{5},
+                },
+            },
+            .state = ims::registration::RegistrationBinding::State::kRegistered,
+        };
+    }
+
+    auto makeMessage(const std::string& call_id = "sms-message-call",
+                     std::string_view extra_headers = "",
+                     std::string_view body = "hello") -> ims::sip::SipMessage {
+        auto raw = std::format(
+            "MESSAGE sip:bob@ims.example.com SIP/2.0\r\n"
+            "Via: SIP/2.0/UDP 127.0.0.1:5090;branch=z9hG4bK-{}\r\n"
+            "From: <sip:alice@ims.example.com>;tag=alice-msg\r\n"
+            "To: <sip:bob@ims.example.com>\r\n"
+            "Call-ID: {}\r\n"
+            "CSeq: 1 MESSAGE\r\n"
+            "{}"
+            "Content-Type: text/plain\r\n"
+            "Content-Length: {}\r\n\r\n"
+            "{}",
+            call_id,
+            call_id,
+            extra_headers,
+            body.size(),
+            body);
+        auto parsed = ims::sip::SipMessage::parse(raw);
+        EXPECT_TRUE(parsed.has_value()) << parsed.error().message;
+        return std::move(*parsed);
     }
 
     boost::asio::io_context io;
@@ -313,6 +372,97 @@ TEST_F(SessionRouterTest, CancelCanStillUseInitialSessionBeforeFinalFailureClean
     EXPECT_TRUE(router->sessions_.at(key("call-cancel-before-fail", "caller", "")).cancel_seen);
     ASSERT_EQ(transport->sent_destinations.size(), 2u);
     EXPECT_EQ(transport->sent_destinations[1].port, 5070);
+}
+
+TEST_F(SessionRouterTest, MessageToRegisteredCalleeRoutesToRegisteredContact) {
+    seedRegisteredMessageUsers();
+    auto message = makeMessage();
+
+    router->handleMessage(message, makeTxn(message, transport, io));
+
+    ASSERT_EQ(transport->sent_destinations.size(), 1u);
+    EXPECT_EQ(transport->sent_destinations[0].address, "pcscf.ims.example.com");
+    EXPECT_EQ(transport->sent_destinations[0].port, 5060);
+    ASSERT_EQ(transport->sent_messages.size(), 1u);
+    EXPECT_EQ(transport->sent_messages[0].method(), "MESSAGE");
+    EXPECT_EQ(transport->sent_messages[0].requestUri(), "sip:bob@10.0.0.23:5092;transport=udp");
+    ASSERT_TRUE(transport->sent_messages[0].body().has_value());
+    EXPECT_EQ(*transport->sent_messages[0].body(), "hello");
+}
+
+TEST_F(SessionRouterTest, MessageToUnknownCalleeReturns404WhenNoPeerIcscfConfigured) {
+    store->registered_impus.insert("sip:alice@ims.example.com");
+    auto message = ims::sip::SipMessage::parse(
+        "MESSAGE sip:missing@ims.example.com SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP 127.0.0.1:5090;branch=z9hG4bK-missing-message\r\n"
+        "From: <sip:alice@ims.example.com>;tag=alice-msg\r\n"
+        "To: <sip:missing@ims.example.com>\r\n"
+        "Call-ID: sms-missing-call\r\n"
+        "CSeq: 1 MESSAGE\r\n"
+        "Content-Length: 0\r\n\r\n");
+    ASSERT_TRUE(message.has_value()) << message.error().message;
+
+    router->handleMessage(*message, makeTxn(*message, transport, io));
+
+    ASSERT_EQ(transport->sent_messages.size(), 1u);
+    EXPECT_EQ(transport->sent_messages[0].statusCode(), 404);
+}
+
+TEST_F(SessionRouterTest, MessageFromUnregisteredSenderReturns403) {
+    seedRegisteredMessageUsers();
+    store->registered_impus.clear();
+    auto message = makeMessage("sms-unregistered-sender");
+
+    router->handleMessage(message, makeTxn(message, transport, io));
+
+    ASSERT_EQ(transport->sent_messages.size(), 1u);
+    EXPECT_EQ(transport->sent_messages[0].statusCode(), 403);
+    ASSERT_EQ(transport->sent_destinations.size(), 1u);
+    EXPECT_EQ(transport->sent_destinations[0].port, 5090);
+}
+
+TEST_F(SessionRouterTest, MessageWithZeroMaxForwardsReturns483) {
+    seedRegisteredMessageUsers();
+    auto message = makeMessage("sms-max-forwards-zero", "Max-Forwards: 0\r\n");
+
+    router->handleMessage(message, makeTxn(message, transport, io));
+
+    ASSERT_EQ(transport->sent_messages.size(), 1u);
+    EXPECT_EQ(transport->sent_messages[0].statusCode(), 483);
+    ASSERT_EQ(transport->sent_destinations.size(), 1u);
+    EXPECT_EQ(transport->sent_destinations[0].port, 5090);
+}
+
+TEST_F(SessionRouterTest, MessageSendFailureReturns500Upstream) {
+    seedRegisteredMessageUsers();
+    auto message = makeMessage("sms-send-failure");
+    transport->fail_send_count = 1;
+
+    router->handleMessage(message, makeTxn(message, transport, io));
+
+    ASSERT_EQ(transport->sent_messages.size(), 1u);
+    EXPECT_EQ(transport->sent_messages[0].statusCode(), 500);
+    ASSERT_EQ(transport->sent_destinations.size(), 1u);
+    EXPECT_EQ(transport->sent_destinations[0].port, 5090);
+}
+
+TEST_F(SessionRouterTest, MessageDownstreamResponseIsForwardedUpstream) {
+    seedRegisteredMessageUsers();
+    auto message = makeMessage("sms-response-forwarding");
+
+    router->handleMessage(message, makeTxn(message, transport, io));
+    ASSERT_EQ(transport->sent_messages.size(), 1u);
+
+    auto downstream_response = ims::sip::createResponse(transport->sent_messages[0], 200, "OK");
+    ASSERT_TRUE(downstream_response.has_value()) << downstream_response.error().message;
+    stack->transactionLayer().processMessage(std::move(*downstream_response), transport->sent_destinations[0]);
+
+    ASSERT_EQ(transport->sent_messages.size(), 2u);
+    EXPECT_EQ(transport->sent_messages[1].statusCode(), 200);
+    ASSERT_EQ(transport->sent_destinations.size(), 2u);
+    EXPECT_EQ(transport->sent_destinations[1].port, 5090);
+    EXPECT_EQ(transport->sent_messages[1].viaCount(), 1);
+    EXPECT_NE(transport->sent_messages[1].topVia().find("127.0.0.1:5090"), std::string::npos);
 }
 
 } // namespace

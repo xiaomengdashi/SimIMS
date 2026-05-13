@@ -200,4 +200,32 @@ TEST_F(IcscfServiceTest, InviteNormalizesTelRequestUriBeforeLocationLookup) {
     EXPECT_EQ(capturing_transport->sent_destinations[0].transport, "udp");
 }
 
+TEST_F(IcscfServiceTest, MessageUsesSelectorResultForRouting) {
+    auto message = make_request("MESSAGE", "message-call", 1);
+    message.setBody("hello", "text/plain");
+    auto message_for_txn = message.clone();
+    ASSERT_TRUE(message_for_txn.has_value()) << message_for_txn.error().message;
+
+    ims::sip::Endpoint source{.address = "127.0.0.1", .port = 5090, .transport = "udp"};
+    auto txn = std::make_shared<ims::sip::ServerTransaction>(std::move(*message_for_txn), capturing_transport, source, io);
+
+    EXPECT_CALL(*hss, locationInfo(Truly([](const ims::diameter::LirParams& params) {
+        return params.impu == "sip:user@ims.example.com";
+    })))
+        .WillOnce(Return(ims::Result<ims::diameter::LiaResult>{ims::diameter::LiaResult{
+            .result_code = 2001,
+            .assigned_scscf = "sip:192.168.100.40:5101;transport=udp",
+        }}));
+
+    service->onMessage(txn, message);
+
+    ASSERT_EQ(capturing_transport->sent_destinations.size(), 1u);
+    EXPECT_EQ(capturing_transport->sent_destinations[0].address, "192.168.100.40");
+    EXPECT_EQ(capturing_transport->sent_destinations[0].port, 5101);
+    ASSERT_EQ(capturing_transport->sent_messages.size(), 1u);
+    EXPECT_EQ(capturing_transport->sent_messages[0].method(), "MESSAGE");
+    ASSERT_TRUE(capturing_transport->sent_messages[0].body().has_value());
+    EXPECT_EQ(*capturing_transport->sent_messages[0].body(), "hello");
+}
+
 } // namespace

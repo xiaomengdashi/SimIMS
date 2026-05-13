@@ -47,6 +47,44 @@ auto makeInviteResponse(int status, std::string_view reason, std::string_view ca
     return std::move(*parsed);
 }
 
+class CapturingTransport final : public ims::sip::ITransport {
+public:
+    auto send(const ims::sip::SipMessage& msg, const ims::sip::Endpoint& dest) -> ims::VoidResult override {
+        auto clone = msg.clone();
+        if (!clone) {
+            return std::unexpected(clone.error());
+        }
+        sent_messages.push_back(std::move(*clone));
+        sent_destinations.push_back(dest);
+        return {};
+    }
+
+    void setMessageCallback(MessageCallback cb) override {
+        callback = std::move(cb);
+    }
+
+    auto start() -> ims::VoidResult override { return {}; }
+    void stop() override {}
+
+    auto localEndpoint() const -> ims::sip::Endpoint override {
+        return ims::sip::Endpoint{.address = "127.0.0.1", .port = 5060, .transport = "udp"};
+    }
+
+    MessageCallback callback;
+    std::vector<ims::sip::SipMessage> sent_messages;
+    std::vector<ims::sip::Endpoint> sent_destinations;
+};
+
+class FakeSipStack final : public ims::sip::SipStack {
+public:
+    FakeSipStack(boost::asio::io_context& io,
+                 const std::shared_ptr<ims::sip::ITransport>& transport)
+        : ims::sip::SipStack(io, "127.0.0.1", 0) {
+        transport_ = transport;
+        txn_layer_ = std::make_unique<ims::sip::TransactionLayer>(io, transport_);
+    }
+};
+
 class PcscfServiceTest : public ::testing::Test {
 protected:
     void SetUp() override {
@@ -63,11 +101,22 @@ protected:
         rtpengine_ = std::make_shared<StrictMock<ims::test::MockRtpengineClient>>();
         service_ = std::make_unique<ims::pcscf::PcscfService>(
             cfg, io_, pcf_, rtpengine_, cfg.core_entry.address, cfg.core_entry.port);
+        capturing_transport_ = std::make_shared<CapturingTransport>();
+        service_->sip_stack_ = std::make_unique<FakeSipStack>(io_, capturing_transport_);
+    }
+
+    auto make_txn(const ims::sip::SipMessage& request,
+                  const ims::sip::Endpoint& source) -> std::shared_ptr<ims::sip::ServerTransaction> {
+        auto clone = request.clone();
+        EXPECT_TRUE(clone.has_value()) << clone.error().message;
+        return std::make_shared<ims::sip::ServerTransaction>(
+            std::move(*clone), capturing_transport_, source, io_);
     }
 
     boost::asio::io_context io_;
     std::shared_ptr<StrictMock<ims::test::MockPcfClient>> pcf_;
     std::shared_ptr<StrictMock<ims::test::MockRtpengineClient>> rtpengine_;
+    std::shared_ptr<CapturingTransport> capturing_transport_;
     std::unique_ptr<ims::pcscf::PcscfService> service_;
 };
 
@@ -618,6 +667,72 @@ TEST_F(PcscfServiceTest, SanitizeForUeEgressPreservesRouteButCollapsesViaChain) 
     auto routes = req->routes();
     ASSERT_EQ(routes.size(), 1u);
     EXPECT_NE(routes.front().find("th=th123"), std::string::npos);
+}
+
+TEST_F(PcscfServiceTest, MessageFromUeForwardsStatefullyToCoreWithoutMediaHandling) {
+    auto message = ims::sip::SipMessage::parse(
+        "MESSAGE sip:bob@ims.local SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP 10.0.0.7:5090;branch=z9hG4bK-ue-message\r\n"
+        "From: <sip:alice@ims.local>;tag=alice-msg\r\n"
+        "To: <sip:bob@ims.local>\r\n"
+        "Call-ID: pcscf-ue-message\r\n"
+        "CSeq: 1 MESSAGE\r\n"
+        "Content-Type: text/plain\r\n"
+        "Content-Length: 5\r\n\r\n"
+        "hello");
+    ASSERT_TRUE(message.has_value()) << message.error().message;
+
+    EXPECT_CALL(*rtpengine_, offer(_, _, _)).Times(0);
+    EXPECT_CALL(*rtpengine_, answer(_, _, _)).Times(0);
+
+    service_->onMessage(make_txn(*message, ims::sip::Endpoint{
+                            .address = "10.0.0.7",
+                            .port = 5090,
+                            .transport = "udp",
+                        }),
+                        *message);
+
+    ASSERT_EQ(capturing_transport_->sent_destinations.size(), 1u);
+    EXPECT_EQ(capturing_transport_->sent_destinations[0].address, "127.0.0.1");
+    EXPECT_EQ(capturing_transport_->sent_destinations[0].port, 5062);
+    ASSERT_EQ(capturing_transport_->sent_messages.size(), 1u);
+    EXPECT_EQ(capturing_transport_->sent_messages[0].method(), "MESSAGE");
+    ASSERT_TRUE(capturing_transport_->sent_messages[0].body().has_value());
+    EXPECT_EQ(*capturing_transport_->sent_messages[0].body(), "hello");
+}
+
+TEST_F(PcscfServiceTest, MessageFromCoreForwardsStatefullyToUe) {
+    auto message = ims::sip::SipMessage::parse(
+        "MESSAGE sip:alice@10.0.0.7:5090 SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP 127.0.0.1:5062;branch=z9hG4bK-core-message\r\n"
+        "Via: SIP/2.0/UDP 10.0.0.8:5091;branch=z9hG4bK-caller-message\r\n"
+        "Route: <sip:127.0.0.1:5060;lr;th=unused-message-token>\r\n"
+        "From: <sip:bob@ims.local>;tag=bob-msg\r\n"
+        "To: <sip:alice@ims.local>\r\n"
+        "Call-ID: pcscf-core-message\r\n"
+        "CSeq: 1 MESSAGE\r\n"
+        "Content-Type: text/plain\r\n"
+        "Content-Length: 2\r\n\r\n"
+        "hi");
+    ASSERT_TRUE(message.has_value()) << message.error().message;
+
+    service_->onMessage(make_txn(*message, ims::sip::Endpoint{
+                            .address = "127.0.0.1",
+                            .port = 5062,
+                            .transport = "udp",
+                        }),
+                        *message);
+
+    ASSERT_EQ(capturing_transport_->sent_destinations.size(), 1u);
+    EXPECT_EQ(capturing_transport_->sent_destinations[0].address, "10.0.0.7");
+    EXPECT_EQ(capturing_transport_->sent_destinations[0].port, 5090);
+    ASSERT_EQ(capturing_transport_->sent_messages.size(), 1u);
+    EXPECT_EQ(capturing_transport_->sent_messages[0].method(), "MESSAGE");
+    ASSERT_TRUE(capturing_transport_->sent_messages[0].body().has_value());
+    EXPECT_EQ(*capturing_transport_->sent_messages[0].body(), "hi");
+    EXPECT_TRUE(capturing_transport_->sent_messages[0].routes().empty());
+    EXPECT_NE(capturing_transport_->sent_messages[0].topVia().find("127.0.0.1:0"), std::string::npos);
+    EXPECT_TRUE(service_->topology_routes_.empty());
 }
 
 } // namespace
