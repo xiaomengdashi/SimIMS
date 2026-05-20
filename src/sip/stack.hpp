@@ -33,6 +33,8 @@ public:
     auto transport() -> std::shared_ptr<ITransport>;
     auto transactionLayer() -> TransactionLayer&;
 
+    void assignTransport(std::shared_ptr<ITransport> transport);
+
     auto localAddress() const -> std::string;
     auto localPort() const -> Port;
 

@@ -20,7 +20,8 @@ class SessionRouter {
 public:
     SessionRouter(std::shared_ptr<ims::registration::IRegistrationStore> store,
                   ims::sip::SipStack& sip_stack,
-                  std::optional<ims::sip::Endpoint> peer_icscf = std::nullopt);
+                  std::optional<ims::sip::Endpoint> peer_icscf = std::nullopt,
+                  std::optional<ims::sip::Endpoint> smsc = std::nullopt);
 
     /// Handle incoming INVITE - look up callee and forward
     void handleInvite(const ims::sip::SipMessage& request,
@@ -42,7 +43,7 @@ public:
     void handlePrack(const ims::sip::SipMessage& request,
                      std::shared_ptr<ims::sip::ServerTransaction> txn);
 
-    /// Handle MESSAGE - route pager-mode SMS to the registered target UE.
+    /// Handle MESSAGE - route SMS over IMS (application/vnd.3gpp.sms) to the target UE.
     void handleMessage(const ims::sip::SipMessage& request,
                        std::shared_ptr<ims::sip::ServerTransaction> txn);
 
@@ -108,6 +109,7 @@ private:
     ims::sip::SipStack& sip_stack_;
     ims::sip::ProxyCore proxy_;
     std::optional<ims::sip::Endpoint> peer_icscf_;
+    std::optional<ims::sip::Endpoint> smsc_;
 
     std::mutex sessions_mutex_;
     SessionMap sessions_;

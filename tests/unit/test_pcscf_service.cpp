@@ -7,8 +7,11 @@
 #include "mocks/mock_transport.hpp"
 #include "sip/message.hpp"
 #include "sip/transaction.hpp"
+#include "sms/hex_utils.hpp"
+#include "sms/samples.hpp"
 
 #include <gmock/gmock.h>
+#include <format>
 #include <gtest/gtest.h>
 
 #include <optional>
@@ -670,16 +673,21 @@ TEST_F(PcscfServiceTest, SanitizeForUeEgressPreservesRouteButCollapsesViaChain) 
 }
 
 TEST_F(PcscfServiceTest, MessageFromUeForwardsStatefullyToCoreWithoutMediaHandling) {
-    auto message = ims::sip::SipMessage::parse(
+    auto body_bytes = ims::sms::decode_hex(ims::sms::kSampleRpDataHex);
+    ASSERT_TRUE(body_bytes.has_value()) << body_bytes.error().message;
+    const std::string body(body_bytes->begin(), body_bytes->end());
+    auto raw = std::format(
         "MESSAGE sip:bob@ims.local SIP/2.0\r\n"
         "Via: SIP/2.0/UDP 10.0.0.7:5090;branch=z9hG4bK-ue-message\r\n"
         "From: <sip:alice@ims.local>;tag=alice-msg\r\n"
         "To: <sip:bob@ims.local>\r\n"
         "Call-ID: pcscf-ue-message\r\n"
         "CSeq: 1 MESSAGE\r\n"
-        "Content-Type: text/plain\r\n"
-        "Content-Length: 5\r\n\r\n"
-        "hello");
+        "Content-Type: application/vnd.3gpp.sms\r\n"
+        "Content-Length: {}\r\n\r\n",
+        body.size());
+    raw.append(body);
+    auto message = ims::sip::SipMessage::parse(raw);
     ASSERT_TRUE(message.has_value()) << message.error().message;
 
     EXPECT_CALL(*rtpengine_, offer(_, _, _)).Times(0);
@@ -698,11 +706,14 @@ TEST_F(PcscfServiceTest, MessageFromUeForwardsStatefullyToCoreWithoutMediaHandli
     ASSERT_EQ(capturing_transport_->sent_messages.size(), 1u);
     EXPECT_EQ(capturing_transport_->sent_messages[0].method(), "MESSAGE");
     ASSERT_TRUE(capturing_transport_->sent_messages[0].body().has_value());
-    EXPECT_EQ(*capturing_transport_->sent_messages[0].body(), "hello");
+    EXPECT_EQ(*capturing_transport_->sent_messages[0].body(), body);
 }
 
 TEST_F(PcscfServiceTest, MessageFromCoreForwardsStatefullyToUe) {
-    auto message = ims::sip::SipMessage::parse(
+    auto body_bytes = ims::sms::decode_hex(ims::sms::kSampleRpDataHex);
+    ASSERT_TRUE(body_bytes.has_value()) << body_bytes.error().message;
+    const std::string body(body_bytes->begin(), body_bytes->end());
+    auto raw = std::format(
         "MESSAGE sip:alice@10.0.0.7:5090 SIP/2.0\r\n"
         "Via: SIP/2.0/UDP 127.0.0.1:5062;branch=z9hG4bK-core-message\r\n"
         "Via: SIP/2.0/UDP 10.0.0.8:5091;branch=z9hG4bK-caller-message\r\n"
@@ -711,9 +722,11 @@ TEST_F(PcscfServiceTest, MessageFromCoreForwardsStatefullyToUe) {
         "To: <sip:alice@ims.local>\r\n"
         "Call-ID: pcscf-core-message\r\n"
         "CSeq: 1 MESSAGE\r\n"
-        "Content-Type: text/plain\r\n"
-        "Content-Length: 2\r\n\r\n"
-        "hi");
+        "Content-Type: application/vnd.3gpp.sms\r\n"
+        "Content-Length: {}\r\n\r\n",
+        body.size());
+    raw.append(body);
+    auto message = ims::sip::SipMessage::parse(raw);
     ASSERT_TRUE(message.has_value()) << message.error().message;
 
     service_->onMessage(make_txn(*message, ims::sip::Endpoint{
@@ -729,7 +742,7 @@ TEST_F(PcscfServiceTest, MessageFromCoreForwardsStatefullyToUe) {
     ASSERT_EQ(capturing_transport_->sent_messages.size(), 1u);
     EXPECT_EQ(capturing_transport_->sent_messages[0].method(), "MESSAGE");
     ASSERT_TRUE(capturing_transport_->sent_messages[0].body().has_value());
-    EXPECT_EQ(*capturing_transport_->sent_messages[0].body(), "hi");
+    EXPECT_EQ(*capturing_transport_->sent_messages[0].body(), body);
     EXPECT_TRUE(capturing_transport_->sent_messages[0].routes().empty());
     EXPECT_NE(capturing_transport_->sent_messages[0].topVia().find("127.0.0.1:0"), std::string::npos);
     EXPECT_TRUE(service_->topology_routes_.empty());

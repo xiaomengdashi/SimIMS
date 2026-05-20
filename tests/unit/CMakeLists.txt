@@ -135,10 +135,16 @@ add_executable(test_session_router
     test_session_router.cpp
     ${CMAKE_SOURCE_DIR}/src/s-cscf/session_router.cpp
 )
-target_link_libraries(test_session_router PRIVATE ims_sip ims_common GTest::gtest_main)
+target_link_libraries(test_session_router PRIVATE ims_sip ims_sms ims_common GTest::gtest_main)
 target_include_directories(test_session_router PRIVATE ${CMAKE_SOURCE_DIR}/src)
 ims_configure_test_target(test_session_router)
 gtest_discover_tests(test_session_router)
+
+add_executable(test_sms_over_ims test_sms_over_ims.cpp)
+target_link_libraries(test_sms_over_ims PRIVATE ims_sms GTest::gtest_main)
+target_include_directories(test_sms_over_ims PRIVATE ${CMAKE_SOURCE_DIR}/src)
+ims_configure_test_target(test_sms_over_ims)
+gtest_discover_tests(test_sms_over_ims)
 
 # S-CSCF service test
 add_executable(test_scscf_service
@@ -152,7 +158,7 @@ add_executable(test_scscf_service
     ${CMAKE_SOURCE_DIR}/src/s-cscf/ims_aka_auth_provider.cpp
     ${CMAKE_SOURCE_DIR}/src/s-cscf/session_router.cpp
 )
-target_link_libraries(test_scscf_service PRIVATE ims_dns ims_diameter ims_db GTest::gtest_main GTest::gmock)
+target_link_libraries(test_scscf_service PRIVATE ims_dns ims_diameter ims_db ims_sms GTest::gtest_main GTest::gmock)
 target_include_directories(test_scscf_service PRIVATE ${CMAKE_SOURCE_DIR}/tests ${CMAKE_SOURCE_DIR}/src)
 ims_configure_test_target(test_scscf_service)
 gtest_discover_tests(test_scscf_service)
@@ -164,6 +170,7 @@ add_executable(test_pcscf_service
 )
 target_link_libraries(test_pcscf_service PRIVATE
     ims_sip
+    ims_sms
     ims_diameter
     ims_rtp
     ims_common
@@ -182,6 +189,7 @@ add_executable(test_icscf_service
 )
 target_link_libraries(test_icscf_service PRIVATE
     ims_sip
+    ims_sms
     ims_diameter
     ims_common
     GTest::gtest_main

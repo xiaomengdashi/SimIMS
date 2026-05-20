@@ -13,4 +13,5 @@ target_link_libraries(ims_pcscf PRIVATE
     ims_diameter
     ims_rtp
     ims_common
+    ims_sms
 )

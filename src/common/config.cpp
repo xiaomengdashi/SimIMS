@@ -1,6 +1,7 @@
 #include "config.hpp"
 #include <yaml-cpp/yaml.h>
 #include <filesystem>
+#include <format>
 
 namespace ims {
 
@@ -22,6 +23,26 @@ auto parse_endpoint_config(const YAML::Node& node, const SipEndpointConfig& defa
         endpoint.transport = "udp";
     }
     return endpoint;
+}
+
+auto parse_smsc_settings(const YAML::Node& node, const SmscSettings& defaults) -> SmscSettings {
+    SmscSettings settings = defaults;
+    if (auto v = node["psi"]) {
+        settings.psi = v.as<std::string>();
+    }
+    if (auto endpoint = node["endpoint"]) {
+        settings.endpoint = parse_endpoint_config(endpoint, settings.endpoint);
+    } else {
+        settings.endpoint = parse_endpoint_config(node, settings.endpoint);
+    }
+    return settings;
+}
+
+auto routable_address(std::string address) -> std::string {
+    if (address == "0.0.0.0") {
+        return "127.0.0.1";
+    }
+    return address;
 }
 
 } // namespace
@@ -115,6 +136,47 @@ Result<ImsConfig> load_config(const std::string& path) {
         if (auto v = scscf["peer_icscf"]) {
             config.scscf.peer_icscf = parse_endpoint_config(v, config.icscf.local_scscf);
         }
+        if (auto smsc = scscf["smsc"]) {
+            config.scscf.smsc = parse_smsc_settings(smsc, SmscSettings{});
+        }
+    }
+
+    // SMSC section
+    if (auto smsc = root["smsc"]) {
+        if (auto v = smsc["listen_addr"]) {
+            config.smsc.listen_addr = v.as<std::string>();
+        }
+        if (auto v = smsc["listen_port"]) {
+            config.smsc.listen_port = v.as<uint16_t>();
+        }
+        if (auto v = smsc["transport"]) {
+            config.smsc.transport = v.as<std::string>();
+        }
+        if (auto v = smsc["advertised_addr"]) {
+            config.smsc.advertised_addr = v.as<std::string>();
+        }
+        if (auto v = smsc["psi"]) {
+            config.smsc.psi = v.as<std::string>();
+        }
+        if (auto v = smsc["scscf"]) {
+            config.smsc.scscf = parse_endpoint_config(v, config.smsc.scscf);
+        }
+    }
+
+    if (config.smsc.psi.empty()) {
+        config.smsc.psi = std::format("sip:smsc@{}", config.scscf.domain);
+    }
+    if (!config.scscf.smsc) {
+        config.scscf.smsc = SmscSettings{
+            .endpoint = {
+                .address = routable_address(config.smsc.listen_addr),
+                .port = config.smsc.listen_port,
+                .transport = config.smsc.transport.empty() ? "udp" : config.smsc.transport,
+            },
+            .psi = config.smsc.psi,
+        };
+    } else if (config.scscf.smsc->psi.empty()) {
+        config.scscf.smsc->psi = config.smsc.psi;
     }
 
     // HSS adapter section

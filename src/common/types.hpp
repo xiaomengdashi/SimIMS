@@ -24,6 +24,8 @@ enum class ErrorCode : uint32_t {
     kSipTransportError,
     kSipTimeout,
     kSipDialogNotFound,
+    kSmsParseError = 2100,
+    kSmsInvalidPayload,
     // Diameter errors
     kDiameterConnectFailed = 3000,
     kDiameterTimeout,

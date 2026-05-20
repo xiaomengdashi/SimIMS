@@ -1,6 +1,9 @@
 #include "session_router.hpp"
 #include "common/logger.hpp"
 #include "sip/uri_utils.hpp"
+#include "sms/rp_message.hpp"
+#include "sms/sms_validator.hpp"
+#include "sms/tpdu.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -35,6 +38,34 @@ void sendResponse(std::shared_ptr<ims::sip::ServerTransaction> txn,
     }
 }
 
+auto isFromSmsc(const std::optional<ims::sip::Endpoint>& smsc, const ims::sip::Endpoint& source) -> bool {
+    if (!smsc) {
+        return false;
+    }
+    return source.address == smsc->address && source.port == smsc->port;
+}
+
+auto body_as_bytes(const std::string& body) -> std::span<const uint8_t> {
+    return {reinterpret_cast<const uint8_t*>(body.data()), body.size()};
+}
+
+auto is_mo_submit_rp_data(std::span<const uint8_t> payload) -> bool {
+    auto rp = ims::sms::parse_rp_message(payload);
+    if (!rp) {
+        return false;
+    }
+    const auto* data = std::get_if<ims::sms::RpDataMessage>(&*rp);
+    if (!data || data->user_data.empty()) {
+        return false;
+    }
+    auto tpdu = ims::sms::parse_tpdu(data->user_data);
+    return tpdu.has_value() && tpdu->type == ims::sms::TpduType::kSubmit;
+}
+
+auto is_rp_ack(std::span<const uint8_t> payload) -> bool {
+    return ims::sms::rp_message_type(payload) == ims::sms::RpMessageType::kAck;
+}
+
 } // namespace
 
 auto SessionRouter::DialogKeyHash::operator()(const DialogKey& key) const -> std::size_t {
@@ -45,11 +76,13 @@ auto SessionRouter::DialogKeyHash::operator()(const DialogKey& key) const -> std
 
 SessionRouter::SessionRouter(std::shared_ptr<ims::registration::IRegistrationStore> store,
                              ims::sip::SipStack& sip_stack,
-                             std::optional<ims::sip::Endpoint> peer_icscf)
+                             std::optional<ims::sip::Endpoint> peer_icscf,
+                             std::optional<ims::sip::Endpoint> smsc)
     : store_(std::move(store))
     , sip_stack_(sip_stack)
     , proxy_(sip_stack.localAddress(), sip_stack.localPort())
-    , peer_icscf_(std::move(peer_icscf)) {
+    , peer_icscf_(std::move(peer_icscf))
+    , smsc_(std::move(smsc)) {
     IMS_LOG_INFO("SessionRouter initialized");
 }
 
@@ -381,6 +414,19 @@ void SessionRouter::handleMessage(const ims::sip::SipMessage& request,
     auto request_uri = request.requestUri();
     IMS_LOG_INFO("MESSAGE received, Call-ID={}, To={}", call_id, request_uri);
 
+    const auto body = request.body().value_or(std::string{});
+    const auto content_type = request.contentType().value_or(std::string{});
+    if (auto sms_valid = ims::sms::validate_sip_message_body(content_type, body); !sms_valid) {
+        IMS_LOG_WARN("Invalid SMS over IMS payload, Call-ID={}: {}", call_id, sms_valid.error().message);
+        const auto status = sms_valid.error().code == ims::ErrorCode::kSmsInvalidPayload ? 415 : 400;
+        const auto reason = status == 415 ? "Unsupported Media Type" : "Bad Request";
+        auto resp = ims::sip::createResponse(request, status, reason);
+        if (resp) {
+            sendResponse(txn, std::move(*resp), "S-CSCF SMS validation");
+        }
+        return;
+    }
+
     auto fwd_message = request.clone();
     if (!fwd_message) {
         IMS_LOG_ERROR("Failed to clone MESSAGE for forwarding");
@@ -389,24 +435,45 @@ void SessionRouter::handleMessage(const ims::sip::SipMessage& request,
         return;
     }
 
+    const auto source = txn->source();
+    const auto body_bytes = body_as_bytes(body);
+    const bool from_smsc = isFromSmsc(smsc_, source);
+
     ims::sip::Endpoint dest;
     std::string contact_uri = "<existing-target>";
     std::string path = "<none>";
 
-    auto sender_impu = ims::sip::normalize_impu_uri(request.fromHeader());
-    if (sender_impu.empty()) {
-        IMS_LOG_WARN("MESSAGE missing usable From identity, Call-ID={}", call_id);
-        auto resp = ims::sip::createResponse(request, 403, "Forbidden");
-        if (resp) sendResponse(txn, std::move(*resp), "S-CSCF error");
-        return;
-    }
+    if (!from_smsc) {
+        auto sender_impu = ims::sip::normalize_impu_uri(request.fromHeader());
+        if (sender_impu.empty()) {
+            IMS_LOG_WARN("MESSAGE missing usable From identity, Call-ID={}", call_id);
+            auto resp = ims::sip::createResponse(request, 403, "Forbidden");
+            if (resp) sendResponse(txn, std::move(*resp), "S-CSCF error");
+            return;
+        }
 
-    auto sender_registered = store_->isRegistered(sender_impu);
-    if (!sender_registered || !*sender_registered) {
-        IMS_LOG_WARN("MESSAGE sender is not registered: {}", sender_impu);
-        auto resp = ims::sip::createResponse(request, 403, "Forbidden");
-        if (resp) sendResponse(txn, std::move(*resp), "S-CSCF error");
-        return;
+        auto sender_registered = store_->isRegistered(sender_impu);
+        if (!sender_registered || !*sender_registered) {
+            IMS_LOG_WARN("MESSAGE sender is not registered: {}", sender_impu);
+            auto resp = ims::sip::createResponse(request, 403, "Forbidden");
+            if (resp) sendResponse(txn, std::move(*resp), "S-CSCF error");
+            return;
+        }
+
+        if (smsc_) {
+            if (is_rp_ack(body_bytes) || is_mo_submit_rp_data(body_bytes)) {
+                IMS_LOG_INFO("Routing UE-originated SMS to SMSC, Call-ID={}", call_id);
+                dest = *smsc_;
+                auto result = proxy_.forwardStateful(*fwd_message, dest, txn, sip_stack_, {
+                    .add_record_route = false,
+                });
+                if (!result) {
+                    IMS_LOG_WARN("Failed to forward MESSAGE to SMSC Call-ID={}: {}",
+                                 call_id, result.error().message);
+                }
+                return;
+            }
+        }
     }
 
     auto binding = lookupCallee(request_uri);

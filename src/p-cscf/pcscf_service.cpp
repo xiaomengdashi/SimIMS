@@ -1,4 +1,5 @@
 #include "pcscf_service.hpp"
+#include "sms/sms_validator.hpp"
 #include "common/logger.hpp"
 #include "sip/uri_utils.hpp"
 
@@ -196,6 +197,21 @@ void PcscfService::onMessage(std::shared_ptr<ims::sip::ServerTransaction> txn,
                               ims::sip::SipMessage& request)
 {
     IMS_LOG_DEBUG("P-CSCF received MESSAGE for {}", request.requestUri());
+
+    const auto body = request.body().value_or(std::string{});
+    const auto content_type = request.contentType().value_or(std::string{});
+    if (auto sms_valid = ims::sms::validate_sip_message_body(content_type, body); !sms_valid) {
+        IMS_LOG_WARN("P-CSCF rejected invalid SMS MESSAGE for {}: {}",
+                     request.requestUri(), sms_valid.error().message);
+        const auto status = sms_valid.error().code == ims::ErrorCode::kSmsInvalidPayload ? 415 : 400;
+        const auto reason = status == 415 ? "Unsupported Media Type" : "Bad Request";
+        auto resp = ims::sip::createResponse(request, status, reason);
+        if (resp) {
+            txn->sendResponse(std::move(*resp));
+        }
+        return;
+    }
+
     if (isCoreFacingRequest(*txn)) {
         forwardStatefulToUe(std::move(txn), request, false);
         return;

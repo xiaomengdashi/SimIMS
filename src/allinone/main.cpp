@@ -1,6 +1,7 @@
 #include "../p-cscf/pcscf_service.hpp"
 #include "../i-cscf/icscf_service.hpp"
 #include "../s-cscf/scscf_service.hpp"
+#include "../sms/smsc_service.hpp"
 #include "common/config.hpp"
 #include "common/logger.hpp"
 #include "common/io_context.hpp"
@@ -33,6 +34,7 @@ int main(int argc, char* argv[]) {
     IMS_LOG_INFO("  P-CSCF port: {}", config.pcscf.listen_port);
     IMS_LOG_INFO("  I-CSCF port: {}", config.icscf.listen_port);
     IMS_LOG_INFO("  S-CSCF port: {}", config.scscf.listen_port);
+    IMS_LOG_INFO("  SMSC port: {}", config.smsc.listen_port);
 
     ims::IoContext io_ctx(4);
 
@@ -73,6 +75,7 @@ int main(int argc, char* argv[]) {
     ims::icscf::IcscfService icscf(config.icscf, io_ctx.get(), hss);
     ims::pcscf::PcscfService pcscf(config.pcscf, io_ctx.get(), pcf, rtpengine,
                                     core_entry_addr, config.pcscf.core_entry.port);
+    ims::sms::SmscService smsc(config.smsc, io_ctx.get());
 
     // Start all services
     auto r1 = scscf.start();
@@ -93,12 +96,19 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    auto r4 = smsc.start();
+    if (!r4) {
+        IMS_LOG_CRITICAL("Failed to start SMSC: {}", r4.error().message);
+        return 1;
+    }
+
     boost::asio::signal_set signals(io_ctx.get(), SIGINT, SIGTERM);
     signals.async_wait([&](const boost::system::error_code& ec, int) {
         if (ec) {
             return;
         }
         IMS_LOG_INFO("Shutting down IMS All-in-One...");
+        smsc.stop();
         pcscf.stop();
         icscf.stop();
         scscf.stop();

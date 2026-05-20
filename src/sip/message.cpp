@@ -754,6 +754,22 @@ auto SipMessage::body() const -> std::optional<std::string> {
     return std::nullopt;
 }
 
+auto SipMessage::contentType() const -> std::optional<std::string> {
+    if (!msg_->content_type || !msg_->content_type->type) {
+        return std::nullopt;
+    }
+    std::string value = msg_->content_type->type;
+    if (msg_->content_type->subtype && msg_->content_type->subtype[0] != '\0') {
+        value.push_back('/');
+        value += msg_->content_type->subtype;
+    }
+    return value;
+}
+
+void SipMessage::setBinaryBody(std::string body_bytes, const std::string& content_type) {
+    setBody(body_bytes, content_type);
+}
+
 void SipMessage::setBody(const std::string& body_str, const std::string& content_type) {
     // Remove existing bodies
     while (osip_list_size(&msg_->bodies) > 0) {

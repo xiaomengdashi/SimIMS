@@ -18,4 +18,5 @@ target_link_libraries(ims_scscf PRIVATE
     ims_diameter
     ims_dns
     ims_db
+    ims_sms
 )

@@ -83,7 +83,9 @@ public:
     void setContact(const std::string& contact_str);
 
     auto body() const -> std::optional<std::string>;
+    auto contentType() const -> std::optional<std::string>;
     void setBody(const std::string& body_str, const std::string& content_type);
+    void setBinaryBody(std::string body_bytes, const std::string& content_type);
 
     auto maxForwards() const -> int;
     void setMaxForwards(int value);

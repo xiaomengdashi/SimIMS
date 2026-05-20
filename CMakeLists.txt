@@ -56,6 +56,7 @@ endif()
 add_subdirectory(src/common)
 add_subdirectory(src/crypt)
 add_subdirectory(src/sip)
+add_subdirectory(src/sms)
 add_subdirectory(src/dns)
 add_subdirectory(src/db)
 add_subdirectory(src/diameter)
@@ -63,11 +64,13 @@ add_subdirectory(src/rtp)
 add_subdirectory(src/p-cscf)
 add_subdirectory(src/i-cscf)
 add_subdirectory(src/s-cscf)
+add_subdirectory(src/smsc)
 add_subdirectory(src/allinone)
 
 # Testing
 enable_testing()
 add_subdirectory(tests/unit)
+add_subdirectory(tests/integration)
 
 add_test(
     NAME BaresipInviteIntegrationTest
@@ -79,7 +82,7 @@ set_tests_properties(BaresipInviteIntegrationTest PROPERTIES
 )
 
 # Install targets
-install(TARGETS ims_pcscf ims_icscf ims_scscf ims_allinone
+install(TARGETS ims_pcscf ims_icscf ims_scscf ims_smsc ims_allinone
     RUNTIME DESTINATION bin
 )
 install(DIRECTORY config/ DESTINATION etc/ims)

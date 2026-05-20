@@ -4,6 +4,9 @@
 #include "sip/stack.hpp"
 #undef private
 
+#include "sms/hex_utils.hpp"
+#include "sms/samples.hpp"
+
 #include <boost/asio/io_context.hpp>
 #include <gtest/gtest.h>
 
@@ -190,7 +193,11 @@ protected:
 
     auto makeMessage(const std::string& call_id = "sms-message-call",
                      std::string_view extra_headers = "",
-                     std::string_view body = "hello") -> ims::sip::SipMessage {
+                     std::string_view body_hex = ims::sms::kSampleRpDataHex) -> ims::sip::SipMessage {
+        auto body_bytes = ims::sms::decode_hex(body_hex);
+        EXPECT_TRUE(body_bytes.has_value()) << body_bytes.error().message;
+        const std::string body(body_bytes->begin(), body_bytes->end());
+
         auto raw = std::format(
             "MESSAGE sip:bob@ims.example.com SIP/2.0\r\n"
             "Via: SIP/2.0/UDP 127.0.0.1:5090;branch=z9hG4bK-{}\r\n"
@@ -199,14 +206,13 @@ protected:
             "Call-ID: {}\r\n"
             "CSeq: 1 MESSAGE\r\n"
             "{}"
-            "Content-Type: text/plain\r\n"
-            "Content-Length: {}\r\n\r\n"
-            "{}",
+            "Content-Type: application/vnd.3gpp.sms\r\n"
+            "Content-Length: {}\r\n\r\n",
             call_id,
             call_id,
             extra_headers,
-            body.size(),
-            body);
+            body.size());
+        raw.append(body);
         auto parsed = ims::sip::SipMessage::parse(raw);
         EXPECT_TRUE(parsed.has_value()) << parsed.error().message;
         return std::move(*parsed);
@@ -387,22 +393,16 @@ TEST_F(SessionRouterTest, MessageToRegisteredCalleeRoutesToRegisteredContact) {
     EXPECT_EQ(transport->sent_messages[0].method(), "MESSAGE");
     EXPECT_EQ(transport->sent_messages[0].requestUri(), "sip:bob@10.0.0.23:5092;transport=udp");
     ASSERT_TRUE(transport->sent_messages[0].body().has_value());
-    EXPECT_EQ(*transport->sent_messages[0].body(), "hello");
+    EXPECT_EQ(*transport->sent_messages[0].body(), message.body().value_or(""));
+    EXPECT_EQ(transport->sent_messages[0].contentType().value_or(""), "application/vnd.3gpp.sms");
 }
 
 TEST_F(SessionRouterTest, MessageToUnknownCalleeReturns404WhenNoPeerIcscfConfigured) {
     store->registered_impus.insert("sip:alice@ims.example.com");
-    auto message = ims::sip::SipMessage::parse(
-        "MESSAGE sip:missing@ims.example.com SIP/2.0\r\n"
-        "Via: SIP/2.0/UDP 127.0.0.1:5090;branch=z9hG4bK-missing-message\r\n"
-        "From: <sip:alice@ims.example.com>;tag=alice-msg\r\n"
-        "To: <sip:missing@ims.example.com>\r\n"
-        "Call-ID: sms-missing-call\r\n"
-        "CSeq: 1 MESSAGE\r\n"
-        "Content-Length: 0\r\n\r\n");
-    ASSERT_TRUE(message.has_value()) << message.error().message;
+    auto message = makeMessage("sms-missing-call");
+    message.setRequestUri("sip:missing@ims.example.com");
 
-    router->handleMessage(*message, makeTxn(*message, transport, io));
+    router->handleMessage(message, makeTxn(message, transport, io));
 
     ASSERT_EQ(transport->sent_messages.size(), 1u);
     EXPECT_EQ(transport->sent_messages[0].statusCode(), 404);

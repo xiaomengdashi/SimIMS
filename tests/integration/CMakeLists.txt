@@ -1,23 +1,28 @@
-add_executable(ims_allinone
-    main.cpp
-)
+include(GoogleTest)
 
-target_include_directories(ims_allinone PRIVATE
-    ${PROJECT_SOURCE_DIR}/src
-)
+add_executable(test_full_flow test_full_flow.cpp)
 
-target_link_libraries(ims_allinone PRIVATE
+target_link_libraries(test_full_flow PRIVATE
     ims_sip
-    ims_dns
+    ims_sms
     ims_diameter
-    ims_db
     ims_rtp
     ims_common
-    ims_sms
+    GTest::gtest_main
+    GTest::gmock
 )
 
-# All-in-one needs access to all CSCF service sources
-target_sources(ims_allinone PRIVATE
+target_include_directories(test_full_flow PRIVATE
+    ${CMAKE_SOURCE_DIR}/tests
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    target_compile_options(test_full_flow PRIVATE -Wno-character-conversion)
+endif()
+
+target_sources(test_full_flow PRIVATE
     ${CMAKE_SOURCE_DIR}/src/p-cscf/pcscf_service.cpp
     ${CMAKE_SOURCE_DIR}/src/i-cscf/icscf_service.cpp
     ${CMAKE_SOURCE_DIR}/src/i-cscf/scscf_selector.cpp
@@ -25,8 +30,11 @@ target_sources(ims_allinone PRIVATE
     ${CMAKE_SOURCE_DIR}/src/s-cscf/registrar.cpp
     ${CMAKE_SOURCE_DIR}/src/s-cscf/auth_manager.cpp
     ${CMAKE_SOURCE_DIR}/src/s-cscf/digest_credential_store.cpp
-    ${CMAKE_SOURCE_DIR}/src/s-cscf/mongo_digest_credential_store.cpp
     ${CMAKE_SOURCE_DIR}/src/s-cscf/digest_auth_provider.cpp
     ${CMAKE_SOURCE_DIR}/src/s-cscf/ims_aka_auth_provider.cpp
     ${CMAKE_SOURCE_DIR}/src/s-cscf/session_router.cpp
+)
+
+gtest_discover_tests(test_full_flow
+    PROPERTIES LABELS "integration;e2e"
 )

@@ -68,6 +68,28 @@ struct ExosipConfig {
     uint32_t event_poll_ms = 100;
 };
 
+struct SmscSettings {
+    SipEndpointConfig endpoint{
+        .address = "127.0.0.1",
+        .port = 5063,
+        .transport = "udp",
+    };
+    std::string psi;
+};
+
+struct SmscConfig {
+    std::string listen_addr = "0.0.0.0";
+    uint16_t listen_port = 5063;
+    std::string transport = "udp";
+    std::string advertised_addr;
+    std::string psi;
+    SipEndpointConfig scscf{
+        .address = "127.0.0.1",
+        .port = 5062,
+        .transport = "udp",
+    };
+};
+
 struct ScscfConfig {
     std::string listen_addr = "0.0.0.0";
     uint16_t listen_port = 5060;
@@ -78,6 +100,7 @@ struct ScscfConfig {
     uint32_t registration_cleanup_interval_ms = 30000;
     ExosipConfig exosip;
     std::optional<SipEndpointConfig> peer_icscf;
+    std::optional<SmscSettings> smsc;
 };
 
 struct HssSubscriberConfig {
@@ -122,6 +145,7 @@ struct ImsConfig {
     PcscfConfig pcscf;
     IcscfConfig icscf;
     ScscfConfig scscf;
+    SmscConfig smsc;
     HssAdapterConfig hss_adapter;
     MediaConfig media;
     DnsConfig dns;

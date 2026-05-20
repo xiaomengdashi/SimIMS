@@ -59,6 +59,22 @@ scscf:
     transport: udp
     user_agent: SimIMS-eXosip2
     event_poll_ms: 100
+  smsc:
+    address: 127.0.0.1
+    port: 5063
+    transport: udp
+    psi: sip:smsc@ims.mnc011.mcc460.3gppnetwork.org
+
+smsc:
+  listen_addr: 0.0.0.0
+  listen_port: 5063
+  transport: udp
+  advertised_addr: 192.168.31.40
+  psi: sip:smsc@ims.mnc011.mcc460.3gppnetwork.org
+  scscf:
+    address: 127.0.0.1
+    port: 5062
+    transport: udp
 
 hss_adapter:
   type: diameter            # diameter or nudm

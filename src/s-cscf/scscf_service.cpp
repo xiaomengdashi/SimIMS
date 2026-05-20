@@ -88,7 +88,15 @@ ScscfService::ScscfService(const ims::ScscfConfig& config,
             .transport = config.peer_icscf->transport.empty() ? "udp" : config.peer_icscf->transport,
         };
     }
-    session_router_ = std::make_unique<SessionRouter>(store_, *sip_stack_, peer_icscf);
+    std::optional<ims::sip::Endpoint> smsc;
+    if (config.smsc) {
+        smsc = ims::sip::Endpoint{
+            .address = config.smsc->endpoint.address,
+            .port = config.smsc->endpoint.port,
+            .transport = config.smsc->endpoint.transport.empty() ? "udp" : config.smsc->endpoint.transport,
+        };
+    }
+    session_router_ = std::make_unique<SessionRouter>(store_, *sip_stack_, peer_icscf, smsc);
 }
 
 ScscfService::~ScscfService() {

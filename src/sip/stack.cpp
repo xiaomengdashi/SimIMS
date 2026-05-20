@@ -72,6 +72,11 @@ auto SipStack::transactionLayer() -> TransactionLayer& {
     return *txn_layer_;
 }
 
+void SipStack::assignTransport(std::shared_ptr<ITransport> transport) {
+    transport_ = std::move(transport);
+    txn_layer_ = std::make_unique<TransactionLayer>(io_, transport_);
+}
+
 auto SipStack::localAddress() const -> std::string {
     return transport_->localEndpoint().address;
 }

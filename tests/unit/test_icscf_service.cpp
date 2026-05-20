@@ -7,9 +7,14 @@
 #include "sip/message.hpp"
 #include "sip/transaction.hpp"
 #include "sip/transport.hpp"
+#include "sms/constants.hpp"
+#include "sms/hex_utils.hpp"
+#include "sms/samples.hpp"
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
+
+#include <format>
 
 namespace {
 
@@ -201,8 +206,24 @@ TEST_F(IcscfServiceTest, InviteNormalizesTelRequestUriBeforeLocationLookup) {
 }
 
 TEST_F(IcscfServiceTest, MessageUsesSelectorResultForRouting) {
-    auto message = make_request("MESSAGE", "message-call", 1);
-    message.setBody("hello", "text/plain");
+    auto body_bytes = ims::sms::decode_hex(ims::sms::kSampleRpDataHex);
+    ASSERT_TRUE(body_bytes.has_value()) << body_bytes.error().message;
+    const std::string body(body_bytes->begin(), body_bytes->end());
+
+    auto raw = std::format(
+        "MESSAGE sip:user@ims.example.com SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP 127.0.0.1:5090;branch=z9hG4bK-icscf-message\r\n"
+        "From: <sip:caller@ims.example.com>;tag=caller-tag\r\n"
+        "To: <sip:user@ims.example.com>\r\n"
+        "Call-ID: message-call\r\n"
+        "CSeq: 1 MESSAGE\r\n"
+        "Content-Type: application/vnd.3gpp.sms\r\n"
+        "Content-Length: {}\r\n\r\n",
+        body.size());
+    raw.append(body);
+    auto parsed = ims::sip::SipMessage::parse(raw);
+    ASSERT_TRUE(parsed.has_value()) << parsed.error().message;
+    auto message = std::move(*parsed);
     auto message_for_txn = message.clone();
     ASSERT_TRUE(message_for_txn.has_value()) << message_for_txn.error().message;
 
@@ -217,7 +238,9 @@ TEST_F(IcscfServiceTest, MessageUsesSelectorResultForRouting) {
             .assigned_scscf = "sip:192.168.100.40:5101;transport=udp",
         }}));
 
-    service->onMessage(txn, message);
+    auto forward_message = message.clone();
+    ASSERT_TRUE(forward_message.has_value()) << forward_message.error().message;
+    service->onMessage(txn, *forward_message);
 
     ASSERT_EQ(capturing_transport->sent_destinations.size(), 1u);
     EXPECT_EQ(capturing_transport->sent_destinations[0].address, "192.168.100.40");
@@ -225,7 +248,7 @@ TEST_F(IcscfServiceTest, MessageUsesSelectorResultForRouting) {
     ASSERT_EQ(capturing_transport->sent_messages.size(), 1u);
     EXPECT_EQ(capturing_transport->sent_messages[0].method(), "MESSAGE");
     ASSERT_TRUE(capturing_transport->sent_messages[0].body().has_value());
-    EXPECT_EQ(*capturing_transport->sent_messages[0].body(), "hello");
+    EXPECT_EQ(*capturing_transport->sent_messages[0].body(), body);
 }
 
 } // namespace
