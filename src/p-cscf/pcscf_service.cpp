@@ -1,6 +1,6 @@
 #include "pcscf_service.hpp"
 #include "sms/sms_validator.hpp"
-#include "common/logger.hpp"
+#include "core/logger.hpp"
 #include "sip/uri_utils.hpp"
 
 #include <algorithm>

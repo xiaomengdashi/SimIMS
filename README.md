@@ -35,7 +35,7 @@
 | spdlog | 结构化日志 |
 | yaml-cpp | YAML 配置 |
 | Google Test + Google Mock | 单元测试与 Mock |
-| CMake 3.22+ | 构建系统 |
+| Meson + Ninja | 构建系统 |
 
 ## 快速开始
 
@@ -46,7 +46,7 @@
 ```bash
 # Ubuntu/Debian
 sudo apt install -y \
-    build-essential cmake pkg-config ninja-build \
+    build-essential meson pkg-config ninja-build \
     libboost-system-dev \
     libosip2-dev \
     libc-ares-dev \
@@ -62,9 +62,11 @@ sudo apt install -y rtpengine
 ### 构建
 
 ```bash
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
-cmake --build build
+meson setup build --buildtype=debug
+meson compile -C build
 ```
+
+可执行文件默认链接到项目根目录 `bin/`（`meson setup` 选项 `-Dlink_bin=false` 可关闭）。
 
 ### 运行
 
@@ -142,7 +144,7 @@ npm run start
 
 ```bash
 cd build
-ctest --output-on-failure
+meson test -C build --print-errorlogs
 ```
 
 ## SIP 客户端对接
@@ -255,25 +257,27 @@ Linphone 中可直接填写：
 
 ```
 ims/
-├── CMakeLists.txt          # 顶层构建配置
+├── meson.build             # 顶层构建（Meson + Ninja）
 ├── config/ims.yaml         # 配置模板
 ├── docs/                   # 文档
-│   ├── requirements.md     # 需求分析
-│   ├── architecture.md     # 架构设计
-│   └── dns.md              # DNS 使用说明（局域网）
-├── src/
-│   ├── common/             # 公共库实现
-│   ├── sip/                # SIP 核心实现
-│   ├── dns/                # DNS 解析器实现
-│   ├── diameter/           # Diameter Stub 实现
-│   ├── rtp/                # Bencode + rtpengine 客户端与媒体会话管理
-│   ├── p-cscf/             # P-CSCF 服务 + main
-│   ├── i-cscf/             # I-CSCF 服务 + main
-│   ├── s-cscf/             # S-CSCF 服务 + main（含 registrar, auth_manager, session_router）
-│   └── allinone/           # 一体化二进制
+├── lib/                    # 共享库（参考 open5gs 的 lib/ 布局）
+│   ├── core/               # 核心：types, config, logger, io_context
+│   ├── sip/                # SIP 栈
+│   ├── dns/                # DNS 解析
+│   ├── diameter/           # Diameter Cx/Rx
+│   ├── rtp/                # rtpengine NG 客户端
+│   ├── crypt/              # Milenage / AKA
+│   ├── db/                 # MongoDB 用户库
+│   └── sms/                # SMS over IMS
+├── src/                    # 网元可执行文件与服务实现
+│   ├── p-cscf/
+│   ├── i-cscf/
+│   ├── s-cscf/
+│   ├── smsc/
+│   └── allinone/
 └── tests/
-    ├── mocks/              # Google Mock（HSS, PCF, Transport, Store, rtpengine）
-    └── unit/               # 单元测试
+    ├── mocks/
+    └── unit/
 ```
 
 ## 配置说明
@@ -318,7 +322,7 @@ dns:
   timeout_ms: 3000
 ```
 
-注意：当前 [config/ims.yaml](/Users/kolane/SimIMS/config/ims.yaml) 里 `pcscf` 和 `dns` 仍保留了一些历史键名示例，实际解析字段以 [config.hpp](/Users/kolane/SimIMS/src/common/config.hpp) 和 [config.cpp](/Users/kolane/SimIMS/src/common/config.cpp) 为准。
+注意：当前 [config/ims.yaml](config/ims.yaml) 里 `pcscf` 和 `dns` 仍保留了一些历史键名示例，实际解析字段以 [lib/core/config.hpp](lib/core/config.hpp) 和 [lib/core/config.cpp](lib/core/config.cpp) 为准。
 
 DNS 局域网部署与记录示例见：`docs/dns.md`。
 

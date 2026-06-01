@@ -2,7 +2,7 @@
 
 #include "diameter/ihss_client.hpp"
 #include "diameter/types.hpp"
-#include "common/types.hpp"
+#include "core/types.hpp"
 
 #include <memory>
 #include <string>

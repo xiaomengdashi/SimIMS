@@ -3,7 +3,7 @@
 #include "scscf_selector.hpp"
 #include "sip/stack.hpp"
 #include "sip/proxy_core.hpp"
-#include "common/config.hpp"
+#include "core/config.hpp"
 #include "diameter/ihss_client.hpp"
 
 #include <memory>

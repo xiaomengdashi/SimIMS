@@ -4,7 +4,7 @@
 
 ## 1. 适用范围
 
-- 构建系统：CMake 3.22+
+- 构建系统：Meson 1.0+ 与 Ninja
 - 编译器：支持 C++23 的 GCC / Clang
 - 主要依赖：
   - Boost.System
@@ -46,7 +46,7 @@ sudo apt update
 ```bash
 sudo apt install -y \
     build-essential \
-    cmake \
+    meson \
     pkg-config \
     ninja-build \
     libboost-system-dev \
@@ -67,29 +67,21 @@ sudo apt install -y rtpengine baresip
 说明：
 
 - `pkg-config` 用于定位 `libosip2` 和 `c-ares`。
-- `ninja-build` 不是强制要求，但配合 CMake 使用时通常更快。
+- `ninja-build` 为 Meson 默认后端。
 
 ### 3.3 编译
 
-推荐使用 out-of-tree 构建：
-
 ```bash
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build
+meson setup build --buildtype=release
+meson compile -C build
 ```
 
-如果你更习惯 Makefile 生成器，也可以使用：
-
-```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j"$(nproc)"
-```
+编译完成后，默认会在项目根目录 `bin/` 下创建指向构建产物的符号链接（`-Dlink_bin=false` 可关闭）。
 
 ### 3.4 运行单元测试
 
 ```bash
-cd build
-ctest --output-on-failure
+meson test -C build --suite unit --print-errorlogs
 ```
 
 如果只想执行单元测试，可加标签或正则进一步筛选；当前仓库还定义了基于 `baresip` 的集成测试，运行前请先确认对应环境已准备完成。
@@ -104,7 +96,7 @@ ctest --output-on-failure
 示例：
 
 ```bash
-cmake --install build --prefix /opt/simims
+DESTDIR=/ meson install -C build --destdir /opt/simims
 ```
 
 安装后目录通常类似：
@@ -179,7 +171,7 @@ scscf:
 
 ## 5. 常见问题
 
-### 5.1 CMake 找不到 `libosip2` 或 `libcares`
+### 5.1 Meson 找不到 `libosip2` 或 `libcares`
 
 分别检查：
 
@@ -190,15 +182,10 @@ pkg-config --modversion libcares
 
 若命令失败，说明对应开发包尚未正确安装，或者 `PKG_CONFIG_PATH` 未包含实际安装路径。
 
-### 5.3 执行文件不在 `build/src/...`
+### 5.3 执行文件位置
 
-当前顶层 CMake 设置了：
-
-```cmake
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/bin)
-```
-
-因此编译完成后，可执行文件默认在项目根目录下的 `bin/`，而不是 `build/src/`。
+- 构建产物：`build/src/ims_allinone` 等
+- 开发便利：默认选项 `link_bin=true` 会在项目根目录 `bin/` 下创建符号链接，与 README 中的启动命令一致。
 
 ### 5.4 集成测试失败
 
@@ -217,13 +204,13 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/bin)
 
 ```bash
 sudo apt update
-sudo apt install -y build-essential cmake pkg-config ninja-build \
+sudo apt install -y build-essential meson pkg-config ninja-build \
     libboost-system-dev libosip2-dev libc-ares-dev \
     libspdlog-dev libyaml-cpp-dev libgtest-dev libgmock-dev
 
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
-cmake --build build
-cd build && ctest --output-on-failure
+meson setup build --buildtype=debug
+meson compile -C build
+meson test -C build --suite unit --print-errorlogs
 ```
 
 完成后，如需启动服务，可执行：

@@ -1,6 +1,6 @@
-#include "common/config.hpp"
-#include "common/io_context.hpp"
-#include "common/logger.hpp"
+#include "core/config.hpp"
+#include "core/io_context.hpp"
+#include "core/logger.hpp"
 #include "sms/smsc_service.hpp"
 
 #include <boost/asio/signal_set.hpp>

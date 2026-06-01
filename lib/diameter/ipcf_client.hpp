@@ -1,6 +1,6 @@
 #pragma once
 
-#include "common/types.hpp"
+#include "core/types.hpp"
 #include "diameter/types.hpp"
 
 namespace ims::diameter {

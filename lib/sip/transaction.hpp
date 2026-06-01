@@ -2,7 +2,7 @@
 
 #include "message.hpp"
 #include "transport.hpp"
-#include "common/types.hpp"
+#include "core/types.hpp"
 
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/steady_timer.hpp>

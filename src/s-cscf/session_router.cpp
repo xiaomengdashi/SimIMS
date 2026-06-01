@@ -1,5 +1,5 @@
 #include "session_router.hpp"
-#include "common/logger.hpp"
+#include "core/logger.hpp"
 #include "sip/uri_utils.hpp"
 #include "sms/rp_message.hpp"
 #include "sms/sms_validator.hpp"

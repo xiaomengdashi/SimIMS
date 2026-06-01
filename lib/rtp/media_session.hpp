@@ -1,7 +1,7 @@
 #pragma once
 
 #include "rtp/types.hpp"
-#include "common/types.hpp"
+#include "core/types.hpp"
 
 #include <mutex>
 #include <optional>

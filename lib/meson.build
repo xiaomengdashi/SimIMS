@@ -1,0 +1,11 @@
+# Shared libraries (open5gs-style layout: lib/* next to src/*)
+libinc = include_directories('.')
+
+subdir('core')
+subdir('crypt')
+subdir('sip')
+subdir('sms')
+subdir('dns')
+subdir('db')
+subdir('diameter')
+subdir('rtp')

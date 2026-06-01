@@ -5,8 +5,8 @@
 #include "session_router.hpp"
 #include "sip/stack.hpp"
 #include "sip/reg_event_notifier.hpp"
-#include "common/config.hpp"
-#include "common/types.hpp"
+#include "core/config.hpp"
+#include "core/types.hpp"
 #include "diameter/ihss_client.hpp"
 #include "sip/store.hpp"
 

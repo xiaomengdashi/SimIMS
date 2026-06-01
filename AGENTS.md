@@ -7,10 +7,11 @@ This is a telecom/SIP signaling system, not a web application.
 
 ## Build System
 
-- **CMake 3.22+**, C++20 standard
-- Build: `cmake -B build && cmake --build build`
-- Test: `cd build && ctest --output-on-failure`
-- Dependencies: libosip2, boost (system), spdlog, yaml-cpp, c-ares, gtest
+- **Meson 1.0+** + **Ninja**, C++23 standard（布局参考 [open5gs](https://github.com/open5gs/open5gs)：库在 `lib/`，应用在 `src/`）
+- Setup: `meson setup build`
+- Build: `meson compile -C build`（默认在 `bin/` 下生成可执行文件符号链接）
+- Test: `meson test -C build`
+- Dependencies: libosip2, boost (system), spdlog, yaml-cpp, c-ares, gtest, mongoc/bson (pkg-config)
 
 ## Code Conventions
 
@@ -25,12 +26,12 @@ This is a telecom/SIP signaling system, not a web application.
 - **Dependency Injection**: All external deps injected via abstract interfaces (IHssClient, IPcfClient, IRtpengineClient, IRegistrationStore)
 - **Interface locations**: Abstract interfaces in `include/ims/*/`, implementations in `src/*/`
 - **Logging**: Use `IMS_LOG_*` macros (IMS_LOG_TRACE/DEBUG/INFO/WARN/ERROR/CRITICAL), never raw `std::cout`
-- **Config**: YAML via yaml-cpp, config structs in `include/ims/common/config.hpp`
+- **Config**: YAML via yaml-cpp, config structs in `lib/core/config.hpp`
 
 ### File Organization
-- Public headers: `include/ims/<module>/*.hpp`
-- Private headers: `src/<module>/*.hpp` (implementation-specific)
-- Sources: `src/<module>/*.cpp`
+- Shared libraries: `lib/<name>/`（`lib/core` 为核心库：config/logger/io/types；另有 sip/dns/diameter/rtp/crypt/db/sms）
+- Application binaries: `src/<cscf>/main.cpp` + 服务实现
+- Headers: 与实现同目录，`#include "core/config.hpp"`、`#include "sip/message.hpp"`（include 根为 `lib/`）
 - Tests: `tests/unit/test_*.cpp`, mocks in `tests/mocks/mock_*.hpp`
 
 ### SIP Protocol

@@ -1,5 +1,8 @@
 # Build artifacts
 build/
+.meson-private/
+meson-logs/
+meson-info/
 CMakeFiles/
 CMakeCache.txt
 cmake_install.cmake

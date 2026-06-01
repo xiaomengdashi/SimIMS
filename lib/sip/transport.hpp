@@ -1,6 +1,6 @@
 #pragma once
 
-#include "common/types.hpp"
+#include "core/types.hpp"
 
 #include <boost/asio/io_context.hpp>
 #include <functional>

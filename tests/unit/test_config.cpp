@@ -1,5 +1,5 @@
-#include "common/config.hpp"
-#include "common/logger.hpp"
+#include "core/config.hpp"
+#include "core/logger.hpp"
 #include <gtest/gtest.h>
 #include <fstream>
 #include <filesystem>

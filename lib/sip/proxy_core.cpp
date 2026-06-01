@@ -1,7 +1,7 @@
 #include "proxy_core.hpp"
 #include "stack.hpp"
 #include "uri_utils.hpp"
-#include "common/logger.hpp"
+#include "core/logger.hpp"
 #include <osipparser2/osip_parser.h>
 
 #include <algorithm>

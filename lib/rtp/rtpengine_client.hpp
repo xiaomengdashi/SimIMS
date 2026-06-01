@@ -1,6 +1,6 @@
 #pragma once
 
-#include "common/types.hpp"
+#include "core/types.hpp"
 #include "rtp/types.hpp"
 
 namespace ims::media {

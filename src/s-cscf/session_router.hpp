@@ -5,7 +5,7 @@
 #include "sip/proxy_core.hpp"
 #include "sip/transaction.hpp"
 #include "sip/store.hpp"
-#include "common/types.hpp"
+#include "core/types.hpp"
 
 #include <chrono>
 #include <memory>

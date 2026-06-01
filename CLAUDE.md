@@ -7,10 +7,10 @@ This is a telecom/SIP signaling system, not a web application.
 
 ## Build System
 
-- **CMake 3.22+**, C++23 standard
-- Build: `cmake -B build && cmake --build build`
-- Test: `cd build && ctest --output-on-failure`
-- Dependencies: libosip2, boost (system), spdlog, yaml-cpp, c-ares, gtest
+- **Meson 1.0+** + **Ninja**, C++23 standard（`lib/` 放库，`src/` 放网元可执行文件）
+- Build: `meson setup build && meson compile -C build`
+- Test: `meson test -C build`
+- Dependencies: libosip2, boost (system), spdlog, yaml-cpp, c-ares, gtest, mongoc/bson
 
 ## Code Conventions
 
@@ -25,12 +25,11 @@ This is a telecom/SIP signaling system, not a web application.
 - **Dependency Injection**: All external deps injected via abstract interfaces (IHssClient, IPcfClient, IRtpengineClient, IRegistrationStore)
 - **Interface locations**: Abstract interfaces in `include/ims/*/`, implementations in `src/*/`
 - **Logging**: Use `IMS_LOG_*` macros (IMS_LOG_TRACE/DEBUG/INFO/WARN/ERROR/CRITICAL), never raw `std::cout`
-- **Config**: YAML via yaml-cpp, config structs in `include/ims/common/config.hpp`
+- **Config**: YAML via yaml-cpp, config structs in `lib/core/config.hpp`
 
 ### File Organization
-- Public headers: `include/ims/<module>/*.hpp`
-- Private headers: `src/<module>/*.hpp` (implementation-specific)
-- Sources: `src/<module>/*.cpp`
+- Libraries: `lib/core`, `lib/sip`, `lib/dns`, …
+- Applications: `src/p-cscf`, `src/i-cscf`, `src/s-cscf`, `src/smsc`, `src/allinone`
 - Tests: `tests/unit/test_*.cpp`, mocks in `tests/mocks/mock_*.hpp`
 
 ### SIP Protocol

@@ -1,7 +1,7 @@
 #pragma once
 
 #include "diameter/types.hpp"
-#include "common/types.hpp"
+#include "core/types.hpp"
 
 #include <string>
 #include <vector>

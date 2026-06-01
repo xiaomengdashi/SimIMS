@@ -1,6 +1,6 @@
 #pragma once
 
-#include "common/config.hpp"
+#include "core/config.hpp"
 #include "db/subscriber_repository.hpp"
 #include "s-cscf/digest_credential_store.hpp"
 

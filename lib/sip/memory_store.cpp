@@ -1,5 +1,5 @@
 #include "memory_store.hpp"
-#include "common/logger.hpp"
+#include "core/logger.hpp"
 #include "sip/uri_utils.hpp"
 
 #include <algorithm>

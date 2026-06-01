@@ -1,7 +1,7 @@
 #pragma once
 
 #include "address.hpp"
-#include "common/types.hpp"
+#include "core/types.hpp"
 
 #include <cstdint>
 #include <span>

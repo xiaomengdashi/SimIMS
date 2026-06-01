@@ -1,6 +1,6 @@
 #pragma once
 
-#include "common/types.hpp"
+#include "core/types.hpp"
 #include "db/subscriber_repository.hpp"
 
 #include <bson/bson.h>

@@ -1,7 +1,7 @@
 #pragma once
 
-#include "common/config.hpp"
-#include "common/types.hpp"
+#include "core/config.hpp"
+#include "core/types.hpp"
 #include "rp_message.hpp"
 #include "sip/message.hpp"
 #include "sip/proxy_core.hpp"

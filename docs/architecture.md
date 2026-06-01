@@ -108,7 +108,7 @@
 │      └────────────────┼──────────────┘           │
 │                       │                           │
 │                ┌──────┴──────┐                    │
-│                │ ims_common  │                    │
+│                │ lib/core    │                    │
 │                │(types,config│                    │
 │                │ logger, io) │                    │
 │                └─────────────┘                    │
@@ -119,7 +119,7 @@
 
 | 模块 | 职责 | 主要文件 |
 |------|------|----------|
-| **ims_common** | 基础设施：类型定义、配置、日志、I/O | types.hpp, config.hpp, logger.hpp, io_context.hpp |
+| **lib/core** (`imscore`) | 基础设施：类型定义、配置、日志、I/O | types.hpp, config.hpp, logger.hpp, io_context.hpp |
 | **ims_sip** | SIP 协议栈：消息解析、传输、事务、Dialog、代理 | message.hpp, transport.hpp, transaction.hpp, dialog.hpp, stack.hpp, proxy_core.hpp |
 | **ims_dns** | DNS 解析：NAPTR/SRV/A 链式解析 | resolver.hpp |
 | **ims_diameter** | Diameter 客户端：Cx(HSS) 和 Rx(PCF) | ihss_client.hpp, ipcf_client.hpp, cx_client.hpp, rx_client.hpp |
@@ -416,7 +416,7 @@ STR/STA: session_id → result_code
 | 层次 | 技术选型 | 版本 | 用途 |
 |------|----------|------|------|
 | 语言 | C++20 | GCC 12+ / Clang 15+ | concepts, coroutines, jthread, expected |
-| 构建 | CMake | 3.22+ | 跨平台构建 |
+| 构建 | Meson + Ninja | 1.0+ | 跨平台构建 |
 | SIP 解析 | libosip2 | 5.x | SIP 消息解析/构造 |
 | 异步 I/O | Boost.Asio | 1.80+ | 事件循环, UDP/TCP |
 | Diameter | freeDiameter | 1.5+ | Cx/Rx 协议（后续集成） |
@@ -433,59 +433,17 @@ STR/STA: session_id → result_code
 
 ```
 ims/
-├── CMakeLists.txt              # 顶层构建
-├── config/
-│   └── ims.yaml                # 配置模板
-├── docs/
-│   ├── requirements.md         # 需求分析
-│   └── architecture.md         # 架构设计（本文件）
-├── include/ims/
-│   ├── common/                 # 公共类型、配置、日志、I/O
-│   │   ├── types.hpp           # Result<T>, ErrorCode, ErrorInfo
-│   │   ├── config.hpp          # ImsConfig, load_config()
-│   │   ├── logger.hpp          # IMS_LOG_* 宏
-│   │   └── io_context.hpp      # IoContext (boost::asio wrapper)
-│   ├── sip/                    # SIP 协议栈接口
-│   │   ├── message.hpp         # SipMessage (osip2 RAII wrapper)
-│   │   ├── transport.hpp       # ITransport, UdpTransport
-│   │   ├── transaction.hpp     # Server/ClientTransaction, TransactionLayer
-│   │   ├── dialog.hpp          # Dialog, DialogManager
-│   │   ├── stack.hpp           # SipStack (集成层)
-│   │   └── proxy_core.hpp      # ProxyCore (转发辅助)
-│   ├── diameter/               # Diameter 接口定义
-│   │   ├── types.hpp           # Cx/Rx 请求响应类型
-│   │   ├── ihss_client.hpp     # IHssClient (Cx)
-│   │   └── ipcf_client.hpp     # IPcfClient (Rx)
-│   ├── media/                  # 媒体接口定义
-│   │   ├── types.hpp           # SdpInfo, MediaSession
-│   │   └── rtpengine_client.hpp # IRtpengineClient
-│   ├── dns/
-│   │   └── resolver.hpp        # DnsResolver
-│   └── registration/
-│       └── store.hpp           # IRegistrationStore
-├── src/
-│   ├── common/                 # 公共库实现
-│   ├── sip/                    # SIP 核心实现
-│   ├── dns/                    # DNS 解析器实现
-│   ├── diameter/               # Diameter Stub 实现
-│   │   ├── cx_client.hpp/cpp   # StubHssClient
-│   │   └── rx_client.hpp/cpp   # StubPcfClient
-│   ├── media/                  # 媒体实现
-│   │   ├── bencode.hpp/cpp     # Bencode 编解码
-│   │   ├── rtpengine_client*   # rtpengine NG 客户端
-│   │   └── media_session*      # 会话跟踪
-│   ├── registration/           # 注册存储实现
-│   │   └── memory_store*       # 内存存储
-│   ├── pcscf/                  # P-CSCF 服务
-│   ├── icscf/                  # I-CSCF 服务
-│   ├── scscf/                  # S-CSCF 服务
-│   │   ├── registrar*          # 注册管理
-│   │   ├── auth_manager*       # AKA 鉴权
-│   │   └── session_router*     # 会话路由
-│   └── allinone/               # 一体化入口
+├── meson.build                 # 顶层构建（Meson + Ninja）
+├── config/ims.yaml
+├── lib/                        # 共享库（参考 open5gs）
+│   ├── core/                   # types, config, logger, io_context
+│   ├── sip/                    # message, transport, transaction, stack, …
+│   ├── dns/, diameter/, rtp/, crypt/, db/, sms/
+├── src/                        # 网元可执行文件与服务实现
+│   ├── p-cscf/, i-cscf/, s-cscf/, smsc/, allinone/
 └── tests/
-    ├── mocks/                  # Google Mock
-    └── unit/                   # 单元测试
+    ├── mocks/
+    └── unit/
 ```
 
 ---

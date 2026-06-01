@@ -1,0 +1,13 @@
+option(
+    'tests',
+    type: 'boolean',
+    value: true,
+    description: 'Build and register unit/integration tests',
+)
+
+option(
+    'link_bin',
+    type: 'boolean',
+    value: true,
+    description: 'Symlink built executables into project-root bin/ (dev convenience)',
+)

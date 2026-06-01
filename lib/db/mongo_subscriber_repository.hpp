@@ -1,6 +1,6 @@
 #pragma once
 
-#include "common/config.hpp"
+#include "core/config.hpp"
 #include "db/mongo_client.hpp"
 #include "db/subscriber_repository.hpp"
 

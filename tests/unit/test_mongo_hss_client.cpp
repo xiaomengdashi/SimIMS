@@ -1,6 +1,6 @@
 #include "diameter/mongo_hss_client.hpp"
 
-#include "common/types.hpp"
+#include "core/types.hpp"
 #include "mocks/mock_subscriber_repository.hpp"
 
 #include <gmock/gmock.h>

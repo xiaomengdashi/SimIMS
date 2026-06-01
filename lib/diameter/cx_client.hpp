@@ -1,7 +1,7 @@
 #pragma once
 
 #include "diameter/ihss_client.hpp"
-#include "common/config.hpp"
+#include "core/config.hpp"
 
 #include <string>
 #include <unordered_map>

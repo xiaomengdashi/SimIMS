@@ -1,6 +1,6 @@
 #pragma once
 
-#include "common/config.hpp"
+#include "core/config.hpp"
 #include "diameter/types.hpp"
 
 #include <array>

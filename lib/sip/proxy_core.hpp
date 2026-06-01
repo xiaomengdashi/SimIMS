@@ -3,7 +3,7 @@
 #include "message.hpp"
 #include "transaction.hpp"
 #include "transport.hpp"
-#include "common/types.hpp"
+#include "core/types.hpp"
 
 #include <memory>
 #include <string>

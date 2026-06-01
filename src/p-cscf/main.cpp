@@ -1,7 +1,7 @@
 #include "pcscf_service.hpp"
-#include "common/config.hpp"
-#include "common/logger.hpp"
-#include "common/io_context.hpp"
+#include "core/config.hpp"
+#include "core/logger.hpp"
+#include "core/io_context.hpp"
 #include "../diameter/rx_client.hpp"
 
 #include <boost/asio/signal_set.hpp>

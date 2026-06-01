@@ -1,6 +1,6 @@
 #include "transport.hpp"
 #include "message.hpp"
-#include "common/logger.hpp"
+#include "core/logger.hpp"
 
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/ip/udp.hpp>

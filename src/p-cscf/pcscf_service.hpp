@@ -2,7 +2,7 @@
 
 #include "sip/stack.hpp"
 #include "sip/proxy_core.hpp"
-#include "common/config.hpp"
+#include "core/config.hpp"
 #include "diameter/ipcf_client.hpp"
 #include "rtp/rtpengine_client.hpp"
 #include "rtp/media_session.hpp"

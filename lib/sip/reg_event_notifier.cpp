@@ -1,6 +1,6 @@
 #include "reg_event_notifier.hpp"
 
-#include "common/logger.hpp"
+#include "core/logger.hpp"
 #include "uri_utils.hpp"
 
 #include <algorithm>

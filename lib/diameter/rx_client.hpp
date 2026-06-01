@@ -1,7 +1,7 @@
 #pragma once
 
 #include "diameter/ipcf_client.hpp"
-#include "common/config.hpp"
+#include "core/config.hpp"
 
 #include <atomic>
 

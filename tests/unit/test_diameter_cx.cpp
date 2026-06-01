@@ -2,7 +2,7 @@
 #include "diameter/types.hpp"
 #include "diameter/cx_client.hpp"
 #include "diameter/aka_vector_builder.hpp"
-#include "common/config.hpp"
+#include "core/config.hpp"
 #include "../mocks/mock_hss_client.hpp"
 #include <gtest/gtest.h>
 #include <gmock/gmock.h>

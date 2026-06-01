@@ -3,7 +3,7 @@
 #include "message.hpp"
 #include "transport.hpp"
 #include "transaction.hpp"
-#include "common/types.hpp"
+#include "core/types.hpp"
 
 #include <boost/asio/io_context.hpp>
 #include <functional>

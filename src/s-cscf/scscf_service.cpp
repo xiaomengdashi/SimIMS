@@ -1,5 +1,5 @@
 #include "scscf_service.hpp"
-#include "common/logger.hpp"
+#include "core/logger.hpp"
 #include "digest_auth_provider.hpp"
 #include "ims_aka_auth_provider.hpp"
 #include "sip/uri_utils.hpp"
