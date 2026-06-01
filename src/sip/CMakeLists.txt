@@ -6,7 +6,6 @@ add_library(ims_sip
     transport.cpp
     proxy_core.cpp
     memory_store.cpp
-    exosip_context.cpp
     reg_event_notifier.cpp
 )
 
@@ -17,5 +16,4 @@ target_include_directories(ims_sip PUBLIC
 target_link_libraries(ims_sip PUBLIC
     ims_common
     PkgConfig::LIBOSIP2
-    ${IMS_EXOSIP_TARGET}
 )

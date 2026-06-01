@@ -1,9 +1,8 @@
 #pragma once
 
 #include "common/types.hpp"
-#include "exosip_context.hpp"
+#include "stack.hpp"
 
-#include <mutex>
 #include <string>
 #include <vector>
 
@@ -34,17 +33,20 @@ struct IRegEventNotifier {
     virtual void shutdown() = 0;
 };
 
-class ExosipRegEventNotifier final : public IRegEventNotifier {
+class SipStackRegEventNotifier final : public IRegEventNotifier {
 public:
-    explicit ExosipRegEventNotifier(const ims::ExosipConfig& config);
+    SipStackRegEventNotifier(SipStack& sip_stack,
+                             std::string local_address,
+                             Port local_port);
 
     auto start() -> VoidResult override;
     auto sendInitialNotify(const InitialRegNotifyContext& context) -> VoidResult override;
     void shutdown() override;
 
 private:
-    ExosipContext exosip_;
-    std::mutex mutex_;
+    SipStack& sip_stack_;
+    std::string local_address_;
+    Port local_port_;
 };
 
 } // namespace ims::sip

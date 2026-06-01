@@ -63,11 +63,6 @@ scscf:
   domain: test.ims.com
   auth_mode: hybrid_fallback
   registration_cleanup_interval_ms: 15000
-  exosip:
-    enabled: true
-    listen_addr: 0.0.0.0
-    listen_port: 5072
-    transport: udp
 
 dns:
   servers:
@@ -99,10 +94,6 @@ dns:
     EXPECT_EQ(config.scscf.domain, "test.ims.com");
     EXPECT_EQ(config.scscf.auth_mode, "hybrid_fallback");
     EXPECT_EQ(config.scscf.registration_cleanup_interval_ms, 15000u);
-    EXPECT_TRUE(config.scscf.exosip.enabled);
-    EXPECT_EQ(config.scscf.exosip.listen_addr, "0.0.0.0");
-    EXPECT_EQ(config.scscf.exosip.listen_port, 5072);
-    EXPECT_EQ(config.scscf.exosip.transport, "udp");
     EXPECT_FALSE(config.scscf.peer_icscf.has_value());
     ASSERT_EQ(config.dns.servers.size(), 2u);
     EXPECT_EQ(config.dns.servers[0], "8.8.8.8");
@@ -201,9 +192,6 @@ TEST_F(ConfigTest, LoadWithDefaults) {
     EXPECT_EQ(config.scscf.domain, "ims.local");
     EXPECT_EQ(config.scscf.auth_mode, "ims_only");
     EXPECT_EQ(config.scscf.registration_cleanup_interval_ms, 30000u);
-    EXPECT_TRUE(config.scscf.exosip.enabled);
-    EXPECT_EQ(config.scscf.exosip.listen_addr, "0.0.0.0");
-    EXPECT_EQ(config.scscf.exosip.listen_port, 5072);
     EXPECT_FALSE(config.scscf.peer_icscf.has_value());
 }
 

@@ -64,7 +64,6 @@ IRegistrationStore: store, lookup, remove, purgeExpired, isRegistered
 
 ## Important Notes
 
-- This is a **SIP proxy** system, NOT a SIP UA (user agent). Don't use libeXosip2 (it's UA-mode only).
 - The system handles SIP messages statelessly where possible, using transactions only where required by RFC 3261.
 - Diameter stubs (`StubHssClient`, `StubPcfClient`) exist for development; replace with freeDiameter for production.
 - rtpengine is an external process; we control it via bencode-over-UDP (NG protocol).

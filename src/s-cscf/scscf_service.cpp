@@ -75,7 +75,8 @@ ScscfService::ScscfService(const ims::ScscfConfig& config,
     , registration_cleanup_timer_(io)
 {
     if (!reg_event_notifier_) {
-        reg_event_notifier_ = std::make_unique<ims::sip::ExosipRegEventNotifier>(config.exosip);
+        reg_event_notifier_ = std::make_unique<ims::sip::SipStackRegEventNotifier>(
+            *sip_stack_, config.listen_addr, config.listen_port);
     }
     auto auth_providers = buildAuthProviders(config_, hss_, digest_store_);
     registrar_ = std::make_unique<Registrar>(store_, std::move(auth_providers), hss_, config.domain);
@@ -329,7 +330,7 @@ void ScscfService::sendInitialNotify(const ims::sip::SipMessage& subscribe,
         .event = event,
         .subscription_state = std::format("active;expires={}", expires),
         .route_set = route_set,
-        .contact = std::format("<sip:{}:{}>", config_.domain, config_.exosip.listen_port),
+        .contact = std::format("<sip:{}:{}>", config_.domain, config_.listen_port),
         .body = body,
         .content_type = "application/reginfo+xml"
     };
@@ -341,7 +342,7 @@ void ScscfService::sendInitialNotify(const ims::sip::SipMessage& subscribe,
 
     auto send_result = reg_event_notifier_->sendInitialNotify(notify_context);
     if (!send_result) {
-        IMS_LOG_ERROR("Failed to send initial NOTIFY via eXosip2: {} ({})",
+        IMS_LOG_ERROR("Failed to send initial NOTIFY via SIP stack: {} ({})",
                       send_result.error().message,
                       send_result.error().detail);
     }

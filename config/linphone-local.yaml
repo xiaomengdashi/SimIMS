@@ -26,13 +26,6 @@ scscf:
     port: 3868
     realm: ims.local
   domain: ims.local
-  exosip:
-    enabled: false
-    listen_addr: 127.0.0.1
-    listen_port: 5072
-    transport: udp
-    user_agent: SimIMS-eXosip2
-    event_poll_ms: 100
 
 hss_adapter:
   type: diameter

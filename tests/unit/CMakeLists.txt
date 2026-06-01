@@ -34,12 +34,6 @@ target_include_directories(test_sip_stack PRIVATE ${CMAKE_SOURCE_DIR}/src)
 ims_configure_test_target(test_sip_stack)
 gtest_discover_tests(test_sip_stack)
 
-# eXosip adapter test
-add_executable(test_exosip_adapter test_exosip_adapter.cpp)
-target_link_libraries(test_exosip_adapter PRIVATE ims_sip GTest::gtest_main)
-ims_configure_test_target(test_exosip_adapter)
-gtest_discover_tests(test_exosip_adapter)
-
 add_executable(test_transport test_transport.cpp)
 target_link_libraries(test_transport PRIVATE ims_sip GTest::gtest_main)
 target_include_directories(test_transport PRIVATE ${CMAKE_SOURCE_DIR}/src)

@@ -361,7 +361,6 @@ private:
         scscf_cfg.listen_port = kScscfPort;
         scscf_cfg.domain = kDomain;
         scscf_cfg.auth_mode = "digest_only";
-        scscf_cfg.exosip.enabled = false;
         scscf_cfg.smsc = ims::SmscSettings{
             .endpoint = {.address = "127.0.0.1", .port = kSmscPort, .transport = "udp"},
             .psi = kSmscPsi,

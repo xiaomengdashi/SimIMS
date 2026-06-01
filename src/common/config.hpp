@@ -59,15 +59,6 @@ struct IcscfConfig {
     };
 };
 
-struct ExosipConfig {
-    bool enabled = true;
-    std::string listen_addr = "0.0.0.0";
-    uint16_t listen_port = 5072;
-    std::string transport = "udp";
-    std::string user_agent = "SimIMS-eXosip2";
-    uint32_t event_poll_ms = 100;
-};
-
 struct SmscSettings {
     SipEndpointConfig endpoint{
         .address = "127.0.0.1",
@@ -98,7 +89,6 @@ struct ScscfConfig {
     std::string domain = "ims.local";
     std::string auth_mode = "ims_only";  // ims_only, digest_only, hybrid_fallback
     uint32_t registration_cleanup_interval_ms = 30000;
-    ExosipConfig exosip;
     std::optional<SipEndpointConfig> peer_icscf;
     std::optional<SmscSettings> smsc;
 };

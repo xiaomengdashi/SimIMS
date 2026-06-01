@@ -9,7 +9,6 @@
 - 主要依赖：
   - Boost.System
   - libosip2
-  - libeXosip2
   - c-ares
   - spdlog
   - yaml-cpp
@@ -52,7 +51,6 @@ sudo apt install -y \
     ninja-build \
     libboost-system-dev \
     libosip2-dev \
-    libexosip2-dev \
     libc-ares-dev \
     libspdlog-dev \
     libyaml-cpp-dev \
@@ -68,8 +66,7 @@ sudo apt install -y rtpengine baresip
 
 说明：
 
-- `libexosip2-dev` 是当前工程必需依赖，顶层 `CMakeLists.txt` 会显式查找它。
-- `pkg-config` 用于定位 `libosip2`、`libeXosip2` 和 `c-ares`。
+- `pkg-config` 用于定位 `libosip2` 和 `c-ares`。
 - `ninja-build` 不是强制要求，但配合 CMake 使用时通常更快。
 
 ### 3.3 编译
@@ -182,17 +179,7 @@ scscf:
 
 ## 5. 常见问题
 
-### 5.1 CMake 找不到 `libeXosip2`
-
-确认系统已安装 Ubuntu 开发包：`libexosip2-dev`
-
-也可以检查 `pkg-config` 是否能识别：
-
-```bash
-pkg-config --modversion libeXosip2
-```
-
-### 5.2 CMake 找不到 `libosip2` 或 `libcares`
+### 5.1 CMake 找不到 `libosip2` 或 `libcares`
 
 分别检查：
 
@@ -231,7 +218,7 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/bin)
 ```bash
 sudo apt update
 sudo apt install -y build-essential cmake pkg-config ninja-build \
-    libboost-system-dev libosip2-dev libexosip2-dev libc-ares-dev \
+    libboost-system-dev libosip2-dev libc-ares-dev \
     libspdlog-dev libyaml-cpp-dev libgtest-dev libgmock-dev
 
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug

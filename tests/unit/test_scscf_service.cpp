@@ -148,7 +148,6 @@ protected:
         config.listen_addr = "127.0.0.1";
         config.listen_port = 0;
         config.domain = "ims.example.com";
-        config.exosip.enabled = false;
 
         auto notifier = std::make_unique<RecordingRegEventNotifier>();
         notifier_ptr = notifier.get();
@@ -217,7 +216,7 @@ TEST_F(ScscfServiceTest, SendInitialNotifyBuildsRegEventContext) {
     ASSERT_EQ(context.route_set.size(), 2u);
     EXPECT_NE(context.route_set[0].find("edge2.ims.example.com"), std::string::npos);
     EXPECT_NE(context.route_set[1].find("edge1.ims.example.com"), std::string::npos);
-    EXPECT_EQ(context.contact, "<sip:ims.example.com:5072>");
+    EXPECT_EQ(context.contact, "<sip:ims.example.com:0>");
     EXPECT_EQ(context.content_type, "application/reginfo+xml");
     EXPECT_NE(context.body.find("aor=\"sip:user@ims.example.com\""), std::string::npos);
 }

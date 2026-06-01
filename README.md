@@ -49,7 +49,6 @@ sudo apt install -y \
     build-essential cmake pkg-config ninja-build \
     libboost-system-dev \
     libosip2-dev \
-    libexosip2-dev \
     libc-ares-dev \
     libspdlog-dev \
     libyaml-cpp-dev \
