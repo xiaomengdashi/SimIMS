@@ -110,6 +110,45 @@ TEST(SmsOverImsTest, BuildMtRpDataFromMoUsesDeliverTpdu) {
     EXPECT_NE(*encoded, std::vector<uint8_t>(bytes.begin(), bytes.end()));
 }
 
+TEST(SmsOverImsTest, ParsesGsm7BitSubmitWhereUdlCountsSeptets) {
+    // MO RP-DATA carrying an SMS-SUBMIT to phone number 13892600007 with an 8
+    // character GSM 7-bit body. TP-UDL=0x08 counts septets while the packed user
+    // data only occupies 7 octets, which previously tripped a false
+    // "SMS-SUBMIT user data truncated" rejection.
+    constexpr std::string_view kHex =
+        "00000007915121551236F81401000B913198620000F7000008C8329BFD06DD6F";
+    auto decoded = ims::sms::decode_hex(kHex);
+    ASSERT_TRUE(decoded.has_value()) << decoded.error().message;
+
+    auto rp = ims::sms::parse_rp_message(*decoded);
+    ASSERT_TRUE(rp.has_value()) << rp.error().message;
+    const auto* mo = std::get_if<ims::sms::RpDataMessage>(&*rp);
+    ASSERT_NE(mo, nullptr);
+
+    auto submit = ims::sms::parse_submit_tpdu(mo->user_data);
+    ASSERT_TRUE(submit.has_value()) << submit.error().message;
+    EXPECT_EQ(submit->user_data_length, 0x08);
+    EXPECT_EQ(submit->user_data.size(), 7U);
+
+    auto originator = ims::sms::encode_bcd_msisdn("8613800138000", 0x91);
+    ASSERT_TRUE(originator.has_value()) << originator.error().message;
+
+    auto mt = ims::sms::build_mt_rp_data_from_mo(*mo, *originator);
+    ASSERT_TRUE(mt.has_value()) << mt.error().message;
+
+    auto deliver_info = ims::sms::parse_tpdu(mt->user_data);
+    ASSERT_TRUE(deliver_info.has_value()) << deliver_info.error().message;
+    EXPECT_EQ(deliver_info->type, ims::sms::TpduType::kDeliver);
+
+    auto deliver = ims::sms::parse_deliver_tpdu(mt->user_data);
+    ASSERT_TRUE(deliver.has_value()) << deliver.error().message;
+    EXPECT_EQ(deliver->user_data_length, 0x08);
+    EXPECT_EQ(deliver->user_data.size(), 7U);
+
+    auto encoded = ims::sms::encode_rp_message(*mt);
+    ASSERT_TRUE(encoded.has_value()) << encoded.error().message;
+}
+
 TEST(SmsOverImsTest, SampleWithoutTpSrrDoesNotRequestStatusReport) {
     auto decoded = ims::sms::decode_hex(ims::sms::kSampleRpDataNoSrrHex);
     ASSERT_TRUE(decoded.has_value()) << decoded.error().message;

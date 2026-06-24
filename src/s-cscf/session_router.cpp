@@ -63,7 +63,8 @@ auto is_mo_submit_rp_data(std::span<const uint8_t> payload) -> bool {
 }
 
 auto is_rp_ack(std::span<const uint8_t> payload) -> bool {
-    return ims::sms::rp_message_type(payload) == ims::sms::RpMessageType::kAck;
+    const auto type = ims::sms::rp_message_type(payload);
+    return type && ims::sms::rp_message_category(*type) == ims::sms::RpMessageCategory::kAck;
 }
 
 } // namespace

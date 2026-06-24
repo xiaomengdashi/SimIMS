@@ -9,14 +9,14 @@ namespace ims::sms {
 
 namespace {
 
-auto parse_optional_address(std::span<const uint8_t> data, std::size_t& offset)
+auto parse_optional_rp_address(std::span<const uint8_t> data, std::size_t& offset)
     -> Result<std::optional<SmsAddress>> {
     if (offset >= data.size()) {
-        return std::nullopt;
+        return std::optional<SmsAddress>{};
     }
 
     const auto saved = offset;
-    auto address = parse_address(data, offset);
+    auto address = parse_rp_address(data, offset);
     if (!address) {
         offset = saved;
         return std::unexpected(address.error());
@@ -27,22 +27,26 @@ auto parse_optional_address(std::span<const uint8_t> data, std::size_t& offset)
     return *address;
 }
 
-auto parse_rp_data(std::span<const uint8_t> data, uint8_t message_reference) -> Result<RpDataMessage> {
+auto parse_rp_data(std::span<const uint8_t> data, uint8_t message_reference, RpDirection direction)
+    -> Result<RpDataMessage> {
     std::size_t offset = 2;
     RpDataMessage message{.message_reference = message_reference};
+    message.direction = direction;
 
-    // MS->CN RP-DATA uses destination then originator (3GPP TS 24.011 / common UE encoding).
-    auto destination = parse_optional_address(data, offset);
-    if (!destination) {
-        return std::unexpected(destination.error());
-    }
-    message.destination = std::move(*destination);
-
-    auto originator = parse_optional_address(data, offset);
+    // 3GPP TS 24.011 7.3.1: RP-Originator Address precedes RP-Destination Address
+    // in both directions. For MO (MS->Network) the originator is empty and the
+    // destination is the SMSC; for MT (Network->MS) it is the reverse.
+    auto originator = parse_optional_rp_address(data, offset);
     if (!originator) {
         return std::unexpected(originator.error());
     }
     message.originator = std::move(*originator);
+
+    auto destination = parse_optional_rp_address(data, offset);
+    if (!destination) {
+        return std::unexpected(destination.error());
+    }
+    message.destination = std::move(*destination);
 
     if (offset >= data.size()) {
         return std::unexpected(ims::ErrorInfo{
@@ -78,17 +82,19 @@ auto parse_rp_data(std::span<const uint8_t> data, uint8_t message_reference) -> 
     return message;
 }
 
-auto parse_rp_ack(std::span<const uint8_t> data, uint8_t message_reference) -> Result<RpAckMessage> {
+auto parse_rp_ack(std::span<const uint8_t> data, uint8_t message_reference, RpDirection direction)
+    -> Result<RpAckMessage> {
     std::size_t offset = 2;
     RpAckMessage message{.message_reference = message_reference};
+    message.direction = direction;
 
-    auto originator = parse_optional_address(data, offset);
+    auto originator = parse_optional_rp_address(data, offset);
     if (!originator) {
         return std::unexpected(originator.error());
     }
     message.originator = std::move(*originator);
 
-    auto destination = parse_optional_address(data, offset);
+    auto destination = parse_optional_rp_address(data, offset);
     if (!destination) {
         return std::unexpected(destination.error());
     }
@@ -103,7 +109,8 @@ auto parse_rp_ack(std::span<const uint8_t> data, uint8_t message_reference) -> R
     return message;
 }
 
-auto parse_rp_error(std::span<const uint8_t> data, uint8_t message_reference) -> Result<RpErrorMessage> {
+auto parse_rp_error(std::span<const uint8_t> data, uint8_t message_reference, RpDirection direction)
+    -> Result<RpErrorMessage> {
     if (data.size() < 3) {
         return std::unexpected(ims::ErrorInfo{
             ims::ErrorCode::kSmsParseError,
@@ -116,15 +123,16 @@ auto parse_rp_error(std::span<const uint8_t> data, uint8_t message_reference) ->
         .message_reference = message_reference,
         .cause = data[offset++],
     };
+    message.direction = direction;
 
-    auto originator = parse_optional_address(data, offset);
+    auto originator = parse_optional_rp_address(data, offset);
     if (!originator) {
         return std::unexpected(originator.error());
     }
     message.originator = std::move(*originator);
 
     if (offset < data.size()) {
-        auto destination = parse_optional_address(data, offset);
+        auto destination = parse_optional_rp_address(data, offset);
         if (!destination) {
             return std::unexpected(destination.error());
         }
@@ -147,14 +155,49 @@ auto rp_message_type(std::span<const uint8_t> payload) -> std::optional<RpMessag
         return std::nullopt;
     }
     switch (payload[0]) {
-    case static_cast<uint8_t>(RpMessageType::kData):
-    case static_cast<uint8_t>(RpMessageType::kAck):
-    case static_cast<uint8_t>(RpMessageType::kError):
-    case static_cast<uint8_t>(RpMessageType::kSmma):
+    case static_cast<uint8_t>(RpMessageType::kDataMs):
+    case static_cast<uint8_t>(RpMessageType::kDataMn):
+    case static_cast<uint8_t>(RpMessageType::kAckMs):
+    case static_cast<uint8_t>(RpMessageType::kAckMn):
+    case static_cast<uint8_t>(RpMessageType::kErrorMs):
+    case static_cast<uint8_t>(RpMessageType::kErrorMn):
+    case static_cast<uint8_t>(RpMessageType::kSmmaMs):
         return static_cast<RpMessageType>(payload[0]);
     default:
         return std::nullopt;
     }
+}
+
+auto rp_message_category(RpMessageType type) -> RpMessageCategory {
+    switch (type) {
+    case RpMessageType::kDataMs:
+    case RpMessageType::kDataMn:
+        return RpMessageCategory::kData;
+    case RpMessageType::kAckMs:
+    case RpMessageType::kAckMn:
+        return RpMessageCategory::kAck;
+    case RpMessageType::kErrorMs:
+    case RpMessageType::kErrorMn:
+        return RpMessageCategory::kError;
+    case RpMessageType::kSmmaMs:
+        return RpMessageCategory::kSmma;
+    }
+    return RpMessageCategory::kData;
+}
+
+auto rp_message_direction(RpMessageType type) -> RpDirection {
+    switch (type) {
+    case RpMessageType::kDataMn:
+    case RpMessageType::kAckMn:
+    case RpMessageType::kErrorMn:
+        return RpDirection::kNetworkToMs;
+    case RpMessageType::kDataMs:
+    case RpMessageType::kAckMs:
+    case RpMessageType::kErrorMs:
+    case RpMessageType::kSmmaMs:
+        return RpDirection::kMsToNetwork;
+    }
+    return RpDirection::kMsToNetwork;
 }
 
 auto parse_rp_message(std::span<const uint8_t> payload) -> Result<RpMessage> {
@@ -174,14 +217,15 @@ auto parse_rp_message(std::span<const uint8_t> payload) -> Result<RpMessage> {
     }
 
     const auto message_reference = payload[1];
-    switch (*type) {
-    case RpMessageType::kData:
-        return parse_rp_data(payload, message_reference);
-    case RpMessageType::kAck:
-        return parse_rp_ack(payload, message_reference);
-    case RpMessageType::kError:
-        return parse_rp_error(payload, message_reference);
-    case RpMessageType::kSmma:
+    const auto direction = rp_message_direction(*type);
+    switch (rp_message_category(*type)) {
+    case RpMessageCategory::kData:
+        return parse_rp_data(payload, message_reference, direction);
+    case RpMessageCategory::kAck:
+        return parse_rp_ack(payload, message_reference, direction);
+    case RpMessageCategory::kError:
+        return parse_rp_error(payload, message_reference, direction);
+    case RpMessageCategory::kSmma:
         return std::unexpected(ims::ErrorInfo{
             ims::ErrorCode::kSmsInvalidPayload,
             "RP-SMMA is not supported",
@@ -195,17 +239,20 @@ auto encode_rp_message(const RpMessage& message) -> Result<std::vector<uint8_t>>
     out.reserve(32);
 
     if (const auto* data = std::get_if<RpDataMessage>(&message)) {
-        out.push_back(static_cast<uint8_t>(RpMessageType::kData));
+        out.push_back(static_cast<uint8_t>(data->direction == RpDirection::kNetworkToMs
+                                               ? RpMessageType::kDataMn
+                                               : RpMessageType::kDataMs));
         out.push_back(data->message_reference);
-        if (data->destination) {
-            if (auto encoded = data->destination->encode(out); !encoded) {
+        // 3GPP TS 24.011 7.3.1: originator address first, then destination address.
+        if (data->originator) {
+            if (auto encoded = encode_rp_address(*data->originator, out); !encoded) {
                 return std::unexpected(encoded.error());
             }
         } else {
             out.push_back(0x00);
         }
-        if (data->originator) {
-            if (auto encoded = data->originator->encode(out); !encoded) {
+        if (data->destination) {
+            if (auto encoded = encode_rp_address(*data->destination, out); !encoded) {
                 return std::unexpected(encoded.error());
             }
         } else {
@@ -223,17 +270,19 @@ auto encode_rp_message(const RpMessage& message) -> Result<std::vector<uint8_t>>
     }
 
     if (const auto* ack = std::get_if<RpAckMessage>(&message)) {
-        out.push_back(static_cast<uint8_t>(RpMessageType::kAck));
+        out.push_back(static_cast<uint8_t>(ack->direction == RpDirection::kNetworkToMs
+                                               ? RpMessageType::kAckMn
+                                               : RpMessageType::kAckMs));
         out.push_back(ack->message_reference);
         if (ack->originator) {
-            if (auto encoded = ack->originator->encode(out); !encoded) {
+            if (auto encoded = encode_rp_address(*ack->originator, out); !encoded) {
                 return std::unexpected(encoded.error());
             }
         } else {
             out.push_back(0x00);
         }
         if (ack->destination) {
-            if (auto encoded = ack->destination->encode(out); !encoded) {
+            if (auto encoded = encode_rp_address(*ack->destination, out); !encoded) {
                 return std::unexpected(encoded.error());
             }
         } else {
@@ -243,16 +292,18 @@ auto encode_rp_message(const RpMessage& message) -> Result<std::vector<uint8_t>>
     }
 
     if (const auto* error = std::get_if<RpErrorMessage>(&message)) {
-        out.push_back(static_cast<uint8_t>(RpMessageType::kError));
+        out.push_back(static_cast<uint8_t>(error->direction == RpDirection::kNetworkToMs
+                                               ? RpMessageType::kErrorMn
+                                               : RpMessageType::kErrorMs));
         out.push_back(error->message_reference);
         out.push_back(error->cause);
         if (error->originator) {
-            if (auto encoded = error->originator->encode(out); !encoded) {
+            if (auto encoded = encode_rp_address(*error->originator, out); !encoded) {
                 return std::unexpected(encoded.error());
             }
         }
         if (error->destination) {
-            if (auto encoded = error->destination->encode(out); !encoded) {
+            if (auto encoded = encode_rp_address(*error->destination, out); !encoded) {
                 return std::unexpected(encoded.error());
             }
         }
@@ -263,8 +314,10 @@ auto encode_rp_message(const RpMessage& message) -> Result<std::vector<uint8_t>>
 }
 
 auto build_rp_ack(uint8_t message_reference) -> std::vector<uint8_t> {
+    // The network acknowledges an MO RP-DATA towards the originating UE, i.e. in
+    // the Network -> MS direction (3GPP TS 24.011 8.2.2, MTI 0x03).
     return {
-        static_cast<uint8_t>(RpMessageType::kAck),
+        static_cast<uint8_t>(RpMessageType::kAckMn),
         message_reference,
         0x00,
         0x00,
@@ -284,6 +337,8 @@ auto build_mt_rp_data_from_mo(const RpDataMessage& mo, const SmsAddress& origina
         .originator = originator,
         .user_data = std::move(*deliver_tpdu),
     };
+    // MT delivery is sent from the network towards the terminating UE.
+    mt.direction = RpDirection::kNetworkToMs;
     return mt;
 }
 

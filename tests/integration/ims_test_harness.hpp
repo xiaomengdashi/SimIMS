@@ -201,7 +201,11 @@ public:
                 continue;
             }
             const auto body = msg.body().value_or(std::string{});
-            if (body.size() >= 1 && static_cast<uint8_t>(body[0]) == 0x02) {
+            // MO RP-ACK towards the originating UE is sent Network -> MS (MTI 0x03);
+            // also accept 0x02 for robustness against either direction encoding.
+            if (!body.empty()
+                && (static_cast<uint8_t>(body[0]) == 0x03
+                    || static_cast<uint8_t>(body[0]) == 0x02)) {
                 return &msg;
             }
         }

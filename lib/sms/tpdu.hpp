@@ -53,11 +53,15 @@ auto parse_tpdu(std::span<const uint8_t> tpdu) -> Result<TpduInfo>;
 auto validate_tpdu(std::span<const uint8_t> tpdu) -> VoidResult;
 auto parse_submit_tpdu(std::span<const uint8_t> tpdu) -> Result<SubmitTpduView>;
 auto parse_deliver_tpdu(std::span<const uint8_t> tpdu) -> Result<DeliverTpduView>;
+/// Encode an SMS-DELIVER TPDU. @param user_data_length is the TP-UDL value in the
+/// source encoding's unit (septets for GSM 7-bit, octets otherwise); 0 defaults to
+/// the user_data octet count.
 auto encode_deliver_tpdu(uint8_t deliver_first_octet,
                          const SmsAddress& originator,
                          uint8_t pid,
                          uint8_t dcs,
-                         std::span<const uint8_t> user_data) -> Result<std::vector<uint8_t>>;
+                         std::span<const uint8_t> user_data,
+                         std::size_t user_data_length = 0) -> Result<std::vector<uint8_t>>;
 auto submit_to_deliver_tpdu(std::span<const uint8_t> submit_tpdu,
                             const SmsAddress& originator) -> Result<std::vector<uint8_t>>;
 

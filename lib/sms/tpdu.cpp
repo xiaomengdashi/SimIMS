@@ -12,6 +12,18 @@ namespace {
 
 constexpr auto kMtiMask = 0x03U;
 
+/// Number of octets occupied by the TP-User-Data field for a given TP-UDL.
+/// For the GSM 7-bit default alphabet TP-UDL counts septets, so the packed field
+/// occupies ceil(udl * 7 / 8) octets; for 8-bit and UCS2 it already counts octets
+/// (3GPP TS 23.040 §9.2.3.16). Unknown coding groups fall back to octet counting.
+auto tp_user_data_octets(uint8_t dcs, uint8_t udl) -> std::size_t {
+    if (auto alphabet = classify_dcs(dcs);
+        alphabet && *alphabet == UserDataAlphabet::kGsm7BitDefault) {
+        return (static_cast<std::size_t>(udl) * 7U + 7U) / 8U;
+    }
+    return udl;
+}
+
 auto tpdu_type_from_mti(uint8_t mti) -> std::optional<TpduType> {
     switch (mti) {
     case 0x00:
@@ -59,6 +71,7 @@ auto validate_submit(std::span<const uint8_t> tpdu) -> VoidResult {
     if (offset + 2 > tpdu.size()) {
         return std::unexpected(ims::ErrorInfo{ims::ErrorCode::kSmsParseError, "SMS-SUBMIT missing PID/DCS"});
     }
+    const auto dcs = tpdu[offset + 1];
     offset += 2; // PID + DCS
 
     switch (vpf) {
@@ -85,7 +98,7 @@ auto validate_submit(std::span<const uint8_t> tpdu) -> VoidResult {
         return {};
     }
     const auto udl = tpdu[offset++];
-    if (offset + udl > tpdu.size()) {
+    if (offset + tp_user_data_octets(dcs, udl) > tpdu.size()) {
         return std::unexpected(ims::ErrorInfo{
             ims::ErrorCode::kSmsParseError,
             "SMS-SUBMIT user data truncated",
@@ -106,6 +119,7 @@ auto validate_deliver(std::span<const uint8_t> tpdu) -> VoidResult {
     if (offset + 2 > tpdu.size()) {
         return std::unexpected(ims::ErrorInfo{ims::ErrorCode::kSmsParseError, "SMS-DELIVER missing PID/DCS"});
     }
+    const auto dcs = tpdu[offset + 1];
     offset += 2;
 
     if (offset + 7 > tpdu.size()) {
@@ -117,7 +131,7 @@ auto validate_deliver(std::span<const uint8_t> tpdu) -> VoidResult {
         return {};
     }
     const auto udl = tpdu[offset++];
-    if (offset + udl > tpdu.size()) {
+    if (offset + tp_user_data_octets(dcs, udl) > tpdu.size()) {
         return std::unexpected(ims::ErrorInfo{
             ims::ErrorCode::kSmsParseError,
             "SMS-DELIVER user data truncated",
@@ -247,7 +261,8 @@ auto parse_submit_tpdu(std::span<const uint8_t> tpdu) -> Result<SubmitTpduView> 
     }
 
     const auto udl = tpdu[offset++];
-    if (offset + udl > tpdu.size()) {
+    const auto ud_octets = tp_user_data_octets(fields.dcs, udl);
+    if (offset + ud_octets > tpdu.size()) {
         return std::unexpected(ims::ErrorInfo{
             ims::ErrorCode::kSmsParseError,
             "SMS-SUBMIT user data truncated",
@@ -255,7 +270,7 @@ auto parse_submit_tpdu(std::span<const uint8_t> tpdu) -> Result<SubmitTpduView> 
     }
     fields.user_data_length = udl;
     fields.user_data.assign(tpdu.begin() + static_cast<std::ptrdiff_t>(offset),
-                            tpdu.begin() + static_cast<std::ptrdiff_t>(offset + udl));
+                            tpdu.begin() + static_cast<std::ptrdiff_t>(offset + ud_octets));
     return fields;
 }
 
@@ -308,7 +323,8 @@ auto parse_deliver_tpdu(std::span<const uint8_t> tpdu) -> Result<DeliverTpduView
     }
 
     const auto udl = tpdu[offset++];
-    if (offset + udl > tpdu.size()) {
+    const auto ud_octets = tp_user_data_octets(fields.dcs, udl);
+    if (offset + ud_octets > tpdu.size()) {
         return std::unexpected(ims::ErrorInfo{
             ims::ErrorCode::kSmsParseError,
             "SMS-DELIVER user data truncated",
@@ -316,7 +332,7 @@ auto parse_deliver_tpdu(std::span<const uint8_t> tpdu) -> Result<DeliverTpduView
     }
     fields.user_data_length = udl;
     fields.user_data.assign(tpdu.begin() + static_cast<std::ptrdiff_t>(offset),
-                            tpdu.begin() + static_cast<std::ptrdiff_t>(offset + udl));
+                            tpdu.begin() + static_cast<std::ptrdiff_t>(offset + ud_octets));
     return fields;
 }
 
@@ -350,11 +366,22 @@ auto encode_deliver_tpdu(uint8_t deliver_first_octet,
                          const SmsAddress& originator,
                          uint8_t pid,
                          uint8_t dcs,
-                         std::span<const uint8_t> user_data) -> Result<std::vector<uint8_t>> {
+                         std::span<const uint8_t> user_data,
+                         std::size_t user_data_length) -> Result<std::vector<uint8_t>> {
     if (user_data.size() > 255) {
         return std::unexpected(ims::ErrorInfo{
             ims::ErrorCode::kSmsInvalidPayload,
             "SMS-DELIVER user data exceeds 255 octets",
+        });
+    }
+
+    // TP-UDL keeps the source encoding's unit (septets for GSM 7-bit, octets
+    // otherwise); when not supplied, fall back to the octet count.
+    const auto udl = user_data_length == 0U ? user_data.size() : user_data_length;
+    if (udl > 255) {
+        return std::unexpected(ims::ErrorInfo{
+            ims::ErrorCode::kSmsInvalidPayload,
+            "SMS-DELIVER TP-UDL exceeds 255",
         });
     }
 
@@ -367,7 +394,7 @@ auto encode_deliver_tpdu(uint8_t deliver_first_octet,
     out.push_back(pid);
     out.push_back(dcs);
     out.insert(out.end(), 7, 0x00); // SCTS placeholder
-    out.push_back(static_cast<uint8_t>(user_data.size()));
+    out.push_back(static_cast<uint8_t>(udl));
     out.insert(out.end(), user_data.begin(), user_data.end());
 
     if (auto valid = validate_deliver(out); !valid) {
@@ -389,7 +416,8 @@ auto submit_to_deliver_tpdu(std::span<const uint8_t> submit_tpdu,
                                originator,
                                submit->pid,
                                submit->dcs,
-                               submit->user_data);
+                               submit->user_data,
+                               submit->user_data_length);
 }
 
 } // namespace ims::sms

@@ -74,6 +74,69 @@ auto parse_address(std::span<const uint8_t> data, std::size_t& offset) -> Result
     return address;
 }
 
+auto parse_rp_address(std::span<const uint8_t> data, std::size_t& offset) -> Result<SmsAddress> {
+    if (offset >= data.size()) {
+        return std::unexpected(ims::ErrorInfo{
+            ims::ErrorCode::kSmsParseError,
+            "truncated RP address",
+        });
+    }
+
+    SmsAddress address;
+    // RP address "Length of address contents" counts the octets that follow
+    // (type-of-address octet + BCD octets), not the number of digits.
+    const auto value_octets = data[offset++];
+    if (value_octets == 0) {
+        return address;
+    }
+
+    if (offset >= data.size()) {
+        return std::unexpected(ims::ErrorInfo{
+            ims::ErrorCode::kSmsParseError,
+            "truncated RP address type",
+        });
+    }
+    address.type_of_address = data[offset++];
+
+    const std::size_t bcd_bytes = static_cast<std::size_t>(value_octets) - 1;
+    if (offset + bcd_bytes > data.size()) {
+        return std::unexpected(ims::ErrorInfo{
+            ims::ErrorCode::kSmsParseError,
+            "truncated RP address BCD",
+        });
+    }
+    address.bcd.assign(data.begin() + static_cast<std::ptrdiff_t>(offset),
+                       data.begin() + static_cast<std::ptrdiff_t>(offset + bcd_bytes));
+    offset += bcd_bytes;
+
+    // Derive the number of digits: each BCD octet holds two, with a 0xF filler in
+    // the high nibble of the last octet when the digit count is odd.
+    std::size_t digits = bcd_bytes * 2;
+    if (!address.bcd.empty() && ((address.bcd.back() >> 4) & 0x0F) == 0x0F) {
+        digits -= 1;
+    }
+    address.digit_length = static_cast<uint8_t>(digits);
+    return address;
+}
+
+auto encode_rp_address(const SmsAddress& address, std::vector<uint8_t>& out) -> VoidResult {
+    if (address.digit_length == 0) {
+        out.push_back(0x00);
+        return {};
+    }
+    const std::size_t value_octets = 1 + address.bcd.size();
+    if (value_octets > 0xFF) {
+        return std::unexpected(ims::ErrorInfo{
+            ims::ErrorCode::kSmsInvalidPayload,
+            "RP address value length out of range",
+        });
+    }
+    out.push_back(static_cast<uint8_t>(value_octets));
+    out.push_back(address.type_of_address);
+    out.insert(out.end(), address.bcd.begin(), address.bcd.end());
+    return {};
+}
+
 auto decode_bcd_msisdn(const SmsAddress& address) -> std::string {
     if (address.digit_length == 0) {
         return {};
