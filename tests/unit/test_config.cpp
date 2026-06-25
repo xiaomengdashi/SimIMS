@@ -123,6 +123,7 @@ hss_adapter:
     EXPECT_EQ(result->hss_adapter.mongo_db, "simims");
     EXPECT_EQ(result->hss_adapter.mongo_collection, "subscribers");
     EXPECT_EQ(result->hss_adapter.default_scscf_uri, "sip:127.0.0.1:5062;transport=udp");
+    EXPECT_TRUE(result->hss_adapter.use_ak);
 }
 
 TEST_F(ConfigTest, LoadHssAdapterMongoDefaults) {
@@ -133,6 +134,22 @@ TEST_F(ConfigTest, LoadHssAdapterMongoDefaults) {
     EXPECT_EQ(result->hss_adapter.mongo_db, "simims");
     EXPECT_EQ(result->hss_adapter.mongo_collection, "subscribers");
     EXPECT_EQ(result->hss_adapter.default_scscf_uri, "sip:127.0.0.1:5062;transport=udp");
+    EXPECT_TRUE(result->hss_adapter.use_ak);
+}
+
+TEST_F(ConfigTest, LoadHssAdapterUseAkDisabled) {
+    writeConfig(R"yaml(
+hss_adapter:
+  type: diameter
+  mongo_uri: mongodb://127.0.0.1:27017
+  mongo_db: simims
+  mongo_collection: subscribers
+  use_ak: false
+)yaml");
+
+    auto result = load_config(config_path_);
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+    EXPECT_FALSE(result->hss_adapter.use_ak);
 }
 
 TEST_F(ConfigTest, LoadHssAdapterMongoUriEmptyFails) {

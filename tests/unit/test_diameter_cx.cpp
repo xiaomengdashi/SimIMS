@@ -259,6 +259,72 @@ TEST(AkaVectorBuilderTest, BuildsVectorWhenOperatorCodeTypeIsOp) {
     EXPECT_EQ(result->xres.size(), 8u);
 }
 
+TEST(AkaVectorBuilderTest, ConcealsSqnWithAkByDefault) {
+    HssSubscriberConfig subscriber{
+        .imsi = "460112024122023",
+        .tel = "+8613824122023",
+        .realm = "ims.operator.com",
+        .ki = "465b5ce8b199b49faa5f0a2ee238a6bc",
+        .operator_code_type = "opc",
+        .opc = "cd63cb71954a9f4e48a5994e37a02baf",
+        .sqn = "000000000001",
+    };
+    std::mt19937 rng{42};
+
+    auto result = build_aka_auth_vector(subscriber, rng);
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+
+    // Default use_ak=true means the SQN field is concealed, so it must differ
+    // from the cleartext SQN bytes 00 00 00 00 00 01.
+    const std::vector<uint8_t> clear_sqn = {0x00, 0x00, 0x00, 0x00, 0x00, 0x01};
+    std::vector<uint8_t> autn_sqn(result->autn.begin(), result->autn.begin() + 6);
+    EXPECT_NE(autn_sqn, clear_sqn);
+}
+
+TEST(AkaVectorBuilderTest, SendsSqnInClearWhenUseAkDisabled) {
+    HssSubscriberConfig concealed{
+        .imsi = "460112024122023",
+        .tel = "+8613824122023",
+        .realm = "ims.operator.com",
+        .ki = "465b5ce8b199b49faa5f0a2ee238a6bc",
+        .operator_code_type = "opc",
+        .opc = "cd63cb71954a9f4e48a5994e37a02baf",
+        .sqn = "000000000001",
+        .use_ak = true,
+    };
+    HssSubscriberConfig clear = concealed;
+    clear.use_ak = false;
+
+    // Same seed -> same RAND, so the only difference is the AK concealment.
+    std::mt19937 rng_concealed{7};
+    std::mt19937 rng_clear{7};
+
+    auto concealed_vec = build_aka_auth_vector(concealed, rng_concealed);
+    auto clear_vec = build_aka_auth_vector(clear, rng_clear);
+    ASSERT_TRUE(concealed_vec.has_value()) << concealed_vec.error().message;
+    ASSERT_TRUE(clear_vec.has_value()) << clear_vec.error().message;
+
+    ASSERT_EQ(concealed_vec->rand, clear_vec->rand);
+
+    // With use_ak=false the SQN field is the cleartext SQN.
+    const std::vector<uint8_t> clear_sqn = {0x00, 0x00, 0x00, 0x00, 0x00, 0x01};
+    std::vector<uint8_t> clear_autn_sqn(clear_vec->autn.begin(), clear_vec->autn.begin() + 6);
+    EXPECT_EQ(clear_autn_sqn, clear_sqn);
+
+    // Concealment changes only the SQN field; AMF + MAC-A (autn[6..15]) and the
+    // derived keys stay identical because MAC-A is computed over cleartext SQN.
+    std::vector<uint8_t> concealed_tail(concealed_vec->autn.begin() + 6, concealed_vec->autn.end());
+    std::vector<uint8_t> clear_tail(clear_vec->autn.begin() + 6, clear_vec->autn.end());
+    EXPECT_EQ(concealed_tail, clear_tail);
+    EXPECT_EQ(concealed_vec->xres, clear_vec->xres);
+    EXPECT_EQ(concealed_vec->ck, clear_vec->ck);
+    EXPECT_EQ(concealed_vec->ik, clear_vec->ik);
+
+    std::vector<uint8_t> concealed_autn_sqn(concealed_vec->autn.begin(),
+                                            concealed_vec->autn.begin() + 6);
+    EXPECT_NE(concealed_autn_sqn, clear_autn_sqn);
+}
+
 TEST(AkaVectorBuilderTest, RejectsMissingOpcForExplicitOpcType) {
     HssSubscriberConfig subscriber{
         .imsi = "460112024122023",

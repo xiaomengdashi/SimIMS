@@ -79,6 +79,10 @@ hss_adapter:
   mongo_db: simims
   mongo_collection: subscribers
   default_scscf_uri: sip:127.0.0.1:5062;transport=udp
+  # 是否用匿名密钥(AK)隐藏 AUTN 中的 SQN，对所有 UE 生效（无需改数据库）。
+  # true  = 标准 IMS-AKA，AUTN 携带 (SQN xor AK)，对接 eak=true 的 UE。
+  # false = AUTN 携带明文 SQN，对接 eak=false 的 UE。
+  use_ak: true
 
 media:
   rtpengine_host: 192.168.31.40

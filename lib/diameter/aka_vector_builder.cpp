@@ -129,7 +129,7 @@ auto build_aka_auth_vector(const HssSubscriberConfig& subscriber,
         byte = static_cast<uint8_t>(dist(rng));
     }
 
-    auto vector = ims::crypt::generate_vector(*opc, *k, *sqn, *amf, rand);
+    auto vector = ims::crypt::generate_vector(*opc, *k, *sqn, *amf, rand, subscriber.use_ak);
     if (!vector) {
         return std::unexpected(vector.error());
     }
