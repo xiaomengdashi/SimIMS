@@ -2,6 +2,10 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <string>
+#include <vector>
+
 using namespace ims::registration;
 
 namespace {
@@ -364,6 +368,131 @@ TEST(MemoryRegistrationStoreAtomicTest, BatchRemoveAllowsNewerCseqForSameCallId)
     ASSERT_TRUE(removed.has_value()) << removed.error().message;
     EXPECT_EQ(*removed, 1u);
     EXPECT_FALSE(store.lookup("sip:user@ims.example.com").has_value());
+}
+
+TEST(MemoryRegistrationStoreAtomicTest, BareContactReregistrationReplacesStaleBinding) {
+    MemoryRegistrationStore store;
+
+    auto old_contact = makeContact("sip:user@10.0.0.1:5060", "", "", "call-a", 1);
+    ASSERT_TRUE(store.upsertContact("sip:user@ims.example.com", makeSelector(old_contact), old_contact,
+                                    "user@ims.example.com", "sip:scscf.ims.example.com",
+                                    RegistrationBinding::State::kRegistered)
+                    .has_value());
+
+    // UE moved network/port: bare Contact URI changes, new Call-ID.
+    auto new_contact = makeContact("sip:user@192.168.1.50:6000", "", "", "call-b", 1);
+    auto result = store.upsertContact("sip:user@ims.example.com", makeSelector(new_contact), new_contact,
+                                      "user@ims.example.com", "sip:scscf.ims.example.com",
+                                      RegistrationBinding::State::kRegistered);
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+    EXPECT_TRUE(*result);
+
+    auto lookup = store.lookup("sip:user@ims.example.com");
+    ASSERT_TRUE(lookup.has_value()) << lookup.error().message;
+    ASSERT_EQ(lookup->contacts.size(), 1u);
+    EXPECT_EQ(lookup->contacts[0].contact_uri, "sip:user@192.168.1.50:6000");
+}
+
+TEST(MemoryRegistrationStoreAtomicTest, BareContactReregistrationKeepsInstanceBindings) {
+    MemoryRegistrationStore store;
+
+    auto device_a = makeContact("sip:user@10.0.0.1:5060", "urn:uuid:ue-a", "1", "call-a", 1);
+    auto device_b = makeContact("sip:user@10.0.0.2:5060", "urn:uuid:ue-b", "2", "call-b", 1);
+    auto bare_old = makeContact("sip:user@10.0.0.3:5060", "", "", "call-c", 1);
+    ASSERT_TRUE(store.upsertContact("sip:user@ims.example.com", makeSelector(device_a), device_a,
+                                    "user@ims.example.com", "sip:scscf.ims.example.com",
+                                    RegistrationBinding::State::kRegistered)
+                    .has_value());
+    ASSERT_TRUE(store.upsertContact("sip:user@ims.example.com", makeSelector(device_b), device_b,
+                                    "user@ims.example.com", "sip:scscf.ims.example.com",
+                                    RegistrationBinding::State::kRegistered)
+                    .has_value());
+    ASSERT_TRUE(store.upsertContact("sip:user@ims.example.com", makeSelector(bare_old), bare_old,
+                                    "user@ims.example.com", "sip:scscf.ims.example.com",
+                                    RegistrationBinding::State::kRegistered)
+                    .has_value());
+
+    auto bare_new = makeContact("sip:user@192.168.1.50:6000", "", "", "call-d", 1);
+    ASSERT_TRUE(store.upsertContact("sip:user@ims.example.com", makeSelector(bare_new), bare_new,
+                                    "user@ims.example.com", "sip:scscf.ims.example.com",
+                                    RegistrationBinding::State::kRegistered)
+                    .has_value());
+
+    auto lookup = store.lookup("sip:user@ims.example.com");
+    ASSERT_TRUE(lookup.has_value()) << lookup.error().message;
+    ASSERT_EQ(lookup->contacts.size(), 3u);
+
+    std::vector<std::string> instances;
+    const ContactBinding* bare = nullptr;
+    for (const auto& c : lookup->contacts) {
+        if (c.instance_id.empty() && c.reg_id.empty()) {
+            bare = &c;
+        } else {
+            instances.push_back(c.instance_id);
+        }
+    }
+    ASSERT_NE(bare, nullptr);
+    EXPECT_EQ(bare->contact_uri, "sip:user@192.168.1.50:6000");
+    EXPECT_EQ(instances.size(), 2u);
+    EXPECT_NE(std::find(instances.begin(), instances.end(), "urn:uuid:ue-a"), instances.end());
+    EXPECT_NE(std::find(instances.begin(), instances.end(), "urn:uuid:ue-b"), instances.end());
+}
+
+TEST(MemoryRegistrationStoreAtomicTest, BareContactSameUriRefreshesInPlace) {
+    MemoryRegistrationStore store;
+
+    auto contact = makeContact("sip:user@10.0.0.1:5060", "", "", "call-a", 1);
+    ASSERT_TRUE(store.upsertContact("sip:user@ims.example.com", makeSelector(contact), contact,
+                                    "user@ims.example.com", "sip:scscf.ims.example.com",
+                                    RegistrationBinding::State::kRegistered)
+                    .has_value());
+
+    auto refreshed = contact;
+    refreshed.path = "<sip:new-pcscf.ims.example.com;lr>";
+    refreshed.cseq = 2;
+    ASSERT_TRUE(store.upsertContact("sip:user@ims.example.com", makeSelector(refreshed), refreshed,
+                                    "user@ims.example.com", "sip:scscf.ims.example.com",
+                                    RegistrationBinding::State::kRegistered, false, true)
+                    .has_value());
+
+    auto lookup = store.lookup("sip:user@ims.example.com");
+    ASSERT_TRUE(lookup.has_value()) << lookup.error().message;
+    ASSERT_EQ(lookup->contacts.size(), 1u);
+    EXPECT_EQ(lookup->contacts[0].path, "<sip:new-pcscf.ims.example.com;lr>");
+    EXPECT_EQ(lookup->contacts[0].cseq, 2u);
+}
+
+TEST(MemoryRegistrationStoreAtomicTest, BatchUpsertBareContactReplacesStaleBindingAcrossImpus) {
+    MemoryRegistrationStore store;
+
+    auto old_contact = makeContact("sip:user@10.0.0.1:5060", "", "", "call-a", 1);
+    ASSERT_TRUE(store.upsertContacts(ContactBatchUpsert{
+        .impus = {"sip:user@ims.example.com", "tel:+8613800000000"},
+        .selector = makeSelector(old_contact),
+        .contact = old_contact,
+        .impi = "user@ims.example.com",
+        .scscf_uri = "sip:scscf.ims.example.com",
+        .state = RegistrationBinding::State::kRegistered,
+    }).has_value());
+
+    auto new_contact = makeContact("sip:user@192.168.1.50:6000", "", "", "call-b", 1);
+    auto result = store.upsertContacts(ContactBatchUpsert{
+        .impus = {"sip:user@ims.example.com", "tel:+8613800000000"},
+        .selector = makeSelector(new_contact),
+        .contact = new_contact,
+        .impi = "user@ims.example.com",
+        .scscf_uri = "sip:scscf.ims.example.com",
+        .state = RegistrationBinding::State::kRegistered,
+    });
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+    EXPECT_EQ(*result, 2u);
+
+    for (const auto* impu : {"sip:user@ims.example.com", "tel:+8613800000000"}) {
+        auto lookup = store.lookup(impu);
+        ASSERT_TRUE(lookup.has_value()) << lookup.error().message;
+        ASSERT_EQ(lookup->contacts.size(), 1u) << impu;
+        EXPECT_EQ(lookup->contacts[0].contact_uri, "sip:user@192.168.1.50:6000") << impu;
+    }
 }
 
 TEST(MemoryRegistrationStoreAtomicTest, BatchRemoveKeepsExistingBehaviorWhenCseqRejectionDisabled) {

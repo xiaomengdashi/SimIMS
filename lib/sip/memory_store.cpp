@@ -111,22 +111,45 @@ auto MemoryRegistrationStore::upsertContactLocked(
     }
     binding.state = state;
 
-    auto existing = std::find_if(binding.contacts.begin(), binding.contacts.end(),
-                                 [&](const ContactBinding& candidate) {
-                                     return matchesSelector(candidate, selector);
-                                 });
+    auto find_existing = [&]() {
+        return std::find_if(binding.contacts.begin(), binding.contacts.end(),
+                            [&](const ContactBinding& candidate) {
+                                return matchesSelector(candidate, selector);
+                            });
+    };
 
-    if (existing == binding.contacts.end()) {
-        if (require_existing_match) {
-            return false;
-        }
-        binding.contacts.push_back(contact);
+    auto existing = find_existing();
+
+    if (existing == binding.contacts.end() && require_existing_match) {
+        return false;
+    }
+
+    if (existing != binding.contacts.end()
+        && reject_older_cseq
+        && existing->call_id == contact.call_id
+        && contact.cseq < existing->cseq) {
+        IMS_LOG_DEBUG("Ignoring stale REGISTER update for IMPU={} call-id={} cseq={} < {}",
+                      binding.impu, contact.call_id, contact.cseq, existing->cseq);
         return true;
     }
 
-    if (reject_older_cseq && existing->call_id == contact.call_id && contact.cseq < existing->cseq) {
-        IMS_LOG_DEBUG("Ignoring stale REGISTER update for IMPU={} call-id={} cseq={} < {}",
-                      binding.impu, contact.call_id, contact.cseq, existing->cseq);
+    // A bare Contact (no +sip.instance/reg-id) represents a single binding per
+    // IMPU. When a UE re-registers a bare Contact from a new network/port the
+    // Contact URI changes, so it would otherwise be appended alongside the stale
+    // binding. Remove any other bare contacts first so MT traffic (e.g. SMS) is
+    // not routed to an expired address. Multi-device bindings carrying an
+    // instance-id/reg-id are left untouched.
+    if (!selector.uses_instance_and_reg_id()) {
+        std::erase_if(binding.contacts, [&](const ContactBinding& candidate) {
+            const bool candidate_is_bare =
+                candidate.instance_id.empty() && candidate.reg_id.empty();
+            return candidate_is_bare && !matchesSelector(candidate, selector);
+        });
+        existing = find_existing();
+    }
+
+    if (existing == binding.contacts.end()) {
+        binding.contacts.push_back(contact);
         return true;
     }
 
