@@ -84,7 +84,9 @@ auto StubHssClient::multimediaAuth(const MarParams& params) -> Result<MaaResult>
 
     static thread_local std::mt19937 rng{42};
 
-    auto av = build_aka_auth_vector(subscriber->config, rng);
+    auto subscriber_config = subscriber->config;
+    subscriber_config.use_ak = config_.use_ak;
+    auto av = build_aka_auth_vector(subscriber_config, rng);
     if (!av) {
         return std::unexpected(av.error());
     }

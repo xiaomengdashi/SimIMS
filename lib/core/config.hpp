@@ -104,6 +104,10 @@ struct HssSubscriberConfig {
     std::string op;
     std::string sqn;
     std::string amf = "8000";
+    // Whether the Anonymity Key (AK) is used to conceal SQN inside AUTN.
+    // true  -> AUTN carries (SQN xor AK); UE must de-conceal (security.eak=true).
+    // false -> AUTN carries SQN in clear; matches UEs configured with eak=false.
+    bool use_ak = true;
 };
 
 struct HssAdapterConfig {
@@ -118,6 +122,11 @@ struct HssAdapterConfig {
     std::string mongo_db = "simims";
     std::string mongo_collection = "subscribers";
     std::string default_scscf_uri = "sip:127.0.0.1:5062;transport=udp";
+
+    // Global SQN/AK concealment setting, applied to every subscriber.
+    // true  -> AUTN carries (SQN xor AK) (standard IMS-AKA, UE eak=true).
+    // false -> AUTN carries SQN in clear (matches UEs with eak=false).
+    bool use_ak = true;
 };
 
 struct MediaConfig {

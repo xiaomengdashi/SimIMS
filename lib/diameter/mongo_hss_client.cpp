@@ -2,14 +2,29 @@
 
 #include "diameter/aka_vector_builder.hpp"
 
+#include "core/logger.hpp"
 #include "sip/uri_utils.hpp"
 
+#include <cstdint>
 #include <format>
 #include <random>
+#include <string>
 #include <string_view>
+#include <vector>
 
 namespace ims::diameter {
 namespace {
+
+auto to_hex(const std::vector<uint8_t>& data) -> std::string {
+    static constexpr char kHex[] = "0123456789abcdef";
+    std::string out;
+    out.reserve(data.size() * 2);
+    for (auto byte : data) {
+        out.push_back(kHex[byte >> 4]);
+        out.push_back(kHex[byte & 0x0F]);
+    }
+    return out;
+}
 
 constexpr uint32_t kDiameterSuccess = 2001;
 constexpr uint64_t kSqnStep = 32;
@@ -26,7 +41,8 @@ auto split_username_realm(std::string_view impi) -> std::pair<std::string, std::
     };
 }
 
-auto to_hss_subscriber_config(const db::SubscriberRecord& subscriber) -> HssSubscriberConfig {
+auto to_hss_subscriber_config(const db::SubscriberRecord& subscriber, bool use_ak)
+    -> HssSubscriberConfig {
     HssSubscriberConfig out;
     auto [username, realm] = split_username_realm(subscriber.identities.impi);
 
@@ -38,6 +54,8 @@ auto to_hss_subscriber_config(const db::SubscriberRecord& subscriber) -> HssSubs
     out.op = subscriber.auth.op;
     out.sqn = std::format("{:012x}", (subscriber.auth.sqn & kSqnMask));
     out.amf = subscriber.auth.amf.empty() ? "8000" : subscriber.auth.amf;
+    // Global setting applied to every subscriber (no per-subscriber override).
+    out.use_ak = use_ak;
 
     return out;
 }
@@ -54,7 +72,12 @@ auto user_not_found(const std::string& message, const std::string& detail) -> Er
 
 MongoHssClient::MongoHssClient(const HssAdapterConfig& config, db::ISubscriberRepository& repository)
     : config_(config)
-    , repository_(repository) {}
+    , repository_(repository) {
+    IMS_LOG_INFO("MongoHssClient initialized, AKA SQN concealment use_ak={} ({})",
+                 config_.use_ak,
+                 config_.use_ak ? "AUTN carries SQN xor AK (UE eak=true)"
+                                : "AUTN carries SQN in clear (UE eak=false)");
+}
 
 auto MongoHssClient::resolve_assigned_scscf(const db::SubscriberRecord& subscriber) const -> std::string {
     if (!subscriber.serving.assigned_scscf.empty()) {
@@ -117,11 +140,20 @@ auto MongoHssClient::multimediaAuth(const MarParams& params) -> Result<MaaResult
         };
         return std::mt19937{seed};
     }();
-    auto hss_subscriber = to_hss_subscriber_config(subscriber_with_old_sqn);
+    auto hss_subscriber = to_hss_subscriber_config(subscriber_with_old_sqn, config_.use_ak);
     auto auth_vector = build_aka_auth_vector(hss_subscriber, rng);
     if (!auth_vector) {
         return std::unexpected(auth_vector.error());
     }
+
+    IMS_LOG_DEBUG(
+        "AKA vector for IMPI={} use_ak={} sqn={:012x} rand={} autn={} xres={}",
+        (*subscriber)->identities.impi,
+        hss_subscriber.use_ak,
+        (*old_sqn) & kSqnMask,
+        to_hex(auth_vector->rand),
+        to_hex(auth_vector->autn),
+        to_hex(auth_vector->xres));
 
     return MaaResult{
         .result_code = kDiameterSuccess,

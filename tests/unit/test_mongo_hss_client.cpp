@@ -117,6 +117,31 @@ TEST_F(MongoHssClientTest, MultimediaAuthSuccessAdvancesSqnAtomically) {
     EXPECT_FALSE(result->auth_vector.xres.empty());
 }
 
+TEST_F(MongoHssClientTest, MultimediaAuthSendsSqnInClearWhenGlobalUseAkDisabled) {
+    auto record = make_record();
+    record.auth.sqn = 0x1234ULL;
+    EXPECT_CALL(repository_, findByImpiOrImpu(_, _))
+        .WillOnce(Return(Result<std::optional<db::SubscriberRecord>>{record}));
+    EXPECT_CALL(repository_, advanceSqn(_, kSqnStep, kSqnMask))
+        .WillOnce(Return(Result<uint64_t>{record.auth.sqn}));
+
+    config_.use_ak = false;  // global YAML switch: disable AK concealment for all UEs
+    MongoHssClient client(config_, repository_);
+    auto result = client.multimediaAuth({
+        .impi = "001010000000001@ims.mnc001.mcc001.3gppnetwork.org",
+        .impu = "sip:alice@ims.mnc001.mcc001.3gppnetwork.org",
+        .sip_auth_scheme = "Digest-AKAv1-MD5",
+        .server_name = "sip:scscf1.ims.mnc001.mcc001.3gppnetwork.org",
+    });
+
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+    // sqn 0x1234 -> 48-bit big-endian bytes; with use_ak=false AUTN carries it in clear.
+    const std::vector<uint8_t> expected_clear_sqn = {0x00, 0x00, 0x00, 0x00, 0x12, 0x34};
+    std::vector<uint8_t> autn_sqn(result->auth_vector.autn.begin(),
+                                  result->auth_vector.autn.begin() + 6);
+    EXPECT_EQ(autn_sqn, expected_clear_sqn);
+}
+
 TEST_F(MongoHssClientTest, MultimediaAuthTwiceCallsAdvanceSqnTwice) {
     auto record = make_record();
     EXPECT_CALL(repository_, findByImpiOrImpu(StrEq("001010000000001@ims.mnc001.mcc001.3gppnetwork.org"),

@@ -182,6 +182,7 @@ Result<ImsConfig> load_config(const std::string& path) {
         if (auto v = hss["mongo_db"])          config.hss_adapter.mongo_db = v.as<std::string>();
         if (auto v = hss["mongo_collection"])  config.hss_adapter.mongo_collection = v.as<std::string>();
         if (auto v = hss["default_scscf_uri"]) config.hss_adapter.default_scscf_uri = v.as<std::string>();
+        if (auto v = hss["use_ak"])            config.hss_adapter.use_ak = v.as<bool>();
     }
 
     if (config.hss_adapter.mongo_uri.empty()) {
