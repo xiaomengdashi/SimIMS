@@ -121,6 +121,10 @@ auto ProxyCore::forwardResponse(SipMessage& msg,
 
 auto ProxyCore::forwardResponseUpstream(const SipMessage& response,
                                         const std::shared_ptr<ServerTransaction>& txn) -> VoidResult {
+    if (response.statusCode() == 100) {
+        IMS_LOG_DEBUG("Drop downstream 100 Trying before forwarding upstream");
+        return {};
+    }
     IMS_LOG_DEBUG("Forwarding response upstream status={} original_via_count={} top_via={}",
                   response.statusCode(), response.viaCount(), response.topVia());
     auto upstream = response.clone();

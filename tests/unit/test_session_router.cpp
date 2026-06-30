@@ -465,4 +465,23 @@ TEST_F(SessionRouterTest, MessageDownstreamResponseIsForwardedUpstream) {
     EXPECT_NE(transport->sent_messages[1].topVia().find("127.0.0.1:5090"), std::string::npos);
 }
 
+TEST_F(SessionRouterTest, InviteDownstreamTryingIsNotForwardedUpstream) {
+    seedRegisteredMessageUsers();
+    auto invite = makeRequest("INVITE", "invite-trying", "caller", "");
+
+    router->handleInvite(invite, makeTxn(invite, transport, io));
+    ASSERT_EQ(transport->sent_messages.size(), 2u);
+    EXPECT_EQ(transport->sent_messages[0].statusCode(), 100);
+    EXPECT_EQ(transport->sent_messages[1].method(), "INVITE");
+
+    auto trying = ims::sip::createResponse(transport->sent_messages[1], 100, "Trying");
+    ASSERT_TRUE(trying.has_value()) << trying.error().message;
+    stack->transactionLayer().processMessage(std::move(*trying), transport->sent_destinations[1]);
+
+    EXPECT_EQ(transport->sent_messages.size(), 2u);
+    EXPECT_EQ(transport->sent_destinations.size(), 2u);
+    EXPECT_EQ(transport->sent_destinations[0].port, 5090);
+    EXPECT_EQ(transport->sent_destinations[1].port, 5060);
+}
+
 } // namespace
