@@ -178,6 +178,84 @@ TEST_F(IcscfServiceTest, InviteStillUsesSelectorResultForRouting) {
     EXPECT_EQ(capturing_transport->sent_destinations[0].transport, "udp");
 }
 
+TEST_F(IcscfServiceTest, SanitizeForExternalEgressHidesScscfRecordRouteAndStoresDestination) {
+    auto response = ims::sip::SipMessage::parse(
+        "SIP/2.0 200 OK\r\n"
+        "Via: SIP/2.0/UDP 127.0.0.1:0;branch=z9hG4bKicscf\r\n"
+        "Via: SIP/2.0/UDP 203.0.113.10:5090;branch=z9hG4bKedge;rport=5090\r\n"
+        "Record-Route: <sip:10.20.30.40:5062;lr>\r\n"
+        "From: <sip:caller@example.net>;tag=f1\r\n"
+        "To: <sip:user@ims.example.com>;tag=t1\r\n"
+        "Call-ID: icscf-th-rr\r\n"
+        "CSeq: 1 INVITE\r\n"
+        "Content-Length: 0\r\n\r\n");
+    ASSERT_TRUE(response.has_value()) << response.error().message;
+
+    service->sanitizeForExternalEgress(*response);
+
+    EXPECT_EQ(response->viaCount(), 2);
+    auto record_routes = response->getHeaders("Record-Route");
+    ASSERT_EQ(record_routes.size(), 1u);
+    EXPECT_EQ(record_routes.front().find("10.20.30.40"), std::string::npos);
+    EXPECT_NE(record_routes.front().find("127.0.0.1:0"), std::string::npos);
+    auto token = service->extractTopologyToken(*response);
+    ASSERT_TRUE(token.has_value());
+    auto stored = service->topology_routes_.find(*token);
+    ASSERT_NE(stored, service->topology_routes_.end());
+    EXPECT_EQ(stored->second.endpoint.address, "10.20.30.40");
+    EXPECT_EQ(stored->second.endpoint.port, 5062);
+}
+
+TEST_F(IcscfServiceTest, AckWithTopologyRouteUsesStoredScscfDestination) {
+    service->rememberTopologyRoute("thicscf", ims::sip::Endpoint{
+        .address = "10.20.30.40",
+        .port = 5062,
+        .transport = "udp",
+    });
+    auto ack = make_request("ACK", "ack-th-call", 2);
+    ack.addRoute("<sip:127.0.0.1:0;lr;th=thicscf>");
+
+    service->onAck(ack);
+
+    ASSERT_EQ(capturing_transport->sent_destinations.size(), 1u);
+    EXPECT_EQ(capturing_transport->sent_destinations.front().address, "10.20.30.40");
+    EXPECT_EQ(capturing_transport->sent_destinations.front().port, 5062);
+    ASSERT_EQ(capturing_transport->sent_messages.size(), 1u);
+    EXPECT_TRUE(capturing_transport->sent_messages.front().routes().empty());
+}
+
+TEST_F(IcscfServiceTest, AckWithTopologyRouteRestoresNestedRouteForNextProxy) {
+    auto response = ims::sip::SipMessage::parse(
+        "SIP/2.0 200 OK\r\n"
+        "Via: SIP/2.0/UDP 127.0.0.1:0;branch=z9hG4bKicscf\r\n"
+        "Via: SIP/2.0/UDP 203.0.113.10:5090;branch=z9hG4bKedge;rport=5090\r\n"
+        "Record-Route: <sip:10.20.30.40:5062;lr;th=thinner>\r\n"
+        "Record-Route: <sip:10.20.30.41:5062;lr;th=thinnermost>\r\n"
+        "From: <sip:caller@example.net>;tag=f1\r\n"
+        "To: <sip:user@ims.example.com>;tag=t1\r\n"
+        "Call-ID: icscf-nested-route\r\n"
+        "CSeq: 1 INVITE\r\n"
+        "Content-Length: 0\r\n\r\n");
+    ASSERT_TRUE(response.has_value()) << response.error().message;
+    service->sanitizeForExternalEgress(*response);
+    auto token = service->extractTopologyToken(*response);
+    ASSERT_TRUE(token.has_value());
+
+    auto ack = make_request("ACK", "ack-nested-th-call", 2);
+    ack.addRoute(std::format("<sip:127.0.0.1:0;lr;th={}>", *token));
+
+    service->onAck(ack);
+
+    ASSERT_EQ(capturing_transport->sent_destinations.size(), 1u);
+    EXPECT_EQ(capturing_transport->sent_destinations.front().address, "10.20.30.40");
+    EXPECT_EQ(capturing_transport->sent_destinations.front().port, 5062);
+    ASSERT_EQ(capturing_transport->sent_messages.size(), 1u);
+    auto routes = capturing_transport->sent_messages.front().routes();
+    ASSERT_EQ(routes.size(), 2u);
+    EXPECT_NE(routes.front().find("th=thinner"), std::string::npos);
+    EXPECT_NE(routes.back().find("th=thinnermost"), std::string::npos);
+}
+
 TEST_F(IcscfServiceTest, InviteNormalizesTelRequestUriBeforeLocationLookup) {
     auto invite = make_request("INVITE",
                                "invite-tel-call",

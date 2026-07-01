@@ -444,6 +444,24 @@ TEST_F(RegistrarAtomicStoreTest, InitialRegisterWritesAllAssociatedImpus) {
     }
 }
 
+TEST_F(RegistrarAtomicStoreTest, InitialRegisterOkIncludesServiceRoute) {
+    EXPECT_CALL(*hss_, serverAssignment(_))
+        .WillOnce(Return(successSaa()));
+
+    auto request = makeAuthorizedRegister("service-route-ok", 1, "nonce-a");
+    registrar_->handleRegister(request, makeTxn(request, transport_, io_));
+
+    ASSERT_FALSE(transport_->sent_messages.empty());
+    const auto& response = transport_->sent_messages.back();
+    EXPECT_EQ(response.statusCode(), 200);
+    auto serialized = response.toString();
+    ASSERT_TRUE(serialized.has_value()) << serialized.error().message;
+    const std::string expected = "Service-Route: <sip:scscf.ims.example.com;lr>";
+    auto first = serialized->find(expected);
+    ASSERT_NE(first, std::string::npos) << *serialized;
+    EXPECT_EQ(serialized->find(expected, first + expected.size()), std::string::npos) << *serialized;
+}
+
 TEST_F(RegistrarAtomicStoreTest, InitialRegisterDoesNotOverwriteExistingContact) {
     EXPECT_CALL(*hss_, serverAssignment(_))
         .WillOnce(Return(successSaa()))

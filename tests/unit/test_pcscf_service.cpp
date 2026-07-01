@@ -495,6 +495,129 @@ TEST_F(PcscfServiceTest, AddTopologyRecordRouteCarriesToken) {
     EXPECT_NE(rr[0].find(";th=thabc123"), std::string::npos);
 }
 
+TEST_F(PcscfServiceTest, SanitizeForUeEgressHidesCoreServiceRouteAndStoresDestination) {
+    auto response = ims::sip::SipMessage::parse(
+        "SIP/2.0 200 OK\r\n"
+        "Via: SIP/2.0/UDP 127.0.0.1:0;branch=z9hG4bKpcscf\r\n"
+        "Via: SIP/2.0/UDP 10.0.0.9:5099;branch=z9hG4bKue;rport=5099\r\n"
+        "From: <sip:alice@ims.local>;tag=f1\r\n"
+        "To: <sip:alice@ims.local>;tag=t1\r\n"
+        "Call-ID: service-route-hide\r\n"
+        "CSeq: 1 REGISTER\r\n"
+        "Service-Route: <sip:10.20.30.40:5062;lr>\r\n"
+        "Content-Length: 0\r\n\r\n");
+    ASSERT_TRUE(response.has_value()) << response.error().message;
+
+    service_->sanitizeForUeEgress(*response);
+
+    auto service_routes = response->getHeaders("Service-Route");
+    ASSERT_EQ(service_routes.size(), 1u);
+    EXPECT_EQ(service_routes.front().find("10.20.30.40"), std::string::npos);
+    EXPECT_NE(service_routes.front().find("127.0.0.1:0"), std::string::npos);
+    auto token = service_->extractTopologyToken(*response);
+    ASSERT_TRUE(token.has_value());
+    auto stored = service_->topology_routes_.find(*token);
+    ASSERT_NE(stored, service_->topology_routes_.end());
+    EXPECT_EQ(stored->second.endpoint.address, "10.20.30.40");
+    EXPECT_EQ(stored->second.endpoint.port, 5062);
+}
+
+TEST_F(PcscfServiceTest, SanitizeForUeEgressHidesCoreRecordRoutesAndStoresDestination) {
+    auto response = ims::sip::SipMessage::parse(
+        "SIP/2.0 200 OK\r\n"
+        "Via: SIP/2.0/UDP 127.0.0.1:0;branch=z9hG4bKpcscf\r\n"
+        "Via: SIP/2.0/UDP 10.0.0.9:5099;branch=z9hG4bKue;rport=5099\r\n"
+        "Record-Route: <sip:10.20.30.41:5061;lr>\r\n"
+        "Record-Route: <sip:10.20.30.42:5062;lr>\r\n"
+        "From: <sip:bob@ims.local>;tag=f1\r\n"
+        "To: <sip:alice@ims.local>;tag=t1\r\n"
+        "Call-ID: record-route-hide\r\n"
+        "CSeq: 1 INVITE\r\n"
+        "Content-Length: 0\r\n\r\n");
+    ASSERT_TRUE(response.has_value()) << response.error().message;
+
+    service_->sanitizeForUeEgress(*response);
+
+    auto record_routes = response->getHeaders("Record-Route");
+    ASSERT_EQ(record_routes.size(), 1u);
+    EXPECT_EQ(record_routes.front().find("10.20.30.41"), std::string::npos);
+    EXPECT_EQ(record_routes.front().find("10.20.30.42"), std::string::npos);
+    EXPECT_NE(record_routes.front().find("127.0.0.1:0"), std::string::npos);
+    auto token = service_->extractTopologyToken(*response);
+    ASSERT_TRUE(token.has_value());
+    auto stored = service_->topology_routes_.find(*token);
+    ASSERT_NE(stored, service_->topology_routes_.end());
+    EXPECT_EQ(stored->second.endpoint.address, "10.20.30.41");
+    EXPECT_EQ(stored->second.endpoint.port, 5061);
+}
+
+TEST_F(PcscfServiceTest, StatelessUeRequestWithTopologyRouteUsesStoredDestinationAfterRouteProcessing) {
+    service_->rememberTopologyRoute("thstored", ims::sip::Endpoint{
+        .address = "10.20.30.40",
+        .port = 5062,
+        .transport = "udp",
+    });
+    auto ack = ims::sip::SipMessage::parse(
+        "ACK sip:bob@ims.local SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP 10.0.0.9:5099;branch=z9hG4bKue-ack;rport\r\n"
+        "Route: <sip:127.0.0.1:0;lr;th=thstored>\r\n"
+        "From: <sip:alice@ims.local>;tag=f1\r\n"
+        "To: <sip:bob@ims.local>;tag=t1\r\n"
+        "Call-ID: th-ack-route\r\n"
+        "CSeq: 1 ACK\r\n"
+        "Content-Length: 0\r\n\r\n");
+    ASSERT_TRUE(ack.has_value()) << ack.error().message;
+
+    service_->forwardStatelessToCore(*ack);
+
+    ASSERT_EQ(capturing_transport_->sent_destinations.size(), 1u);
+    EXPECT_EQ(capturing_transport_->sent_destinations.front().address, "10.20.30.40");
+    EXPECT_EQ(capturing_transport_->sent_destinations.front().port, 5062);
+    ASSERT_EQ(capturing_transport_->sent_messages.size(), 1u);
+    EXPECT_TRUE(capturing_transport_->sent_messages.front().routes().empty());
+}
+
+TEST_F(PcscfServiceTest, StatelessUeRequestRestoresNestedTopologyRouteForNextProxy) {
+    auto register_ok = ims::sip::SipMessage::parse(
+        "SIP/2.0 200 OK\r\n"
+        "Via: SIP/2.0/UDP 127.0.0.1:0;branch=z9hG4bKpcscf\r\n"
+        "Via: SIP/2.0/UDP 10.0.0.9:5099;branch=z9hG4bKue;rport=5099\r\n"
+        "From: <sip:alice@ims.local>;tag=f1\r\n"
+        "To: <sip:alice@ims.local>;tag=t1\r\n"
+        "Call-ID: nested-service-route\r\n"
+        "CSeq: 1 REGISTER\r\n"
+        "Service-Route: <sip:127.0.0.1:5061;lr;th=thicscf>\r\n"
+        "Service-Route: <sip:127.0.0.1:5062;lr;th=thscscf>\r\n"
+        "Content-Length: 0\r\n\r\n");
+    ASSERT_TRUE(register_ok.has_value()) << register_ok.error().message;
+    service_->sanitizeForUeEgress(*register_ok);
+    auto pcscf_token = service_->extractTopologyToken(*register_ok);
+    ASSERT_TRUE(pcscf_token.has_value());
+
+    auto ack = ims::sip::SipMessage::parse(std::format(
+        "ACK sip:bob@ims.local SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP 10.0.0.9:5099;branch=z9hG4bKue-ack;rport\r\n"
+        "Route: <sip:127.0.0.1:0;lr;th={}>\r\n"
+        "From: <sip:alice@ims.local>;tag=f1\r\n"
+        "To: <sip:bob@ims.local>;tag=t1\r\n"
+        "Call-ID: nested-th-ack\r\n"
+        "CSeq: 1 ACK\r\n"
+        "Content-Length: 0\r\n\r\n",
+        *pcscf_token));
+    ASSERT_TRUE(ack.has_value()) << ack.error().message;
+
+    service_->forwardStatelessToCore(*ack);
+
+    ASSERT_EQ(capturing_transport_->sent_destinations.size(), 1u);
+    EXPECT_EQ(capturing_transport_->sent_destinations.front().address, "127.0.0.1");
+    EXPECT_EQ(capturing_transport_->sent_destinations.front().port, 5061);
+    ASSERT_EQ(capturing_transport_->sent_messages.size(), 1u);
+    auto routes = capturing_transport_->sent_messages.front().routes();
+    ASSERT_EQ(routes.size(), 2u);
+    EXPECT_NE(routes.front().find("th=thicscf"), std::string::npos);
+    EXPECT_NE(routes.back().find("th=thscscf"), std::string::npos);
+}
+
 TEST_F(PcscfServiceTest, CoreFacingRequestAcceptsConfiguredCoreEntrySource) {
     auto req = ims::sip::SipMessage::parse(
         "INVITE sip:alice@ims.local SIP/2.0\r\n"

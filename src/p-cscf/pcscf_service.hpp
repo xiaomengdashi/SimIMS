@@ -41,7 +41,13 @@ private:
     auto extractTopologyToken(const ims::sip::SipMessage& request) const -> std::optional<std::string>;
     auto createTopologyToken() -> std::string;
     void purgeExpiredTopologyRoutesLocked() const;
-    void rememberTopologyRoute(const std::string& token, const ims::sip::Endpoint& endpoint);
+    auto topologyRoutesForRequest(const ims::sip::SipMessage& request) const -> std::vector<std::string>;
+    void rememberTopologyRoute(const std::string& token,
+                               const ims::sip::Endpoint& endpoint,
+                               std::vector<std::string> routes = {});
+    auto topologyRouteForToken(const std::string& token) const -> std::string;
+    void hideHeaderRoutesForUe(ims::sip::SipMessage& message, const std::string& header_name);
+    void restoreTopologyRouteForCore(ims::sip::SipMessage& request);
     void addTopologyRecordRoute(ims::sip::SipMessage& request, const std::string& token) const;
     void sanitizeForUeEgress(ims::sip::SipMessage& request);
     auto mediaKeyForRequest(const ims::sip::SipMessage& request) const -> ims::media::MediaSessionKey;
@@ -91,6 +97,7 @@ private:
 
     struct TopologyRouteEntry {
         ims::sip::Endpoint endpoint;
+        std::vector<std::string> routes;
         std::chrono::steady_clock::time_point expires_at;
     };
 

@@ -10,6 +10,7 @@
 #include <iomanip>
 #include <random>
 #include <sstream>
+#include <strings.h>
 
 namespace ims::sip {
 
@@ -453,12 +454,15 @@ void SipMessage::removeHeader(const std::string& name) {
         return;
     }
 
-    osip_header_t* header = nullptr;
-    int pos = 0;
-    while (osip_message_header_get_byname(msg_.get(), name.c_str(), pos, &header) >= 0 && header) {
+    for (int pos = 0; pos < osip_list_size(&msg_->headers);) {
+        auto* header = static_cast<osip_header_t*>(osip_list_get(&msg_->headers, pos));
+        if (!header || !header->hname || strcasecmp(header->hname, name.c_str()) != 0) {
+            ++pos;
+            continue;
+        }
+
         osip_list_remove(&msg_->headers, pos);
         osip_header_free(header);
-        header = nullptr;
     }
 }
 

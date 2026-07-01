@@ -7,6 +7,9 @@
 #include <cctype>
 #include <format>
 #include <optional>
+#include <random>
+#include <sstream>
+#include <string>
 
 namespace ims::icscf {
 
@@ -22,6 +25,24 @@ auto resolve_proxy_advertised_address(const ims::IcscfConfig& config) -> std::st
     return "127.0.0.1";
 }
 
+auto random_hex(int length) -> std::string {
+    static thread_local std::mt19937 rng{std::random_device{}()};
+    std::uniform_int_distribution<int> dist(0, 15);
+    std::ostringstream oss;
+    for (int i = 0; i < length; ++i) {
+        oss << std::hex << dist(rng);
+    }
+    return oss.str();
+}
+
+auto to_lower(std::string value) -> std::string {
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    return value;
+}
+
+constexpr auto kTopologyRouteTtl = std::chrono::minutes{30};
+
 } // namespace
 
 IcscfService::IcscfService(const ims::IcscfConfig& config,
@@ -32,6 +53,7 @@ IcscfService::IcscfService(const ims::IcscfConfig& config,
           io, config.listen_addr, config.listen_port))
     , selector_(std::make_unique<ScscfSelector>(std::move(hss)))
     , proxy_(resolve_proxy_advertised_address(config), config.listen_port)
+    , proxy_public_addr_(resolve_proxy_advertised_address(config))
 {
 }
 
@@ -202,10 +224,135 @@ auto IcscfService::localScscfEndpoint() const -> ims::sip::Endpoint {
     };
 }
 
+auto IcscfService::resolveScscfDestination(const ims::sip::SipMessage& request) const -> ims::sip::Endpoint {
+    if (auto token = extractTopologyToken(request)) {
+        std::lock_guard<std::mutex> lock(topology_mutex_);
+        purgeExpiredTopologyRoutesLocked();
+        auto it = topology_routes_.find(*token);
+        if (it != topology_routes_.end()) {
+            return it->second.endpoint;
+        }
+    }
+    return localScscfEndpoint();
+}
+
+auto IcscfService::extractTopologyToken(const ims::sip::SipMessage& request) const -> std::optional<std::string> {
+    std::vector<std::string> routes = request.routes();
+    auto service_routes = request.getHeaders("Service-Route");
+    routes.insert(routes.end(), service_routes.begin(), service_routes.end());
+    auto record_routes = request.getHeaders("Record-Route");
+    routes.insert(routes.end(), record_routes.begin(), record_routes.end());
+
+    for (const auto& route : routes) {
+        auto key_pos = route.find("th=");
+        if (key_pos == std::string::npos) {
+            continue;
+        }
+
+        key_pos += 3;
+        auto end_pos = route.find_first_of(";>", key_pos);
+        if (end_pos == std::string::npos) {
+            end_pos = route.size();
+        }
+        if (end_pos > key_pos) {
+            return route.substr(key_pos, end_pos - key_pos);
+        }
+    }
+
+    return std::nullopt;
+}
+
+auto IcscfService::createTopologyToken() -> std::string {
+    return "th" + random_hex(20);
+}
+
+void IcscfService::purgeExpiredTopologyRoutesLocked() const {
+    auto now = std::chrono::steady_clock::now();
+    std::erase_if(topology_routes_, [now](const auto& item) {
+        return item.second.expires_at <= now;
+    });
+}
+
+auto IcscfService::topologyRoutesForRequest(const ims::sip::SipMessage& request) const -> std::vector<std::string> {
+    if (auto token = extractTopologyToken(request)) {
+        std::lock_guard<std::mutex> lock(topology_mutex_);
+        purgeExpiredTopologyRoutesLocked();
+        auto it = topology_routes_.find(*token);
+        if (it != topology_routes_.end()) {
+            return it->second.routes;
+        }
+    }
+    return {};
+}
+
+void IcscfService::rememberTopologyRoute(const std::string& token,
+                                         const ims::sip::Endpoint& endpoint,
+                                         std::vector<std::string> routes) {
+    std::lock_guard<std::mutex> lock(topology_mutex_);
+    purgeExpiredTopologyRoutesLocked();
+    topology_routes_[token] = TopologyRouteEntry{
+        .endpoint = endpoint,
+        .routes = std::move(routes),
+        .expires_at = std::chrono::steady_clock::now() + kTopologyRouteTtl,
+    };
+}
+
+auto IcscfService::topologyRouteForToken(const std::string& token) const -> std::string {
+    return std::format("<sip:{}:{};lr;th={}>", proxy_public_addr_, config_.listen_port, token);
+}
+
+void IcscfService::hideHeaderRoutesForExternal(ims::sip::SipMessage& message, const std::string& header_name) {
+    const auto routes = message.getHeaders(header_name);
+    if (routes.empty()) {
+        return;
+    }
+
+    ims::sip::Endpoint local_endpoint{
+        .address = proxy_public_addr_,
+        .port = config_.listen_port,
+        .transport = "udp",
+    };
+    if (routes.front().find("th=") != std::string::npos &&
+        ims::sip::route_points_to_endpoint(routes.front(), local_endpoint)) {
+        return;
+    }
+
+    auto endpoint = ims::sip::parse_endpoint_from_uri(routes.front()).value_or(localScscfEndpoint());
+    if (endpoint.transport.empty()) {
+        endpoint.transport = config_.local_scscf.transport.empty() ? "udp" : config_.local_scscf.transport;
+    }
+
+    auto token = createTopologyToken();
+    rememberTopologyRoute(token, endpoint, routes);
+    auto hidden_route = topologyRouteForToken(token);
+
+    message.removeHeader(header_name);
+    if (to_lower(header_name) == "record-route") {
+        message.addRecordRoute(hidden_route);
+    } else {
+        message.addHeader(header_name, hidden_route);
+    }
+}
+
+void IcscfService::restoreTopologyRouteForScscf(ims::sip::SipMessage& request) {
+    auto routes = topologyRoutesForRequest(request);
+    proxy_.processRouteHeaders(request);
+    for (const auto& route : routes) {
+        if (!route.empty()) {
+            request.addRoute(route);
+        }
+    }
+}
+
+void IcscfService::sanitizeForExternalEgress(ims::sip::SipMessage& message) {
+    hideHeaderRoutesForExternal(message, "Service-Route");
+    hideHeaderRoutesForExternal(message, "Record-Route");
+}
+
 void IcscfService::onAck(ims::sip::SipMessage& request) {
     IMS_LOG_DEBUG("I-CSCF received ACK");
-    proxy_.processRouteHeaders(request);
-    auto dest = localScscfEndpoint();
+    auto dest = resolveScscfDestination(request);
+    restoreTopologyRouteForScscf(request);
     auto result = proxy_.forwardRequest(request, dest, sip_stack_->transport());
     if (!result) {
         IMS_LOG_ERROR("Failed to forward ACK statelessly: {}", result.error().message);
@@ -216,10 +363,14 @@ void IcscfService::onInDialogStateful(std::shared_ptr<ims::sip::ServerTransactio
                                       ims::sip::SipMessage& request,
                                       const char* method_name) {
     IMS_LOG_DEBUG("I-CSCF received {}", method_name);
-    proxy_.processRouteHeaders(request);
-    auto dest = localScscfEndpoint();
+    auto dest = resolveScscfDestination(request);
+    restoreTopologyRouteForScscf(request);
     auto result = proxy_.forwardStateful(request, dest, txn, *sip_stack_, {
         .add_record_route = false,
+        .process_route_headers = false,
+        .on_response = [this](ims::sip::SipMessage& response) {
+            sanitizeForExternalEgress(response);
+        },
     });
     if (!result) {
         IMS_LOG_ERROR("Failed to forward {} statefully: {}", method_name, result.error().message);
@@ -233,6 +384,9 @@ void IcscfService::forwardStateful(std::shared_ptr<ims::sip::ServerTransaction> 
 {
     auto result = proxy_.forwardStateful(request, dest, txn, *sip_stack_, {
         .add_record_route = add_record_route,
+        .on_response = [this](ims::sip::SipMessage& response) {
+            sanitizeForExternalEgress(response);
+        },
     });
     if (!result) {
         IMS_LOG_ERROR("Failed to forward request statefully: {}", result.error().message);

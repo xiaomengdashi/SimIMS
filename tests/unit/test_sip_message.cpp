@@ -261,6 +261,35 @@ TEST_F(SipMessageTest, RemoveHeaderRemovesRecordRoute) {
     EXPECT_EQ(serialized->find("Record-Route:"), std::string::npos);
 }
 
+TEST_F(SipMessageTest, RemoveHeaderRemovesGenericHeaderWithoutCorruptingOthers) {
+    static constexpr auto kMsg =
+        "SIP/2.0 200 OK\r\n"
+        "Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKtop\r\n"
+        "To: <sip:user@ims.example.com>;tag=t1\r\n"
+        "From: <sip:user@ims.example.com>;tag=f1\r\n"
+        "Call-ID: generic-remove\r\n"
+        "CSeq: 1 REGISTER\r\n"
+        "Expires: 3600\r\n"
+        "Date: Thu, 02 Jul 2026 01:20:00 GMT\r\n"
+        "Service-Route: <sip:scscf.ims.example.com;lr>\r\n"
+        "P-Associated-URI: <sip:user@ims.example.com>\r\n"
+        "Content-Length: 0\r\n\r\n";
+    auto result = SipMessage::parse(kMsg);
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+
+    result->removeHeader("Service-Route");
+
+    EXPECT_TRUE(result->getHeaders("Service-Route").empty());
+    EXPECT_EQ(result->getHeader("Expires"), std::optional<std::string>{"3600"});
+    EXPECT_EQ(result->getHeader("P-Associated-URI"),
+              std::optional<std::string>{"<sip:user@ims.example.com>"});
+    auto serialized = result->toString();
+    ASSERT_TRUE(serialized.has_value()) << serialized.error().message;
+    EXPECT_EQ(serialized->find("Service-Route:"), std::string::npos);
+    EXPECT_NE(serialized->find("Expires: 3600"), std::string::npos);
+    EXPECT_NE(serialized->find("<sip:user@ims.example.com>"), std::string::npos);
+}
+
 TEST_F(SipMessageTest, GetHeaderReturnsSpecializedContact) {
     auto result = SipMessage::parse(kRegisterMsg);
     ASSERT_TRUE(result.has_value()) << result.error().message;
@@ -386,4 +415,3 @@ TEST_F(SipMessageTest, WildcardContactIsDetected) {
     EXPECT_EQ(result->contact_uri(), std::optional<std::string>{"*"});
     EXPECT_EQ(result->contact_expires(), std::nullopt);
 }
-

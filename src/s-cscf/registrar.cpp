@@ -274,6 +274,7 @@ void Registrar::sendRegisterOk(ims::sip::SipMessage& request,
     }
     resp->addHeader("Expires", std::to_string(expires));
     resp->addHeader("Date", formatGmtDate());
+    resp->addHeader("Service-Route", std::format("<sip:scscf.{};lr>", domain_));
     addSecurityAgreementHeaders(request, *resp, true);
 
     if (!associated_impus.empty()) {

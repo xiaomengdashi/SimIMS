@@ -238,24 +238,26 @@ void PcscfService::onInviteResponse(ims::sip::SipMessage& response) {
         return;
     }
 
-    sanitizeForUeEgress(response);
-
     const int status = response.statusCode();
     auto response_key = mediaKeyForResponse(response);
     if (status >= 300 && status <= 699) {
+        sanitizeForUeEgress(response);
         completeMediaTerminations(media_sessions_.markInviteFinalFailure(response_key));
         return;
     }
     if (status != 183 && (status < 200 || status >= 300)) {
+        sanitizeForUeEgress(response);
         return;
     }
 
     auto sdp = response.body();
     if ((!sdp || !rtpengine_) && status >= 200 && status < 300) {
+        sanitizeForUeEgress(response);
         completeMediaTerminations(media_sessions_.markInviteFinalSuccess(response_key));
         return;
     }
     if (!sdp || !rtpengine_) {
+        sanitizeForUeEgress(response);
         return;
     }
 
@@ -275,6 +277,7 @@ void PcscfService::onInviteResponse(ims::sip::SipMessage& response) {
     auto answer_result = rtpengine_->answer(media_update->session, *sdp, flags);
     if (!answer_result) {
         IMS_LOG_WARN("rtpengine answer failed for call={}: {}", call_id, answer_result.error().message);
+        sanitizeForUeEgress(response);
         return;
     }
 
@@ -286,10 +289,12 @@ void PcscfService::onInviteResponse(ims::sip::SipMessage& response) {
     if (!answer_result->sdp.empty()) {
         response.setBody(answer_result->sdp, "application/sdp");
         IMS_LOG_DEBUG("SDP answer rewritten by rtpengine for call={}", call_id);
+        sanitizeForUeEgress(response);
         return;
     }
 
     IMS_LOG_WARN("rtpengine answer returned empty SDP for call={}, keeping original SDP", call_id);
+    sanitizeForUeEgress(response);
 }
 
 auto PcscfService::isCoreFacingRequest(const ims::sip::ServerTransaction& txn) const -> bool {
@@ -397,31 +402,45 @@ auto PcscfService::resolveCoreDestination(const ims::sip::SipMessage& request) c
 }
 
 auto PcscfService::extractTopologyToken(const ims::sip::SipMessage& request) const -> std::optional<std::string> {
-    auto routes = request.routes();
-    if (routes.empty()) {
-        return std::nullopt;
+    std::vector<std::string> routes = request.routes();
+    auto service_routes = request.getHeaders("Service-Route");
+    routes.insert(routes.end(), service_routes.begin(), service_routes.end());
+    auto record_routes = request.getHeaders("Record-Route");
+    routes.insert(routes.end(), record_routes.begin(), record_routes.end());
+
+    for (const auto& route : routes) {
+        auto key_pos = route.find("th=");
+        if (key_pos == std::string::npos) {
+            continue;
+        }
+
+        key_pos += 3;
+        auto end_pos = route.find_first_of(";>", key_pos);
+        if (end_pos == std::string::npos) {
+            end_pos = route.size();
+        }
+        if (end_pos > key_pos) {
+            return route.substr(key_pos, end_pos - key_pos);
+        }
     }
 
-    const auto& top = routes.front();
-    auto key_pos = top.find("th=");
-    if (key_pos == std::string::npos) {
-        return std::nullopt;
-    }
-
-    key_pos += 3;
-    auto end_pos = top.find_first_of(";>", key_pos);
-    if (end_pos == std::string::npos) {
-        end_pos = top.size();
-    }
-    if (end_pos <= key_pos) {
-        return std::nullopt;
-    }
-
-    return top.substr(key_pos, end_pos - key_pos);
+    return std::nullopt;
 }
 
 auto PcscfService::createTopologyToken() -> std::string {
     return "th" + random_hex(20);
+}
+
+auto PcscfService::topologyRoutesForRequest(const ims::sip::SipMessage& request) const -> std::vector<std::string> {
+    if (auto token = extractTopologyToken(request)) {
+        std::lock_guard<std::mutex> lock(topology_mutex_);
+        purgeExpiredTopologyRoutesLocked();
+        auto it = topology_routes_.find(*token);
+        if (it != topology_routes_.end()) {
+            return it->second.routes;
+        }
+    }
+    return {};
 }
 
 void PcscfService::purgeExpiredTopologyRoutesLocked() const {
@@ -431,19 +450,72 @@ void PcscfService::purgeExpiredTopologyRoutesLocked() const {
     });
 }
 
-void PcscfService::rememberTopologyRoute(const std::string& token, const ims::sip::Endpoint& endpoint) {
+void PcscfService::rememberTopologyRoute(const std::string& token,
+                                         const ims::sip::Endpoint& endpoint,
+                                         std::vector<std::string> routes) {
     std::lock_guard<std::mutex> lock(topology_mutex_);
     purgeExpiredTopologyRoutesLocked();
     topology_routes_[token] = TopologyRouteEntry{
         .endpoint = endpoint,
+        .routes = std::move(routes),
         .expires_at = std::chrono::steady_clock::now() + kTopologyRouteTtl,
     };
 }
 
+auto PcscfService::topologyRouteForToken(const std::string& token) const -> std::string {
+    return std::format("<sip:{}:{};lr;th={}>", proxy_public_addr_, config_.listen_port, token);
+}
+
+void PcscfService::hideHeaderRoutesForUe(ims::sip::SipMessage& message, const std::string& header_name) {
+    const auto routes = message.getHeaders(header_name);
+    if (routes.empty()) {
+        return;
+    }
+
+    ims::sip::Endpoint local_endpoint{
+        .address = proxy_public_addr_,
+        .port = config_.listen_port,
+        .transport = "udp",
+    };
+    if (routes.front().find("th=") != std::string::npos &&
+        ims::sip::route_points_to_endpoint(routes.front(), local_endpoint)) {
+        return;
+    }
+
+    auto endpoint = ims::sip::parse_endpoint_from_uri(routes.front()).value_or(ims::sip::Endpoint{
+        .address = core_entry_addr_,
+        .port = core_entry_port_,
+        .transport = config_.core_entry.transport.empty() ? "udp" : config_.core_entry.transport,
+    });
+    if (endpoint.transport.empty()) {
+        endpoint.transport = config_.core_entry.transport.empty() ? "udp" : config_.core_entry.transport;
+    }
+
+    auto token = createTopologyToken();
+    rememberTopologyRoute(token, endpoint, routes);
+    auto hidden_route = topologyRouteForToken(token);
+
+    message.removeHeader(header_name);
+    if (to_lower(header_name) == "record-route") {
+        message.addRecordRoute(hidden_route);
+    } else {
+        message.addHeader(header_name, hidden_route);
+    }
+}
+
+void PcscfService::restoreTopologyRouteForCore(ims::sip::SipMessage& request) {
+    auto routes = topologyRoutesForRequest(request);
+    proxy_.processRouteHeaders(request);
+    for (const auto& route : routes) {
+        if (!route.empty()) {
+            request.addRoute(route);
+        }
+    }
+}
+
 void PcscfService::addTopologyRecordRoute(ims::sip::SipMessage& request, const std::string& token) const {
     request.removeHeader("Record-Route");
-    auto rr = std::format("<sip:{}:{};lr;th={}>", proxy_public_addr_, config_.listen_port, token);
-    request.addRecordRoute(rr);
+    request.addRecordRoute(topologyRouteForToken(token));
 }
 
 void PcscfService::sanitizeForUeEgress(ims::sip::SipMessage& request) {
@@ -452,6 +524,9 @@ void PcscfService::sanitizeForUeEgress(ims::sip::SipMessage& request) {
         request.removeTopVia();
         via_count = request.viaCount();
     }
+
+    hideHeaderRoutesForUe(request, "Service-Route");
+    hideHeaderRoutesForUe(request, "Record-Route");
 }
 
 auto PcscfService::mediaKeyForRequest(const ims::sip::SipMessage& request) const -> ims::media::MediaSessionKey {
@@ -530,13 +605,25 @@ void PcscfService::forwardStatefulToCore(std::shared_ptr<ims::sip::ServerTransac
                                           bool process_invite_response_media)
 {
     auto dest = resolveCoreDestination(request);
+    auto routes = topologyRoutesForRequest(request);
 
     ims::sip::ForwardOptions options{
         .add_record_route = add_record_route,
+        .process_route_headers = false,
     };
+    proxy_.processRouteHeaders(request);
+    for (const auto& route : routes) {
+        if (!route.empty()) {
+            request.addRoute(route);
+        }
+    }
     if (process_invite_response_media) {
         options.on_response = [this](ims::sip::SipMessage& response) {
             onInviteResponse(response);
+        };
+    } else {
+        options.on_response = [this](ims::sip::SipMessage& response) {
+            sanitizeForUeEgress(response);
         };
     }
 
@@ -568,6 +655,7 @@ void PcscfService::forwardStatefulToUe(std::shared_ptr<ims::sip::ServerTransacti
         rememberTopologyRoute(token, resolveCoreDestination(request));
         addTopologyRecordRoute(request, token);
     }
+    sanitizeForUeEgress(request);
 
     ims::sip::ForwardOptions options{
         .add_record_route = false,
@@ -589,12 +677,11 @@ void PcscfService::forwardStatelessToCore(ims::sip::SipMessage& request,
         return;
     }
 
-    proxy_.processRouteHeaders(request);
+    auto dest = resolveCoreDestination(request);
+    restoreTopologyRouteForCore(request);
     if (add_record_route) {
         proxy_.addRecordRoute(request);
     }
-
-    auto dest = resolveCoreDestination(request);
 
     auto result = proxy_.forwardRequest(request, dest, sip_stack_->transport());
     if (!result) {
