@@ -120,6 +120,19 @@ auto MemoryRegistrationStore::upsertContactLocked(
         if (require_existing_match) {
             return false;
         }
+        // IMS 实践（3GPP TS 24.229 §5.3.2.1）：不带 +sip.instance/reg-id 的裸 contact 视为
+        // "同 IMPU 单实例"语义。新裸 contact 注册时，应覆盖 IMPU 下已有的其他裸 contact，
+        // 否则 UE 切换网络/端口后旧 contact 残留，路由会取到过期 binding。
+        // 带 +sip.instance 的多设备注册走上面的 instance 精确匹配分支，不受影响。
+        if (!selector.uses_instance_and_reg_id()) {
+            auto removed = std::erase_if(binding.contacts, [](const ContactBinding& candidate) {
+                return candidate.instance_id.empty() && candidate.reg_id.empty();
+            });
+            if (removed > 0) {
+                IMS_LOG_DEBUG("Replaced {} legacy bare contact(s) for IMPU={}",
+                              removed, binding.impu);
+            }
+        }
         binding.contacts.push_back(contact);
         return true;
     }

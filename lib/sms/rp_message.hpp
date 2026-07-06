@@ -10,11 +10,23 @@
 
 namespace ims::sms {
 
+/// RP Message Type Indicator (3GPP TS 24.011 Table 8.3).
+///
+/// 低 3 位 bit 1..3 同时编码"消息大类"和"方向"：
+/// - 低位为 0 → MS→network（UE 上行 / MO）
+/// - 低位为 1 → network→MS（网络下发 / MT）
+///
+/// 因此所有 type 值都是成对出现的：MO 在前，MT 在后。
 enum class RpMessageType : uint8_t {
-    kData = 0x01,
-    kAck = 0x02,
-    kError = 0x03,
-    kSmma = 0x05,
+    // MS -> network direction（P-CSCF / SMSC 在接收 UE 报文时只会看到这 4 个值
+    kMoData  = 0x00,  ///< RP-DATA (MS to network)   —— UE 发起 MO SMS
+    kMoAck   = 0x02,  ///< RP-ACK  (MS to network)   —— UE 确认收到 MT SMS
+    kMoError = 0x04,  ///< RP-ERROR (MS to network)
+    kSmma    = 0x06,  ///< RP-SMMA (MS to network)
+    // network -> MS direction（SMSC 在向 UE 下发报文时使用这 3 个值
+    kMtData  = 0x01,  ///< RP-DATA (network to MS)   —— SC 下发 MT SMS
+    kMtAck   = 0x03,  ///< RP-ACK  (network to MS)   —— SC 确认收到 MO SMS
+    kMtError = 0x05,  ///< RP-ERROR (network to MS)
 };
 
 /// RP-DATA (3GPP TS 24.011 7.3.1).

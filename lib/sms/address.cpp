@@ -74,6 +74,76 @@ auto parse_address(std::span<const uint8_t> data, std::size_t& offset) -> Result
     return address;
 }
 
+auto parse_rp_address(std::span<const uint8_t> data, std::size_t& offset) -> Result<SmsAddress> {
+    // TS 24.011 §8.2.5：Address-Length 字段 = 后续字节数（含 Type-of-Address，不含本字段）。
+    if (offset >= data.size()) {
+        return std::unexpected(ims::ErrorInfo{
+            ims::ErrorCode::kSmsParseError,
+            "truncated RP address length",
+        });
+    }
+
+    const auto length = data[offset++];
+    if (length == 0) {
+        // 空地址占位符（MO 方向 Originator），仅 1 字节。
+        return SmsAddress{};
+    }
+    // TS 24.011：length 最小 2（Type + 至少 1 BCD），最大 11。
+    if (length < 2 || length > 11) {
+        return std::unexpected(ims::ErrorInfo{
+            ims::ErrorCode::kSmsInvalidPayload,
+            std::format("RP address length {} out of range [2,11]", length),
+        });
+    }
+    if (offset + length > data.size()) {
+        return std::unexpected(ims::ErrorInfo{
+            ims::ErrorCode::kSmsParseError,
+            "truncated RP address contents",
+        });
+    }
+
+    SmsAddress address;
+    address.type_of_address = data[offset];
+    const auto bcd_bytes = static_cast<std::size_t>(length - 1);
+    address.bcd.assign(data.begin() + static_cast<std::ptrdiff_t>(offset + 1),
+                       data.begin() + static_cast<std::ptrdiff_t>(offset + length));
+    offset += length;
+
+    // RP 层 Length 只给字节数，位数需由末尾 padding 半字节（0xF）推断：
+    // 奇数位号码最后高位 nibble 为 0xF，偶数位为有效数字。
+    address.digit_length = static_cast<uint8_t>(2 * bcd_bytes);
+    if (bcd_bytes > 0 && (address.bcd.back() & 0xF0U) == 0xF0U) {
+        address.digit_length = static_cast<uint8_t>(2 * bcd_bytes - 1);
+    }
+    return address;
+}
+
+auto encode_rp_address(const SmsAddress& address, std::vector<uint8_t>& out) -> VoidResult {
+    if (address.digit_length == 0) {
+        // 空地址（MO 方向 Originator 占位）。
+        out.push_back(0x00);
+        return {};
+    }
+    if (address.bcd.empty()) {
+        return std::unexpected(ims::ErrorInfo{
+            ims::ErrorCode::kSmsInvalidPayload,
+            "RP address missing BCD payload",
+        });
+    }
+    // Length = 1(Type-of-Address) + BCD 字节数；TS 24.011 上限 11。
+    const auto length = static_cast<uint8_t>(1 + address.bcd.size());
+    if (length > 11) {
+        return std::unexpected(ims::ErrorInfo{
+            ims::ErrorCode::kSmsInvalidPayload,
+            std::format("RP address length {} exceeds maximum 11", length),
+        });
+    }
+    out.push_back(length);
+    out.push_back(address.type_of_address);
+    out.insert(out.end(), address.bcd.begin(), address.bcd.end());
+    return {};
+}
+
 auto decode_bcd_msisdn(const SmsAddress& address) -> std::string {
     if (address.digit_length == 0) {
         return {};

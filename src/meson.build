@@ -25,6 +25,8 @@ ims_pcscf = executable(
     files('p-cscf/main.cpp') + pcscf_sources,
     include_directories: [srcinc, libinc],
     dependencies: [sip_dep, dns_dep, diameter_dep, rtp_dep, core_dep, sms_dep],
+    build_rpath: '$ORIGIN',
+    install_rpath: '$ORIGIN',
     install: true,
 )
 
@@ -33,6 +35,8 @@ ims_icscf = executable(
     files('i-cscf/main.cpp') + icscf_sources,
     include_directories: [srcinc, libinc],
     dependencies: [sip_dep, dns_dep, diameter_dep, core_dep, sms_dep],
+    build_rpath: '$ORIGIN',
+    install_rpath: '$ORIGIN',
     install: true,
 )
 
@@ -41,6 +45,8 @@ ims_scscf = executable(
     files('s-cscf/main.cpp') + scscf_sources,
     include_directories: [srcinc, libinc],
     dependencies: [diameter_dep, dns_dep, db_dep, sms_dep],
+    build_rpath: '$ORIGIN',
+    install_rpath: '$ORIGIN',
     install: true,
 )
 
@@ -49,6 +55,8 @@ ims_smsc = executable(
     files('smsc/main.cpp'),
     include_directories: [srcinc, libinc],
     dependencies: [sms_dep, core_dep],
+    build_rpath: '$ORIGIN',
+    install_rpath: '$ORIGIN',
     install: true,
 )
 
@@ -57,6 +65,8 @@ ims_allinone = executable(
     files('allinone/main.cpp') + pcscf_sources + icscf_sources + scscf_sources,
     include_directories: [srcinc, libinc],
     dependencies: [sip_dep, dns_dep, diameter_dep, db_dep, rtp_dep, core_dep, sms_dep],
+    build_rpath: '$ORIGIN',
+    install_rpath: '$ORIGIN',
     install: true,
 )
 
